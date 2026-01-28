@@ -1,6 +1,3 @@
-// src/components/ArtistCard.tsx
-// Card for displaying artists in the Popular Artists section
-
 import React from 'react';
 import { View, Text, TouchableOpacity, ImageBackground, StyleSheet, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';

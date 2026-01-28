@@ -1,6 +1,3 @@
-// src/components/MediaCard.tsx
-// Reusable card for songs/videos in carousels
-
 import React from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Dimensions } from 'react-native';
 
