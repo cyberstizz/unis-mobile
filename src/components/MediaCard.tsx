@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: '#163387', // Unis blue
+    borderColor: '#163387', 
     position: 'relative',
   },
   artwork: {
