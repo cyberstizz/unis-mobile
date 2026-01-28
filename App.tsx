@@ -1,40 +1,42 @@
-// App.tsx
-// Main entry point - wraps app with providers
 
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider } from './src/context/AuthContext';
 import { PlayerProvider } from './src/context/PlayerContext';
-import HomeScreen from './src/screens/HomeScreen';
+import AppNavigator from './src/navigation/AppNavigator';
 import MiniPlayer from './src/components/MiniPlayer';
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <PlayerProvider>
-          <View style={styles.container}>
-            <StatusBar style="light" />
-            <SafeAreaView style={styles.content} edges={['top']}>
-              <HomeScreen />
-            </SafeAreaView>
-            {/* MiniPlayer persists at bottom of screen */}
-            <SafeAreaView edges={['bottom']} style={styles.playerContainer}>
-              <MiniPlayer />
-            </SafeAreaView>
-          </View>
-        </PlayerProvider>
-      </AuthProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.container}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <PlayerProvider>
+            <View style={styles.container}>
+              <StatusBar style="light" />
+              {/* Main Navigation */}
+              <View style={styles.content}>
+                <AppNavigator />
+              </View>
+              {/* MiniPlayer persists at bottom of screen, outside navigation */}
+              <SafeAreaView edges={['bottom']} style={styles.playerContainer}>
+                <MiniPlayer />
+              </SafeAreaView>
+            </View>
+          </PlayerProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#000',
   },
   content: {
     flex: 1,

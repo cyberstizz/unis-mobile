@@ -232,20 +232,27 @@ const FeedScreen: React.FC = () => {
   };
 
   // Initial load
-  useEffect(() => {
-    const init = async () => {
-      setLoading(true);
-      await fetchProfile();
-    };
-    init();
-  }, []);
+useEffect(() => {
+  const init = async () => {
+    setLoading(true);
+    await fetchProfile();
+  };
+  init();
+}, []);
 
-  // Fetch data when jurisdiction is set
-  useEffect(() => {
-    if (userId && jurisdictionId) {
+// Fetch data when jurisdiction is set OR show dummy data if no auth
+useEffect(() => {
+  if (jurisdictionId) {
+    if (userId) {
       fetchMediaData().finally(() => setLoading(false));
+    } else {
+      // No auth - just show dummy data
+      setTrendingToday(getDummyTrending());
+      setNewMedia(getDummyNew());
+      setLoading(false);
     }
-  }, [userId, jurisdictionId]);
+  }
+}, [userId, jurisdictionId]);
 
   // Pull to refresh
   const onRefresh = useCallback(async () => {
