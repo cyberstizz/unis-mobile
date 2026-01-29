@@ -8,12 +8,13 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Image,
   Dimensions,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, DrawerActions } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
+import unisLogo from '../../assets/unisLogoThree.svg';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
@@ -40,26 +41,16 @@ const Header: React.FC = () => {
   };
 
   const handleOptionPress = (route: string) => {
-    // Navigate to the route - for now these go to placeholder screens
     navigation.navigate(route as never);
-  };
-
-  const openDrawer = () => {
-    navigation.dispatch(DrawerActions.openDrawer());
   };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Top Row: Menu, Logo, Search, User */}
+      {/* Top Row: Logo, Search, User */}
       <View style={styles.topRow}>
-        {/* Menu Button (Mobile) */}
-        <TouchableOpacity onPress={openDrawer} style={styles.menuButton}>
-          <Text style={styles.menuIcon}>☰</Text>
-        </TouchableOpacity>
-
         {/* Logo */}
         <TouchableOpacity onPress={handleHome} style={styles.logoWrapper}>
-          <Text style={styles.logoText}>Unis</Text>
+          <Image source={unisLogo} style={styles.logo} resizeMode="contain" />
         </TouchableOpacity>
 
         {/* Search Bar */}
@@ -114,19 +105,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
   },
-  menuButton: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuIcon: {
-    fontSize: 24,
-    color: '#C0C0C0',
+  logo: {
+  width: 60,
+  height: 40,
   },
   logoWrapper: {
     justifyContent: 'center',
     alignItems: 'center',
+    marginLeft: '4%',
   },
   logoText: {
     fontSize: 24,

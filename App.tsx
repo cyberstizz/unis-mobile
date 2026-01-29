@@ -1,8 +1,10 @@
+// App.tsx
+// Main entry point - Layout structure: Header → Content → Footer → MiniPlayer
 
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider } from './src/context/AuthContext';
 import { PlayerProvider } from './src/context/PlayerContext';
@@ -17,14 +19,15 @@ export default function App() {
           <PlayerProvider>
             <View style={styles.container}>
               <StatusBar style="light" />
-              {/* Main Navigation */}
+              
+              {/* Main app content (Header is inside Navigator) */}
               <View style={styles.content}>
                 <AppNavigator />
               </View>
-              {/* MiniPlayer persists at bottom of screen, outside navigation */}
-              <SafeAreaView edges={['bottom']} style={styles.playerContainer}>
-                <MiniPlayer />
-              </SafeAreaView>
+              
+              {/* MiniPlayer - always at very bottom, below everything */}
+              <MiniPlayer />
+              
             </View>
           </PlayerProvider>
         </AuthProvider>
@@ -40,8 +43,5 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-  },
-  playerContainer: {
-    backgroundColor: '#1a1a1a',
   },
 });
