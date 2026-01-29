@@ -9,14 +9,13 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
-  Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
-import unisLogo from '../../assets/unisLogoThree.svg';
+import UnisLogo from '../../assets/unisLogoThree.svg';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
 // Quick nav options that appear below the search bar
@@ -50,7 +49,7 @@ const Header: React.FC = () => {
       <View style={styles.topRow}>
         {/* Logo */}
         <TouchableOpacity onPress={handleHome} style={styles.logoWrapper}>
-          <Image source={unisLogo} style={styles.logo} resizeMode="contain" />
+          <UnisLogo width={IS_MOBILE ? 80 : 80} height={IS_MOBILE ? 80 : 80} />
         </TouchableOpacity>
 
         {/* Search Bar */}
@@ -67,7 +66,7 @@ const Header: React.FC = () => {
           {user && !IS_MOBILE && (
             <Text style={styles.userName}>{user.username}</Text>
           )}
-          <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+          <TouchableOpacity onPress={handleLogout}>
             <Text style={styles.logoutText}>Logout</Text>
           </TouchableOpacity>
         </View>
@@ -91,39 +90,39 @@ const Header: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
+  // Main container - matches .app-header
   container: {
     width: '100%',
+    minHeight: IS_MOBILE ? 80 : Math.max(SCREEN_HEIGHT * 0.11, 80), // 10vh mobile, 11vh desktop
     backgroundColor: '#1A1A1A',
     borderBottomWidth: 0.5,
     borderBottomColor: '#C0C0C0',
   },
+  
+  // Top row - matches .app-header-top
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 8,
+    height: '60%',
+    paddingHorizontal: IS_MOBILE ? 8 : 10,
   },
-  logo: {
-  width: 60,
-  height: 40,
-  },
+  
+  // Logo - matches .logo-wrapper and .logo
   logoWrapper: {
+    flexShrink: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: '4%',
+    marginLeft: IS_MOBILE ? '1%' : '4%',
+    width: IS_MOBILE ? '19%' : '8%',
   },
-  logoText: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#163387',
-    letterSpacing: 1,
-  },
+  
+  // Search bar - matches .search-bar
   searchContainer: {
     flex: 1,
-    maxWidth: IS_MOBILE ? '50%' : 300,
-    marginHorizontal: 10,
+    maxWidth: IS_MOBILE ? '50%' : '27%',
+    minWidth: IS_MOBILE ? 'auto' : 260,
+    marginLeft: IS_MOBILE ? '3%' : '24%',
   },
   searchBar: {
     backgroundColor: '#1a1a1a',
@@ -133,40 +132,45 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     color: '#FFFFFF',
-    fontSize: IS_MOBILE ? 12 : 14,
+    fontSize: IS_MOBILE ? 10 : 14,
     textAlign: 'center',
   },
+  
+  // User section - matches .header-user-section
   userSection: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    paddingRight: 20,
   },
   userName: {
     color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 14,
+    // fontFamily: 'BitcountGridDouble', // Enable after font is loaded
   },
-  logoutButton: {
-    borderWidth: 2,
-    borderColor: '#163387',
-    borderRadius: 50,
-    paddingHorizontal: IS_MOBILE ? 10 : 14,
-    paddingVertical: IS_MOBILE ? 4 : 6,
-  },
+  
+  // Logout - plain text, no border (as rendered in your web app)
   logoutText: {
     color: '#163387',
     fontSize: IS_MOBILE ? 11 : 13,
     fontWeight: 'bold',
+    // fontFamily: 'BitcountGridDouble', // Enable after font is loaded
   },
+  
+  // Options bar - matches .app-header-options-bar
   optionsBar: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 17,
+    height: '40%',
+    paddingHorizontal: IS_MOBILE ? 17 : 20,
     paddingBottom: 10,
     gap: IS_MOBILE ? 8 : 15,
     flexWrap: 'wrap',
   },
+  
+  // Option boxes - matches .option-box
   optionBox: {
     paddingHorizontal: IS_MOBILE ? 10 : 14,
     paddingVertical: IS_MOBILE ? 4 : 3,
@@ -175,6 +179,7 @@ const styles = StyleSheet.create({
     borderColor: '#163387',
     borderRadius: 50,
     minWidth: IS_MOBILE ? 60 : 'auto',
+    flex: IS_MOBILE ? 1 : 0,
     alignItems: 'center',
   },
   optionText: {
@@ -182,6 +187,7 @@ const styles = StyleSheet.create({
     fontSize: IS_MOBILE ? 8 : 10,
     fontWeight: '600',
     letterSpacing: 0.3,
+    // fontFamily: 'Inter', // Enable after font is loaded
   },
 });
 
