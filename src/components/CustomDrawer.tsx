@@ -1,68 +1,130 @@
+// CustomDrawer.tsx
+// Slide-out navigation drawer matching web sidebar mobile behavior
+// Transparent background, Unis blue overlay (handled by navigator), Bitcount font, lucide icons
 
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
-import { DrawerContentScrollView, DrawerContentComponentProps } from '@react-navigation/drawer';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Dimensions,
+} from 'react-native';
+import {
+  DrawerContentScrollView,
+  DrawerContentComponentProps,
+} from '@react-navigation/drawer';
+import {
+  House,
+  Vote,
+  Search,
+  Trophy,
+  Settings,
+  DollarSign,
+  Music,
+} from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
-import { usePlayer } from '../context/PlayerContext';
 
-// Icons as text for now - we can add lucide-react-native later
-// Home, Vote, Search, Trophy, Settings, DollarSign, Music
-const MENU_ITEMS = [
-  { name: 'Home', icon: '🏠', route: 'Home', isHome: true },
-  { name: 'Vote', icon: '🗳️', route: 'Vote' },
-  { name: 'Find', icon: '🔍', route: 'Find' },
-  { name: 'Leaderboards', icon: '🏆', route: 'Leaderboards' },
-  { name: 'Settings', icon: '⚙️', route: 'Settings' },
-  { name: 'Earnings', icon: '💰', route: 'Earnings' },
-  { name: 'Playlists', icon: '🎵', route: 'Playlists', isPlaylist: true },
-];
+// Design tokens from sidebar.scss
+const COLORS = {
+  textSilver: '#C0C0C0',
+  accentWhite: '#FFFFFF',
+  unisBlue: '#163387',
+  unisSilver: '#918f8f',
+  bgDark: '#1A1A1A',
+  borderSilver: '#C0C0C0',
+};
+
+const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+interface NavItem {
+  label: string;
+  icon: React.ComponentType<{ size: number; color: string }>;
+  route: string;
+  isHome?: boolean;
+}
 
 const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
   const { navigation } = props;
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { openPlaylistManager } = usePlayer();
 
-  const handleNavigation = (item: typeof MENU_ITEMS[0]) => {
-    if (item.isPlaylist) {
-      // Open playlist manager modal instead of navigating
-      openPlaylistManager();
-      navigation.closeDrawer();
-    } else if (item.route === 'Settings') {
-      // Navigate to profile or artist dashboard based on user role
-      if (user?.isArtist) {
-        // navigation.navigate('ArtistDashboard');
-        navigation.navigate('Settings'); // Placeholder for now
-      } else {
-        navigation.navigate('Settings');
-      }
-      navigation.closeDrawer();
-    } else {
-      navigation.navigate(item.route);
-      navigation.closeDrawer();
-    }
+  // Routes match DrawerParamList in AppNavigator
+  const navItems: NavItem[] = [
+    {
+      label: 'Home',
+      icon: House,
+      route: 'Home',
+      isHome: true,
+    },
+    {
+      label: 'Vote',
+      icon: Vote,
+      route: 'Vote',
+    },
+    {
+      label: 'Find',
+      icon: Search,
+      route: 'Find',
+    },
+    {
+      label: 'Leaderboards',
+      icon: Trophy,
+      route: 'Leaderboards',
+    },
+    {
+      label: 'Settings',
+      icon: Settings,
+      // Settings goes to Settings screen; role-based routing can be handled in that screen
+      route: 'Settings',
+    },
+    {
+      label: 'Earnings',
+      icon: DollarSign,
+      route: 'Earnings',
+    },
+    {
+      label: 'Playlists',
+      icon: Music,
+      route: 'Playlists',
+    },
+  ];
+
+  const handleNavPress = (item: NavItem) => {
+    navigation.navigate(item.route);
+    navigation.closeDrawer();
   };
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {MENU_ITEMS.map((item, index) => (
-          <TouchableOpacity
-            key={item.name}
-            style={styles.menuItem}
-            onPress={() => handleNavigation(item)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.icon, item.isHome && styles.homeIcon]}>
-              {item.icon}
-            </Text>
-            <Text style={[styles.menuText, item.isHome && styles.homeText]}>
-              {item.name}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+    <View style={styles.container}>
+      <DrawerContentScrollView
+        {...props}
+        contentContainerStyle={styles.scrollContent}
+        scrollEnabled={false}
+      >
+        <View style={styles.navList}>
+          {navItems.map((item) => {
+            const IconComponent = item.icon;
+            const iconColor = item.isHome ? COLORS.unisBlue : COLORS.textSilver;
+            const textColor = item.isHome ? COLORS.unisBlue : COLORS.textSilver;
+
+            return (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.navItem}
+                onPress={() => handleNavPress(item)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.iconContainer}>
+                  <IconComponent size={24} color={iconColor} />
+                </View>
+                <Text style={[styles.navText, { color: textColor }]}>
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </DrawerContentScrollView>
     </View>
   );
 };
@@ -70,42 +132,36 @@ const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
-    borderRightWidth: 0.5,
-    borderRightColor: '#C0C0C0',
+    backgroundColor: 'transparent', // Transparent on mobile per SCSS
   },
-  scrollView: {
+  scrollContent: {
+    paddingTop: SCREEN_HEIGHT * 0.11, // top: 11vh from SCSS
+  },
+  navList: {
     flex: 1,
-    marginTop: 10,
   },
-  menuItem: {
+  navItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 15,
-    paddingHorizontal: 15,
+    paddingTop: 15,
+    paddingBottom: 8,
+    paddingLeft: 15,
     paddingRight: 1,
-    borderBottomWidth: 0.2,
-    borderBottomColor: '#C0C0C0',
+    // Border is transparent on mobile per SCSS @media (max-width: 768px)
+    borderBottomWidth: 0,
   },
-  icon: {
-    fontSize: 24,
-    width: 35,
+  iconContainer: {
+    width: 25,
+    height: 35,
     marginRight: 7,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  homeIcon: {
-    // Unis blue for home icon - using tint won't work with emoji
-    // We'll replace with actual icons later
-  },
-  menuText: {
+  navText: {
+    fontFamily: 'BitcountGridDouble',
     fontSize: 23,
-    color: '#C0C0C0',
-    fontWeight: '400',
-    letterSpacing: 0.5,
-    // Font family would be 'Bitcount Grid Double' but we need to load custom fonts
-    // For now using system font
-  },
-  homeText: {
-    color: '#163387', 
+    paddingTop: 2,
+    marginLeft: 3,
   },
 });
 
