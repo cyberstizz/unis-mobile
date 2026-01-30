@@ -15,7 +15,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import UnisLogo from '../../assets/unisLogoThree.svg';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
 // Quick nav options that appear below the search bar
@@ -49,7 +49,7 @@ const Header: React.FC = () => {
       <View style={styles.topRow}>
         {/* Logo */}
         <TouchableOpacity onPress={handleHome} style={styles.logoWrapper}>
-          <UnisLogo width={IS_MOBILE ? 80 : 80} height={IS_MOBILE ? 80 : 80} />
+          <UnisLogo width={80} height={90} />
         </TouchableOpacity>
 
         {/* Search Bar */}
@@ -90,39 +90,37 @@ const Header: React.FC = () => {
 };
 
 const styles = StyleSheet.create({
-  // Main container - matches .app-header
+  // Main container - no fixed height, let content determine size
   container: {
     width: '100%',
-    minHeight: IS_MOBILE ? 80 : Math.max(SCREEN_HEIGHT * 0.11, 80), // 10vh mobile, 11vh desktop
+    height: '60%',
     backgroundColor: '#1A1A1A',
     borderBottomWidth: 0.5,
     borderBottomColor: '#C0C0C0',
   },
   
-  // Top row - matches .app-header-top
+  // Top row - fixed padding, no percentage height
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    height: '60%',
     paddingHorizontal: IS_MOBILE ? 8 : 10,
+    paddingVertical: 8,
   },
   
-  // Logo - matches .logo-wrapper and .logo
+  // Logo
   logoWrapper: {
     flexShrink: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: IS_MOBILE ? '1%' : '4%',
-    width: IS_MOBILE ? '19%' : '8%',
+    marginLeft: IS_MOBILE ? 4 : 16,
   },
   
-  // Search bar - matches .search-bar
+  // Search bar
   searchContainer: {
     flex: 1,
-    maxWidth: IS_MOBILE ? '50%' : '27%',
-    minWidth: IS_MOBILE ? 'auto' : 260,
-    marginLeft: IS_MOBILE ? '3%' : '24%',
+    maxWidth: IS_MOBILE ? '50%' : 300,
+    marginHorizontal: 10,
   },
   searchBar: {
     backgroundColor: '#1a1a1a',
@@ -136,41 +134,40 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   
-  // User section - matches .header-user-section
+  // User section
   userSection: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingRight: 20,
+    paddingRight: 10,
   },
   userName: {
     color: '#FFFFFF',
     fontWeight: 'bold',
     fontSize: 14,
-    // fontFamily: 'BitcountGridDouble', // Enable after font is loaded
+    fontFamily: 'BitcountGridDouble',
   },
   
-  // Logout - plain text, no border (as rendered in your web app)
+  // Logout - plain text
   logoutText: {
     color: '#163387',
     fontSize: IS_MOBILE ? 11 : 13,
     fontWeight: 'bold',
-    // fontFamily: 'BitcountGridDouble', // Enable after font is loaded
+    fontFamily: 'BitcountGridDouble',
   },
   
-  // Options bar - matches .app-header-options-bar
+  // Options bar - fixed padding, no percentage height
   optionsBar: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    height: '40%',
     paddingHorizontal: IS_MOBILE ? 17 : 20,
     paddingBottom: 10,
     gap: IS_MOBILE ? 8 : 15,
     flexWrap: 'wrap',
   },
   
-  // Option boxes - matches .option-box
+  // Option boxes
   optionBox: {
     paddingHorizontal: IS_MOBILE ? 10 : 14,
     paddingVertical: IS_MOBILE ? 4 : 3,
@@ -179,7 +176,6 @@ const styles = StyleSheet.create({
     borderColor: '#163387',
     borderRadius: 50,
     minWidth: IS_MOBILE ? 60 : 'auto',
-    flex: IS_MOBILE ? 1 : 0,
     alignItems: 'center',
   },
   optionText: {
@@ -187,7 +183,6 @@ const styles = StyleSheet.create({
     fontSize: IS_MOBILE ? 8 : 10,
     fontWeight: '600',
     letterSpacing: 0.3,
-    // fontFamily: 'Inter', // Enable after font is loaded
   },
 });
 

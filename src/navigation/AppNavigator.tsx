@@ -1,11 +1,15 @@
 // src/navigation/AppNavigator.tsx
 // Main navigation structure - Drawer + Stack navigators with Header
 
-import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import React, { useState, useRef, useCallback } from 'react';
+import { View, StyleSheet, Dimensions } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { NavigationContainer } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  NavigationContainerRef,
+  DrawerActions,
+} from '@react-navigation/native';
 
 // Screens
 import FeedScreen from '../screens/FeedScreen';
@@ -14,6 +18,9 @@ import HomeScreen from '../screens/HomeScreen';
 // Components
 import CustomDrawer from '../components/CustomDrawer';
 import Header from '../components/Header';
+import DrawerTrigger from '../components/DrawerTrigger';
+
+const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 // Types for navigation
 export type RootStackParamList = {
@@ -92,37 +99,72 @@ const PlaceholderWithHeader = () => (
 
 // Drawer Navigator
 const AppNavigator = () => {
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
+
+  // Track drawer state to hide/show trigger
+  const handleStateChange = useCallback((state: any) => {
+    // Check if drawer is open by looking at navigation state
+    const drawerState = state?.routes?.[0]?.state;
+    if (drawerState) {
+      const isOpen = drawerState.history?.some(
+        (item: any) => item.type === 'drawer' && item.status === 'open'
+      );
+      setIsDrawerOpen(!!isOpen);
+    } else {
+      setIsDrawerOpen(false);
+    }
+  }, []);
+
+  // Open drawer via ref
+  const openDrawer = useCallback(() => {
+    navigationRef.current?.dispatch(DrawerActions.openDrawer());
+  }, []);
+
   return (
-    <NavigationContainer>
-      <Drawer.Navigator
-        drawerContent={(props) => <CustomDrawer {...props} />}
-        screenOptions={{
-          headerShown: false,
-          drawerType: 'front',
-          drawerStyle: {
-            backgroundColor: '#000000',
-            width: 250,
-          },
-          overlayColor: 'rgba(22, 51, 135, 0.5)',
-          swipeEnabled: true,
-          swipeEdgeWidth: 50,
-        }}
+    <View style={styles.navigatorContainer}>
+      <NavigationContainer
+        ref={navigationRef}
+        onStateChange={handleStateChange}
       >
-        <Drawer.Screen name="Home" component={MainStackWithHeader} />
-        <Drawer.Screen name="Vote" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Find" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Leaderboards" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Milestones" component={PlaceholderWithHeader} />
-        <Drawer.Screen name="Artist" component={PlaceholderWithHeader} />
-      </Drawer.Navigator>
-    </NavigationContainer>
+        <Drawer.Navigator
+          drawerContent={(props) => <CustomDrawer {...props} />}
+          screenOptions={{
+            headerShown: false,
+            drawerType: 'front',
+            drawerStyle: {
+              backgroundColor: 'transparent',
+              width: 250,
+            },
+            overlayColor: 'rgba(22, 51, 135, 0.5)',
+            swipeEnabled: true,
+            swipeEdgeWidth: 50,
+          }}
+        >
+          <Drawer.Screen name="Home" component={MainStackWithHeader} />
+          <Drawer.Screen name="Vote" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Find" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Leaderboards" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Milestones" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Artist" component={PlaceholderWithHeader} />
+        </Drawer.Navigator>
+      </NavigationContainer>
+
+      {/* Drawer Trigger Arrow - positioned on left edge, hides when drawer is open */}
+      {!isDrawerOpen && (
+        <DrawerTrigger onPress={openDrawer} />
+      )}
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
+  navigatorContainer: {
+    flex: 1,
+  },
   layout: {
     flex: 1,
     backgroundColor: '#000',

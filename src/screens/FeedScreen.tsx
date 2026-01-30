@@ -1,5 +1,6 @@
 // src/screens/FeedScreen.tsx
 // Main feed screen - ported from Feed.jsx
+// Note: Header is handled by LayoutWrapper in AppNavigator
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -7,14 +8,12 @@ import {
   Text,
   ScrollView,
   FlatList,
-  TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
   Dimensions,
   RefreshControl,
   ImageBackground,
 } from 'react-native';
-import { useNavigation, DrawerActions } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -115,7 +114,6 @@ const getDummyNew = (): MediaItem[] => [
 ];
 
 const FeedScreen: React.FC = () => {
-  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { playMedia } = usePlayer();
@@ -138,7 +136,6 @@ const FeedScreen: React.FC = () => {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       return url;
     }
-    // In production, prepend your API base URL
     return url;
   };
 
@@ -232,27 +229,27 @@ const FeedScreen: React.FC = () => {
   };
 
   // Initial load
-useEffect(() => {
-  const init = async () => {
-    setLoading(true);
-    await fetchProfile();
-  };
-  init();
-}, []);
+  useEffect(() => {
+    const init = async () => {
+      setLoading(true);
+      await fetchProfile();
+    };
+    init();
+  }, []);
 
-// Fetch data when jurisdiction is set OR show dummy data if no auth
-useEffect(() => {
-  if (jurisdictionId) {
-    if (userId) {
-      fetchMediaData().finally(() => setLoading(false));
-    } else {
-      // No auth - just show dummy data
-      setTrendingToday(getDummyTrending());
-      setNewMedia(getDummyNew());
-      setLoading(false);
+  // Fetch data when jurisdiction is set OR show dummy data if no auth
+  useEffect(() => {
+    if (jurisdictionId) {
+      if (userId) {
+        fetchMediaData().finally(() => setLoading(false));
+      } else {
+        // No auth - just show dummy data
+        setTrendingToday(getDummyTrending());
+        setNewMedia(getDummyNew());
+        setLoading(false);
+      }
     }
-  }
-}, [userId, jurisdictionId]);
+  }, [userId, jurisdictionId]);
 
   // Pull to refresh
   const onRefresh = useCallback(async () => {
@@ -290,18 +287,13 @@ useEffect(() => {
     playMedia(media as any, playlist as any);
   };
 
-  // Open drawer
-  const openDrawer = () => {
-    navigation.dispatch(DrawerActions.openDrawer());
-  };
-
   // Use dummy data if API data is empty
   const trendingList = trendingToday.length > 0 ? trendingToday : getDummyTrending();
   const newList = newMedia.length > 0 ? newMedia : getDummyNew();
 
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { paddingTop: insets.top }]}>
+      <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#163387" />
         <Text style={styles.loadingText}>Loading your feed...</Text>
       </View>
@@ -325,10 +317,7 @@ useEffect(() => {
 
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingTop: insets.top + 20 }
-        ]}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -339,15 +328,6 @@ useEffect(() => {
           />
         }
       >
-        {/* Header with Menu Button */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={openDrawer} style={styles.menuButton}>
-            <Text style={styles.menuIcon}>☰</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Unis</Text>
-          <View style={styles.menuButton} /> {/* Spacer for centering */}
-        </View>
-
         {/* Error Message */}
         {error ? (
           <View style={styles.errorContainer}>
@@ -475,29 +455,8 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
+    paddingTop: 16,
     paddingBottom: 20,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 24,
-  },
-  menuButton: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuIcon: {
-    fontSize: 28,
-    color: '#C0C0C0',
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#163387',
-    letterSpacing: 2,
   },
   errorContainer: {
     backgroundColor: 'rgba(255, 165, 0, 0.2)',
