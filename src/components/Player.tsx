@@ -1,8 +1,3 @@
-// src/components/Player.tsx
-// Full-featured audio player - ported from web Player.jsx
-// Supports mini mode (bottom bar) and expanded mode (fullscreen)
-// Uses expo-linear-gradient to match web SCSS gradients exactly
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
@@ -24,8 +19,8 @@ import { Heart, Vote, ChevronUp, ChevronDown, Download, Plus } from 'lucide-reac
 
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
-import UnisPlayButton from './UnisPlayButton';
-import UnisPauseButton from './UnisPauseButton';
+import UnisPlayButton from './Unisplaybutton';
+import UnisPauseButton from './Unispausebutton';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH <= 600;

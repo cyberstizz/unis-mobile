@@ -1,6 +1,3 @@
-// src/screens/FeedScreen.tsx
-// Main feed screen - ported from Feed.jsx
-// Note: Header is handled by LayoutWrapper in AppNavigator
 
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -304,7 +301,7 @@ const FeedScreen: React.FC = () => {
     <View style={styles.container}>
       {/* Background with gradient */}
       <ImageBackground
-        source={{ uri: 'https://picsum.photos/800/1200?random=bg' }}
+        source={require('../../assets/randomrapper.jpeg')}
         style={styles.backgroundImage}
         resizeMode="cover"
       >
