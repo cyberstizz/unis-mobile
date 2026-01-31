@@ -1,5 +1,5 @@
 // App.tsx
-// Main entry point - Layout structure: Header → Content → Footer → MiniPlayer
+// Main entry point - Layout structure: Header → Content → Player
 
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet } from 'react-native';
@@ -10,7 +10,7 @@ import * as Font from 'expo-font';
 import { AuthProvider } from './src/context/AuthContext';
 import { PlayerProvider } from './src/context/PlayerContext';
 import AppNavigator from './src/navigation/AppNavigator';
-import MiniPlayer from './src/components/MiniPlayer';
+import Player from './src/components/Player';
 
 export default function App() {
   const [fontsLoaded, setFontsLoaded] = useState(false);
@@ -54,8 +54,8 @@ export default function App() {
                 <AppNavigator />
               </View>
               
-              {/* MiniPlayer - always at very bottom, below everything */}
-              <MiniPlayer />
+              {/* Player - persistent at bottom, supports mini and expanded modes */}
+              <Player />
               
             </View>
           </PlayerProvider>

@@ -1,6 +1,3 @@
-// src/screens/HomeScreen.tsx
-// Test screen to verify Auth and Player contexts
-
 import React from 'react';
 import { View, Text, TouchableOpacity, ActivityIndicator, ScrollView, StyleSheet } from 'react-native';
 import { useAuth } from '../context/AuthContext';

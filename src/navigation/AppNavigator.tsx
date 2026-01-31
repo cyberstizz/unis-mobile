@@ -1,6 +1,3 @@
-// src/navigation/AppNavigator.tsx
-// Main navigation structure - Drawer + Stack navigators with Header
-
 import React, { useState, useRef, useCallback } from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';

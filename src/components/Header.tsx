@@ -49,7 +49,7 @@ const Header: React.FC = () => {
       <View style={styles.topRow}>
         {/* Logo */}
         <TouchableOpacity onPress={handleHome} style={styles.logoWrapper}>
-          <UnisLogo width={80} height={90} />
+          <UnisLogo width={80} height={80} />
         </TouchableOpacity>
 
         {/* Search Bar */}
@@ -93,7 +93,6 @@ const styles = StyleSheet.create({
   // Main container - no fixed height, let content determine size
   container: {
     width: '100%',
-    height: '60%',
     backgroundColor: '#1A1A1A',
     borderBottomWidth: 0.5,
     borderBottomColor: '#C0C0C0',
