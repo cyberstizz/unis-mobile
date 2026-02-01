@@ -1,3 +1,6 @@
+// src/navigation/AppNavigator.tsx
+// Main navigation structure - Drawer + Stack navigators with Header
+
 import React, { useState, useRef, useCallback } from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
@@ -11,6 +14,7 @@ import {
 // Screens
 import FeedScreen from '../screens/FeedScreen';
 import HomeScreen from '../screens/HomeScreen';
+import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -94,6 +98,12 @@ const PlaceholderWithHeader = () => (
   </LayoutWrapper>
 );
 
+const VoteAwardsWithHeader = () => (
+  <LayoutWrapper>
+    <VoteAwardsScreen />
+  </LayoutWrapper>
+);
+
 // Drawer Navigator
 const AppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -139,7 +149,7 @@ const AppNavigator = () => {
           }}
         >
           <Drawer.Screen name="Home" component={MainStackWithHeader} />
-          <Drawer.Screen name="Vote" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Leaderboards" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />

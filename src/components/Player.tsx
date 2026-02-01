@@ -1,3 +1,8 @@
+// src/components/Player.tsx
+// Full-featured audio player - ported from web Player.jsx
+// Supports mini mode (bottom bar) and expanded mode (fullscreen)
+// Uses expo-linear-gradient to match web SCSS gradients exactly
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
@@ -16,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as SecureStore from 'expo-secure-store';
 import { Heart, Vote, ChevronUp, ChevronDown, Download, Plus } from 'lucide-react-native';
+import Svg, { Path } from 'react-native-svg';
 
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
@@ -41,6 +47,25 @@ const COLORS = {
   trayGradientStart: '#242424',
   trayGradientEnd: '#1A1A1A',
 };
+
+// Simple triangle components for prev/next buttons (matches web app style)
+interface TriangleProps {
+  size?: number;
+  color?: string;
+  direction: 'left' | 'right';
+}
+
+const Triangle: React.FC<TriangleProps> = ({ size = 24, color = COLORS.unisBlue, direction }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24">
+    {direction === 'left' ? (
+      // Left-pointing triangle (previous)
+      <Path d="M18 4 L6 12 L18 20 Z" fill={color} />
+    ) : (
+      // Right-pointing triangle (next)
+      <Path d="M6 4 L18 12 L6 20 Z" fill={color} />
+    )}
+  </Svg>
+);
 
 // Dimensions from player.scss
 const SEEKBAR_HEIGHT = 4;
@@ -319,7 +344,7 @@ const Player: React.FC = () => {
           {/* Controls */}
           <View style={styles.expandedControls}>
             <TouchableOpacity onPress={prev} style={styles.expandedControlButton}>
-              <Text style={styles.expandedControlText}>⏮</Text>
+              <Triangle size={35} color={COLORS.accentWhite} direction="left" />
             </TouchableOpacity>
             
             <TouchableOpacity
@@ -336,7 +361,7 @@ const Player: React.FC = () => {
             </TouchableOpacity>
             
             <TouchableOpacity onPress={next} style={styles.expandedControlButton}>
-              <Text style={styles.expandedControlText}>⏭</Text>
+              <Triangle size={35} color={COLORS.accentWhite} direction="right" />
             </TouchableOpacity>
           </View>
 
@@ -464,7 +489,7 @@ const Player: React.FC = () => {
           {/* Playback controls - centered */}
           <View style={styles.miniControls}>
             <TouchableOpacity onPress={prev} style={styles.trackToggle}>
-              <Text style={styles.trackToggleText}>◀</Text>
+              <Triangle size={24} color={COLORS.unisBlue} direction="left" />
             </TouchableOpacity>
             
             <TouchableOpacity onPress={togglePlayPause} style={styles.playPauseButton}>
@@ -478,7 +503,7 @@ const Player: React.FC = () => {
             </TouchableOpacity>
             
             <TouchableOpacity onPress={next} style={styles.trackToggle}>
-              <Text style={styles.trackToggleText}>▶</Text>
+              <Triangle size={24} color={COLORS.unisBlue} direction="right" />
             </TouchableOpacity>
           </View>
 
