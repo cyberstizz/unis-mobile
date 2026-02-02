@@ -17,6 +17,7 @@ import {
   Dimensions,
   Alert,
   Animated,
+  Platform,
 } from 'react-native';
 import MapLibreGL from '@maplibre/maplibre-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,9 +29,6 @@ import { usePlayer } from '../context/PlayerContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
-
-// Initialize MapLibre
-MapLibreGL.setAccessToken(null); // No token needed for free tiles
 
 // =============================================================================
 // DESIGN TOKENS
@@ -210,6 +208,9 @@ const FindScreen: React.FC = () => {
   const mapRef = useRef<MapLibreGL.MapView>(null);
   const cameraRef = useRef<MapLibreGL.Camera>(null);
 
+  // MapLibre initialization state
+  const [mapReady, setMapReady] = useState(false);
+
   // State
   const [userId, setUserId] = useState<string | null>(null);
   const [genre, setGenre] = useState('rap-hiphop');
@@ -240,6 +241,23 @@ const FindScreen: React.FC = () => {
   // ==========================================================================
   // INITIALIZATION
   // ==========================================================================
+
+  // Initialize MapLibre
+  useEffect(() => {
+    const initializeMap = async () => {
+      try {
+        // MapLibre GL doesn't require an access token for free tile sources
+        // Just mark as ready
+        setMapReady(true);
+        console.log('MapLibre initialized successfully');
+      } catch (err) {
+        console.error('Failed to initialize MapLibre:', err);
+        // Still allow the UI to render
+        setMapReady(true);
+      }
+    };
+    initializeMap();
+  }, []);
 
   useEffect(() => {
     const getUserId = async () => {
@@ -704,51 +722,58 @@ const FindScreen: React.FC = () => {
 
           {/* Map Container */}
           <View style={styles.mapContainer}>
-            <MapLibreGL.MapView
-              ref={mapRef}
-              style={styles.map}
-              styleJSON={JSON.stringify(CARTO_DARK_STYLE)}
-              logoEnabled={false}
-              attributionEnabled={false}
-              onPress={handleMapPress}
-            >
-              <MapLibreGL.Camera
-                ref={cameraRef}
-                defaultSettings={{
-                  centerCoordinate: US_CENTER,
-                  zoomLevel: US_ZOOM,
-                }}
-              />
-
-              {/* US States GeoJSON Layer */}
-              {usGeoData && isAtUSLevel() && (
-                <MapLibreGL.ShapeSource
-                  id="us-states"
-                  shape={usGeoData}
-                  onPress={(e) => {
-                    const feature = e.features[0];
-                    if (feature?.properties?.name) {
-                      handleStatePress(feature.properties.name);
-                    }
+            {mapReady ? (
+              <MapLibreGL.MapView
+                ref={mapRef}
+                style={styles.map}
+                styleJSON={JSON.stringify(CARTO_DARK_STYLE)}
+                logoEnabled={false}
+                attributionEnabled={false}
+                onPress={handleMapPress}
+              >
+                <MapLibreGL.Camera
+                  ref={cameraRef}
+                  defaultSettings={{
+                    centerCoordinate: US_CENTER,
+                    zoomLevel: US_ZOOM,
                   }}
-                >
-                  <MapLibreGL.FillLayer
-                    id="states-fill"
-                    style={{
-                      fillColor: '#EAEAEC',
-                      fillOpacity: 0.9,
+                />
+
+                {/* US States GeoJSON Layer */}
+                {usGeoData && isAtUSLevel() && (
+                  <MapLibreGL.ShapeSource
+                    id="us-states"
+                    shape={usGeoData}
+                    onPress={(e) => {
+                      const feature = e.features[0];
+                      if (feature?.properties?.name) {
+                        handleStatePress(feature.properties.name);
+                      }
                     }}
-                  />
-                  <MapLibreGL.LineLayer
-                    id="states-border"
-                    style={{
-                      lineColor: '#999',
-                      lineWidth: 1,
-                    }}
-                  />
-                </MapLibreGL.ShapeSource>
-              )}
-            </MapLibreGL.MapView>
+                  >
+                    <MapLibreGL.FillLayer
+                      id="states-fill"
+                      style={{
+                        fillColor: '#EAEAEC',
+                        fillOpacity: 0.9,
+                      }}
+                    />
+                    <MapLibreGL.LineLayer
+                      id="states-border"
+                      style={{
+                        lineColor: '#999',
+                        lineWidth: 1,
+                      }}
+                    />
+                  </MapLibreGL.ShapeSource>
+                )}
+              </MapLibreGL.MapView>
+            ) : (
+              <View style={styles.mapLoading}>
+                <ActivityIndicator size="large" color={COLORS.unisBlue} />
+                <Text style={styles.mapLoadingText}>Loading map...</Text>
+              </View>
+            )}
           </View>
 
           {/* Jurisdiction List (Mobile-style, below map) */}
@@ -949,6 +974,17 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  mapLoading: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.subtleBlack,
+  },
+  mapLoadingText: {
+    color: COLORS.textGray,
+    marginTop: 10,
+    fontSize: 14,
   },
 
   // Jurisdiction List
