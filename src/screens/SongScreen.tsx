@@ -20,7 +20,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Heart, FileText, Share2, Flag, Ban, Link, UserPlus } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
-import * as Clipboard from 'expo-clipboard';
+import * as ExpoClipboard from 'expo-clipboard';
+
 
 import { usePlayer } from '../context/PlayerContext';
 

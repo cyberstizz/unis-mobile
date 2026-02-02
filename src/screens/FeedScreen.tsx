@@ -14,7 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
 import { LinearGradient } from 'expo-linear-gradient';
-
+import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
@@ -114,6 +114,8 @@ const FeedScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { playMedia } = usePlayer();
+  const navigation = useNavigation<any>();
+
 
   // State
   const [loading, setLoading] = useState(true);
@@ -257,8 +259,7 @@ const FeedScreen: React.FC = () => {
 
   // Navigation handlers
   const handleSongNav = (mediaId: string, type: string = 'song') => {
-    // navigation.navigate('Song', { songId: mediaId, type });
-    console.log('Navigate to song:', mediaId);
+     navigation.navigate('Song', { songId: mediaId, type });
   };
 
   const handleArtistNav = (artistId: string) => {
