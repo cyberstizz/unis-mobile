@@ -2,6 +2,7 @@
 // Interactive map-based music discovery - "The Hook Point"
 // Drill down through jurisdictions to find top artists and songs
 // Ported from web FindPage.jsx
+// Uses MapLibre (free, open source) with CartoDB dark tiles
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -17,17 +18,19 @@ import {
   Alert,
   Animated,
 } from 'react-native';
-import MapView, { Geojson, PROVIDER_DEFAULT } from 'react-native-maps';
+import MapLibreGL from '@maplibre/maplibre-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Play, Eye, ChevronLeft } from 'lucide-react-native';
+import { ChevronLeft } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance from '../services/axiosInstance';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
+
+// Initialize MapLibre
+MapLibreGL.setAccessToken(null); // No token needed for free tiles
 
 // =============================================================================
 // DESIGN TOKENS
@@ -43,9 +46,34 @@ const COLORS = {
   borderSilver: 'rgba(192, 192, 192, 0.2)',
 };
 
+// CartoDB Dark Tiles - same as your web Leaflet map!
+const CARTO_DARK_STYLE = {
+  version: 8,
+  sources: {
+    'carto-dark': {
+      type: 'raster',
+      tiles: [
+        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+      ],
+      tileSize: 256,
+    },
+  },
+  layers: [
+    {
+      id: 'carto-dark-layer',
+      type: 'raster',
+      source: 'carto-dark',
+      minzoom: 0,
+      maxzoom: 22,
+    },
+  ],
+};
+
 // US States GeoJSON URL (same as web app)
-const US_STATES_GEOJSON_URL = 
-  "https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json";
+const US_STATES_GEOJSON_URL =
+  'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
 
 // Active jurisdictions - only these have real data
 const ACTIVE_JURISDICTIONS = ['Harlem', 'Uptown Harlem', 'Downtown Harlem'];
@@ -53,7 +81,7 @@ const ACTIVE_JURISDICTIONS = ['Harlem', 'Uptown Harlem', 'Downtown Harlem'];
 // Harlem's parent chain - these show Harlem data
 const HARLEM_PARENT_CHAIN = [
   'Unis', 'New York', 'New York City Metro', 'New York City',
-  'Manhattan', 'Upper Manhattan', 'Harlem', 'Uptown Harlem', 'Downtown Harlem'
+  'Manhattan', 'Upper Manhattan', 'Harlem', 'Uptown Harlem', 'Downtown Harlem',
 ];
 
 // =============================================================================
@@ -179,7 +207,8 @@ interface TopResult {
 const FindScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { playMedia } = usePlayer();
-  const mapRef = useRef<MapView>(null);
+  const mapRef = useRef<MapLibreGL.MapView>(null);
+  const cameraRef = useRef<MapLibreGL.Camera>(null);
 
   // State
   const [userId, setUserId] = useState<string | null>(null);
@@ -191,7 +220,7 @@ const FindScreen: React.FC = () => {
 
   // Navigation
   const [navigationStack, setNavigationStack] = useState<NavigationItem[]>([
-    { name: 'United States', jurisdictionId: null, tier: 0 }
+    { name: 'United States', jurisdictionId: null, tier: 0 },
   ]);
   const [currentJurisdictions, setCurrentJurisdictions] = useState<Jurisdiction[]>([]);
   const [selectedJurisdiction, setSelectedJurisdiction] = useState<Jurisdiction | null>(null);
@@ -246,12 +275,12 @@ const FindScreen: React.FC = () => {
   // Fetch US GeoJSON on mount
   useEffect(() => {
     fetch(US_STATES_GEOJSON_URL)
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         console.log('US GeoJSON loaded successfully');
         setUsGeoData(data);
       })
-      .catch(err => console.error('Failed to load US states:', err));
+      .catch((err) => console.error('Failed to load US states:', err));
   }, []);
 
   // ==========================================================================
@@ -262,32 +291,21 @@ const FindScreen: React.FC = () => {
   const isActiveJurisdiction = (name: string) => ACTIVE_JURISDICTIONS.includes(name);
   const isAtUSLevel = () => navigationStack.length === 1;
 
-  const displayTerritory = selectedJurisdiction?.name ||
-    (navigationStack.length > 1 ? navigationStack[navigationStack.length - 1].name : 'Select a State');
+  const displayTerritory =
+    selectedJurisdiction?.name ||
+    (navigationStack.length > 1
+      ? navigationStack[navigationStack.length - 1].name
+      : 'Select a State');
 
   // ==========================================================================
-  // MAP REGION
+  // CAMERA POSITIONS
   // ==========================================================================
 
-  const getRegionForUS = () => ({
-    latitude: 39.8283,
-    longitude: -98.5795,
-    latitudeDelta: 35,
-    longitudeDelta: 35,
-  });
+  const US_CENTER = [-98.5795, 39.8283]; // [lng, lat]
+  const US_ZOOM = 3;
 
-  const getRegionForState = (stateName: string) => {
-    // Simplified - just zoom to NY for now
-    if (stateName === 'New York') {
-      return {
-        latitude: 42.5,
-        longitude: -75.5,
-        latitudeDelta: 6,
-        longitudeDelta: 6,
-      };
-    }
-    return getRegionForUS();
-  };
+  const NY_CENTER = [-75.5, 42.5];
+  const NY_ZOOM = 6;
 
   // ==========================================================================
   // EVENT HANDLERS
@@ -305,14 +323,18 @@ const FindScreen: React.FC = () => {
     // Navigate to NY
     setNavigationStack([
       { name: 'United States', jurisdictionId: null, tier: 0 },
-      { name: 'New York', jurisdictionId: 'new-york', tier: 2 }
+      { name: 'New York', jurisdictionId: 'new-york', tier: 2 },
     ]);
 
     // Load dummy children
     setCurrentJurisdictions(getDummyJurisdictions());
 
     // Animate map to NY
-    mapRef.current?.animateToRegion(getRegionForState('New York'), 1000);
+    cameraRef.current?.setCamera({
+      centerCoordinate: NY_CENTER,
+      zoomLevel: NY_ZOOM,
+      animationDuration: 1000,
+    });
 
     // Load results
     loadTopResults('New York');
@@ -325,7 +347,7 @@ const FindScreen: React.FC = () => {
     if (jurisdiction.hasChildren) {
       // Get children based on which jurisdiction was clicked
       let children: Jurisdiction[] = [];
-      
+
       switch (jurisdiction.name) {
         case 'New York City Metro':
           children = getDummyNYCChildren();
@@ -344,11 +366,14 @@ const FindScreen: React.FC = () => {
       }
 
       if (children.length > 0) {
-        setNavigationStack(prev => [...prev, {
-          name: jurisdiction.name,
-          jurisdictionId: jurisdiction.jurisdictionId,
-          tier: prev[prev.length - 1].tier + 1
-        }]);
+        setNavigationStack((prev) => [
+          ...prev,
+          {
+            name: jurisdiction.name,
+            jurisdictionId: jurisdiction.jurisdictionId,
+            tier: prev[prev.length - 1].tier + 1,
+          },
+        ]);
         setCurrentJurisdictions(children);
       }
     }
@@ -373,11 +398,16 @@ const FindScreen: React.FC = () => {
       setHasSelectedJurisdiction(false);
       setTopArtists([]);
       setTopSongs([]);
-      mapRef.current?.animateToRegion(getRegionForUS(), 1000);
+
+      cameraRef.current?.setCamera({
+        centerCoordinate: US_CENTER,
+        zoomLevel: US_ZOOM,
+        animationDuration: 1000,
+      });
     } else {
       // Get previous level's children
       let children: Jurisdiction[] = [];
-      
+
       switch (previousLevel.name) {
         case 'New York':
           children = getDummyJurisdictions();
@@ -395,7 +425,7 @@ const FindScreen: React.FC = () => {
           children = getDummyHarlemChildren();
           break;
       }
-      
+
       setCurrentJurisdictions(children);
       loadTopResults(previousLevel.name);
     }
@@ -404,7 +434,7 @@ const FindScreen: React.FC = () => {
   const handleRandom = () => {
     const states = [
       'New York', 'California', 'Texas', 'Florida', 'Illinois',
-      'Washington', 'Arizona', 'Colorado', 'Ohio', 'Georgia'
+      'Washington', 'Arizona', 'Colorado', 'Ohio', 'Georgia',
     ];
 
     setIsAnimating(true);
@@ -425,6 +455,18 @@ const FindScreen: React.FC = () => {
     }, 200);
   };
 
+  // Handle map feature press
+  const handleMapPress = (event: any) => {
+    const { features } = event;
+    if (features && features.length > 0) {
+      const feature = features[0];
+      const stateName = feature.properties?.name;
+      if (stateName) {
+        handleStatePress(stateName);
+      }
+    }
+  };
+
   // ==========================================================================
   // DATA LOADING
   // ==========================================================================
@@ -434,7 +476,7 @@ const FindScreen: React.FC = () => {
     fadeAnim.setValue(0);
 
     // Simulate API call with dummy data
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     setTopArtists(getDummyArtists());
     setTopSongs(getDummySongs());
@@ -473,7 +515,6 @@ const FindScreen: React.FC = () => {
 
   const handleView = (item: TopResult, type: 'artist' | 'song') => {
     console.log(`Navigate to ${type}:`, item.id);
-    // TODO: navigation.navigate(type === 'artist' ? 'Artist' : 'Song', { id: item.id });
   };
 
   // ==========================================================================
@@ -492,13 +533,15 @@ const FindScreen: React.FC = () => {
           styles.resultCard,
           {
             opacity: fadeAnim,
-            transform: [{
-              translateX: fadeAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [-20, 0],
-              })
-            }]
-          }
+            transform: [
+              {
+                translateX: fadeAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-20, 0],
+                }),
+              },
+            ],
+          },
         ]}
       >
         {/* Ambient glow background */}
@@ -516,29 +559,27 @@ const FindScreen: React.FC = () => {
           style={styles.glassContent}
         >
           {/* Rank */}
-          <Text style={styles.rank}>#{index + 1}</Text>
+          {!IS_MOBILE && <Text style={styles.rank}>#{index + 1}</Text>}
 
           {/* Artwork */}
           <Image source={{ uri: item.artwork }} style={styles.itemArtwork} />
 
           {/* Info */}
           <View style={styles.itemInfo}>
-            <Text style={styles.itemTitle} numberOfLines={1}>{title}</Text>
-            <Text style={styles.itemSubtitle} numberOfLines={1}>{subtitle}</Text>
+            <Text style={styles.itemTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={styles.itemSubtitle} numberOfLines={1}>
+              {subtitle}
+            </Text>
           </View>
 
           {/* Buttons */}
-          <TouchableOpacity
-            style={styles.playButton}
-            onPress={() => handlePlay(item)}
-          >
+          <TouchableOpacity style={styles.playButton} onPress={() => handlePlay(item)}>
             <Text style={styles.playButtonText}>Play</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.viewButton}
-            onPress={() => handleView(item, type)}
-          >
+          <TouchableOpacity style={styles.viewButton} onPress={() => handleView(item, type)}>
             <Text style={styles.viewButtonText}>View</Text>
           </TouchableOpacity>
         </LinearGradient>
@@ -562,10 +603,12 @@ const FindScreen: React.FC = () => {
         ]}
         onPress={() => handleJurisdictionClick(jurisdiction)}
       >
-        <Text style={[
-          styles.jurisdictionPillText,
-          isSelected && styles.jurisdictionPillTextSelected,
-        ]}>
+        <Text
+          style={[
+            styles.jurisdictionPillText,
+            isSelected && styles.jurisdictionPillTextSelected,
+          ]}
+        >
           {jurisdiction.name}
         </Text>
         {isActive && <Text style={styles.activeBadge}>●</Text>}
@@ -605,13 +648,13 @@ const FindScreen: React.FC = () => {
               onPress={() => setShowGenreDropdown(!showGenreDropdown)}
             >
               <Text style={styles.filterButtonText}>
-                {GENRES.find(g => g.value === genre)?.label || 'Rap'}
+                {GENRES.find((g) => g.value === genre)?.label || 'Rap'}
               </Text>
             </TouchableOpacity>
 
             {showGenreDropdown && (
               <View style={styles.filterDropdown}>
-                {GENRES.map(g => (
+                {GENRES.map((g) => (
                   <TouchableOpacity
                     key={g.value}
                     style={[styles.filterOption, genre === g.value && styles.filterOptionActive]}
@@ -620,10 +663,12 @@ const FindScreen: React.FC = () => {
                       setShowGenreDropdown(false);
                     }}
                   >
-                    <Text style={[
-                      styles.filterOptionText,
-                      genre === g.value && styles.filterOptionTextActive
-                    ]}>
+                    <Text
+                      style={[
+                        styles.filterOptionText,
+                        genre === g.value && styles.filterOptionTextActive,
+                      ]}
+                    >
                       {g.label}
                     </Text>
                   </TouchableOpacity>
@@ -659,43 +704,57 @@ const FindScreen: React.FC = () => {
 
           {/* Map Container */}
           <View style={styles.mapContainer}>
-            <MapView
+            <MapLibreGL.MapView
               ref={mapRef}
               style={styles.map}
-              provider={PROVIDER_DEFAULT}
-              initialRegion={getRegionForUS()}
-              scrollEnabled={false}
-              zoomEnabled={false}
-              rotateEnabled={false}
-              pitchEnabled={false}
-              mapType="standard"
-              customMapStyle={darkMapStyle}
+              styleJSON={JSON.stringify(CARTO_DARK_STYLE)}
+              logoEnabled={false}
+              attributionEnabled={false}
+              onPress={handleMapPress}
             >
-              {/* US States GeoJSON */}
+              <MapLibreGL.Camera
+                ref={cameraRef}
+                defaultSettings={{
+                  centerCoordinate: US_CENTER,
+                  zoomLevel: US_ZOOM,
+                }}
+              />
+
+              {/* US States GeoJSON Layer */}
               {usGeoData && isAtUSLevel() && (
-                <Geojson
-                  geojson={usGeoData}
-                  strokeColor="#999"
-                  fillColor="#EAEAEC"
-                  strokeWidth={1}
-                  tappable={true}
-                  onPress={(e: any) => {
-                    const feature = e.feature;
+                <MapLibreGL.ShapeSource
+                  id="us-states"
+                  shape={usGeoData}
+                  onPress={(e) => {
+                    const feature = e.features[0];
                     if (feature?.properties?.name) {
                       handleStatePress(feature.properties.name);
                     }
                   }}
-                />
+                >
+                  <MapLibreGL.FillLayer
+                    id="states-fill"
+                    style={{
+                      fillColor: '#EAEAEC',
+                      fillOpacity: 0.9,
+                    }}
+                  />
+                  <MapLibreGL.LineLayer
+                    id="states-border"
+                    style={{
+                      lineColor: '#999',
+                      lineWidth: 1,
+                    }}
+                  />
+                </MapLibreGL.ShapeSource>
               )}
-            </MapView>
+            </MapLibreGL.MapView>
           </View>
 
           {/* Jurisdiction List (Mobile-style, below map) */}
           {!isAtUSLevel() && currentJurisdictions.length > 0 && (
             <View style={styles.jurisdictionList}>
-              <Text style={styles.jurisdictionListTitle}>
-                Tap a region to explore:
-              </Text>
+              <Text style={styles.jurisdictionListTitle}>Tap a region to explore:</Text>
               <View style={styles.jurisdictionPills}>
                 {currentJurisdictions.map(renderJurisdictionPill)}
               </View>
@@ -715,9 +774,7 @@ const FindScreen: React.FC = () => {
               <>
                 {/* Top Songs */}
                 <View style={styles.resultsColumn}>
-                  <Text style={styles.resultsTitle}>
-                    Top Songs in {displayTerritory}
-                  </Text>
+                  <Text style={styles.resultsTitle}>Top Songs in {displayTerritory}</Text>
                   <View style={styles.resultsList}>
                     {topSongs.length > 0 ? (
                       topSongs.map((song, index) => renderResultCard(song, index, 'song'))
@@ -729,9 +786,7 @@ const FindScreen: React.FC = () => {
 
                 {/* Top Artists */}
                 <View style={styles.resultsColumn}>
-                  <Text style={styles.resultsTitle}>
-                    Top Artists in {displayTerritory}
-                  </Text>
+                  <Text style={styles.resultsTitle}>Top Artists in {displayTerritory}</Text>
                   <View style={styles.resultsList}>
                     {topArtists.length > 0 ? (
                       topArtists.map((artist, index) => renderResultCard(artist, index, 'artist'))
@@ -751,45 +806,6 @@ const FindScreen: React.FC = () => {
     </View>
   );
 };
-
-// =============================================================================
-// DARK MAP STYLE (matches web CartoDB dark tiles)
-// =============================================================================
-const darkMapStyle = [
-  { elementType: 'geometry', stylers: [{ color: '#1a1a1a' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#1a1a1a' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#757575' }] },
-  {
-    featureType: 'administrative',
-    elementType: 'geometry.stroke',
-    stylers: [{ color: '#333333' }],
-  },
-  {
-    featureType: 'administrative.land_parcel',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'administrative.neighborhood',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'poi',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'road',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'transit',
-    stylers: [{ visibility: 'off' }],
-  },
-  {
-    featureType: 'water',
-    elementType: 'geometry',
-    stylers: [{ color: '#0e0e0e' }],
-  },
-];
 
 // =============================================================================
 // STYLES
@@ -1047,10 +1063,9 @@ const styles = StyleSheet.create({
     gap: IS_MOBILE ? 10 : 15,
   },
   rank: {
-    fontSize: IS_MOBILE ? 18 : 24,
+    fontSize: 24,
     color: 'rgba(255, 255, 255, 0.4)',
-    minWidth: IS_MOBILE ? 30 : 40,
-    display: IS_MOBILE ? 'none' : 'flex',
+    minWidth: 40,
   },
   itemArtwork: {
     width: IS_MOBILE ? 45 : 60,
