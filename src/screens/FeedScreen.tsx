@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -262,9 +261,9 @@ const FeedScreen: React.FC = () => {
      navigation.navigate('Song', { songId: mediaId, type });
   };
 
+  // ✅ UNCOMMENTED - Navigate to ArtistScreen
   const handleArtistNav = (artistId: string) => {
-    // navigation.navigate('Artist', { artistId });
-    console.log('Navigate to artist:', artistId);
+    navigation.navigate('Artist', { artistId });
   };
 
   // Play media handler

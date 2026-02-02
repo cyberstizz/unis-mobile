@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,8 +14,8 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
-import { Users, Heart, PlayCircle, Instagram, Music2 } from 'lucide-react-native';
-import { PlayerContext } from '../context/PlayerContext';
+import { Users, Heart, PlayCircle, Camera, Music2 } from 'lucide-react-native';
+import { usePlayer } from '../context/PlayerContext';
 // import { AuthContext } from '../context/AuthContext';
 // import axiosInstance from '../services/axiosInstance';
 
@@ -129,7 +129,7 @@ interface ArtistScreenProps {
 const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => {
   const route = useRoute();
   const navigation = useNavigation<any>();
-  const { playMedia } = useContext(PlayerContext);
+  const { playMedia } = usePlayer();
 
   // Get artistId from route params
   const artistId = (route.params as any)?.artistId || 'artist-001';
@@ -529,7 +529,7 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
                   onPress={() => handleSocialLink(artist.instagramUrl)}
                 >
                   <View style={[styles.socialIcon, styles.instagramIcon]}>
-                    <Instagram size={18} color={COLORS.accentWhite} />
+                    <Camera size={18} color={COLORS.accentWhite} />
                   </View>
                   <Text style={styles.socialLinkText}>Instagram</Text>
                 </TouchableOpacity>

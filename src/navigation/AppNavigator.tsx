@@ -17,6 +17,7 @@ import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 import FindScreen from '../screens/FindScreen';
 import SongScreen from '../screens/SongScreen';
+import ArtistScreen from '../screens/ArtistScreen'; // ✅ NEW
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -29,7 +30,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 export type RootStackParamList = {
   Feed: undefined;
   Song: { songId: string; type?: string };
-  Artist: { artistId: string };
+  Artist: { artistId: string }; // ✅ Already defined
   VoteAwards: undefined;
   Find: undefined;
   Leaderboards: undefined;
@@ -72,6 +73,7 @@ const MainStack = () => {
     >
       <Stack.Screen name="Feed" component={FeedScreen} />
       <Stack.Screen name="Song" component={SongScreen} />
+      <Stack.Screen name="Artist" component={ArtistScreen} />
     </Stack.Navigator>
   );
 };
