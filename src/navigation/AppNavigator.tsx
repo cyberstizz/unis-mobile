@@ -15,6 +15,7 @@ import {
 import FeedScreen from '../screens/FeedScreen';
 import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
+import FindScreen from '../screens/FindScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -104,6 +105,12 @@ const VoteAwardsWithHeader = () => (
   </LayoutWrapper>
 );
 
+const FindScreenWithHeader = () => (
+  <LayoutWrapper>
+    <FindScreen />
+  </LayoutWrapper>
+);
+
 // Drawer Navigator
 const AppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -150,7 +157,7 @@ const AppNavigator = () => {
         >
           <Drawer.Screen name="Home" component={MainStackWithHeader} />
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
-          <Drawer.Screen name="Find" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Find" component={FindScreenWithHeader} />
           <Drawer.Screen name="Leaderboards" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
