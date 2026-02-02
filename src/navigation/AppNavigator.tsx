@@ -16,6 +16,7 @@ import FeedScreen from '../screens/FeedScreen';
 import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 import FindScreen from '../screens/FindScreen';
+import SongScreen from '../screens/SongScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -70,6 +71,7 @@ const MainStack = () => {
       }}
     >
       <Stack.Screen name="Feed" component={FeedScreen} />
+      <Stack.Screen name="Song" component={SongScreen} />
     </Stack.Navigator>
   );
 };
