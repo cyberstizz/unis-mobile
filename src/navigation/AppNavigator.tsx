@@ -126,6 +126,12 @@ const LeaderboardsWithHeader = () => (
   </LayoutWrapper>
 );
 
+const MilestonesWithHeader = () => (
+  <LayoutWrapper>
+    <MilestonesScreen />
+  </LayoutWrapper>
+);
+
 // Drawer Navigator
 const AppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -177,7 +183,7 @@ const AppNavigator = () => {
           <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
-          <Drawer.Screen name="Milestones" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Milestones" component={MilestonesWithHeader} />
           <Drawer.Screen name="Artist" component={PlaceholderWithHeader} />
         </Drawer.Navigator>
       </NavigationContainer>
