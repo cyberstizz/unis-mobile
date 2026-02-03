@@ -12,13 +12,12 @@ import {
   Modal,
   FlatList,
   Pressable,
-  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ChevronDown, Calendar, Trophy, Play, Heart, Vote } from 'lucide-react-native';
+import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { usePlayer } from '../context/PlayerContext';
+import IntervalDatePicker from '../components/IntervalDatePicker';
 // import axiosInstance from '../services/axiosInstance';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/idMappings';
 
@@ -267,7 +266,7 @@ interface DisplayedContext {
   genre: string;
   category: string;
   interval: string;
-  selectedDate: Date;
+  selectedDate: string;
 }
 
 // ============================================================================
@@ -281,11 +280,8 @@ const MilestonesScreen: React.FC = () => {
   const [location, setLocation] = useState('downtown-harlem');
   const [genre, setGenre] = useState('rap');
   const [category, setCategory] = useState<'artist' | 'song'>('artist');
-  const [interval, setInterval] = useState('daily');
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
-
-  // Date picker state
-  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [interval, setInterval] = useState<'daily' | 'weekly' | 'monthly' | 'quarterly' | 'midterm' | 'annual'>('daily');
+  const [selectedDate, setSelectedDate] = useState<string>('');
 
   // Display state (frozen when View is clicked)
   const [displayedContext, setDisplayedContext] = useState<DisplayedContext | null>(null);
@@ -301,13 +297,23 @@ const MilestonesScreen: React.FC = () => {
   // Fallback image
   const fallbackImage = require('../../assets/randomrapper.jpeg');
 
-  // Max/Min dates
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const maxDate = interval === 'annual'
-    ? new Date(new Date().getFullYear() - 1, 11, 31)
-    : yesterday;
-  const minDate = new Date(2025, 9, 26); // Oct 26, 2025
+  // Max/Min dates as strings (YYYY-MM-DD)
+  const getMaxDate = (): string => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    if (interval === 'annual') {
+      const lastYear = new Date().getFullYear() - 1;
+      return `${lastYear}-12-31`;
+    }
+    
+    const year = yesterday.getFullYear();
+    const month = String(yesterday.getMonth() + 1).padStart(2, '0');
+    const day = String(yesterday.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  
+  const minDate = '2025-10-26';
 
   // ============================================================================
   // CUSTOM DROPDOWN COMPONENT
@@ -417,7 +423,7 @@ const MilestonesScreen: React.FC = () => {
       // const jurId = JURISDICTION_IDS[location];
       // const genreId = GENRE_IDS[genre];
       // const intervalId = INTERVAL_IDS[interval];
-      // const { startDate, endDate } = getDateRangeForInterval(selectedDate, interval);
+      // const { startDate, endDate } = getDateRangeForInterval(parseDateString(selectedDate), interval);
       //
       // const response = await axiosInstance.get(
       //   `/v1/awards/past?type=${category}&startDate=${startDate}&endDate=${endDate}&jurisdictionId=${jurId}&genreId=${genreId}&intervalId=${intervalId}`
@@ -501,7 +507,11 @@ const MilestonesScreen: React.FC = () => {
     const genreText = formatGenre(displayedContext.genre);
     const categoryText = formatCategory(displayedContext.category);
     const intervalText = getIntervalText(displayedContext.interval);
-    const dateText = formatDateDisplay(displayedContext.selectedDate, displayedContext.interval);
+    
+    // Parse the string date
+    const [year, month, day] = displayedContext.selectedDate.split('-').map(Number);
+    const dateObj = new Date(year, month - 1, day);
+    const dateText = formatDateDisplay(dateObj, displayedContext.interval);
 
     return (
       <View style={styles.captionContainer}>
@@ -655,16 +665,14 @@ const MilestonesScreen: React.FC = () => {
                 onSelect={setInterval}
               />
 
-              {/* Date Picker Button */}
-              <TouchableOpacity
-                style={styles.datePickerButton}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <Calendar size={18} color={COLORS.accentWhite} />
-                <Text style={styles.datePickerButtonText}>
-                  {formatSelectedDateDisplay()}
-                </Text>
-              </TouchableOpacity>
+              {/* Interval-Aware Date Picker */}
+              <IntervalDatePicker
+                interval={interval}
+                value={selectedDate}
+                onChange={setSelectedDate}
+                maxDate={getMaxDate()}
+                minDate={minDate}
+              />
 
               {/* View Button */}
               <TouchableOpacity
@@ -678,18 +686,6 @@ const MilestonesScreen: React.FC = () => {
               </TouchableOpacity>
             </View>
           </View>
-
-          {/* Date Picker Modal (Android) */}
-          {showDatePicker && (
-            <DateTimePicker
-              value={selectedDate || new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={handleDateChange}
-              maximumDate={maxDate}
-              minimumDate={minDate}
-            />
-          )}
 
           {/* Caption */}
           {renderCaption()}
@@ -826,24 +822,6 @@ const styles = StyleSheet.create({
   dropdownOptionTextSelected: {
     color: COLORS.accentWhite,
     fontWeight: '600',
-  },
-
-  // Date Picker Button
-  datePickerButton: {
-    backgroundColor: COLORS.bgBlack,
-    borderRadius: IS_MOBILE ? 12 : 50,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    width: IS_MOBILE ? '100%' : 'auto',
-  },
-  datePickerButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: 14,
   },
 
   // View Button
