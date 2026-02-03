@@ -18,7 +18,7 @@ import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 import FindScreen from '../screens/FindScreen';
 import SongScreen from '../screens/SongScreen';
 import ArtistScreen from '../screens/ArtistScreen';
-import LeaderboardsScreen from '../screens/LeaderboardsScreen';
+import LeaderboardsScreen from '../screens/Leaderboardsscreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';

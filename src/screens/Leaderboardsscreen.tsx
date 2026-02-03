@@ -9,9 +9,12 @@ import {
   Dimensions,
   ActivityIndicator,
   ImageBackground,
+  Modal,
+  FlatList,
+  Pressable,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Picker } from '@react-native-picker/picker';
+import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
@@ -257,33 +260,79 @@ const LeaderboardsScreen: React.FC = () => {
   };
 
   // ============================================================================
-  // RENDER FILTER PICKER
+  // CUSTOM DROPDOWN COMPONENT
   // ============================================================================
-  const renderPicker = (
-    value: string,
-    onValueChange: (value: string) => void,
-    options: { label: string; value: string }[]
-  ) => (
-    <View style={styles.pickerContainer}>
-      <Picker
-        selectedValue={value}
-        onValueChange={onValueChange}
-        style={styles.picker}
-        dropdownIconColor={COLORS.accentWhite}
-        mode="dropdown"
-      >
-        {options.map((option) => (
-          <Picker.Item
-            key={option.value}
-            label={option.label}
-            value={option.value}
-            color={COLORS.accentWhite}
-            style={styles.pickerItem}
-          />
-        ))}
-      </Picker>
-    </View>
-  );
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+
+  const CustomDropdown = ({
+    id,
+    value,
+    options,
+    onSelect,
+  }: {
+    id: string;
+    value: string;
+    options: { label: string; value: string }[];
+    onSelect: (value: string) => void;
+  }) => {
+    const selectedOption = options.find((opt) => opt.value === value);
+    const isOpen = activeDropdown === id;
+
+    return (
+      <View style={styles.dropdownWrapper}>
+        <TouchableOpacity
+          style={styles.dropdownButton}
+          onPress={() => setActiveDropdown(isOpen ? null : id)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.dropdownButtonText}>
+            {selectedOption?.label || 'Select...'}
+          </Text>
+          <ChevronDown size={18} color={COLORS.accentWhite} />
+        </TouchableOpacity>
+
+        <Modal
+          visible={isOpen}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setActiveDropdown(null)}
+        >
+          <Pressable
+            style={styles.modalOverlay}
+            onPress={() => setActiveDropdown(null)}
+          >
+            <View style={styles.dropdownModal}>
+              <FlatList
+                data={options}
+                keyExtractor={(item) => item.value}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.dropdownOption,
+                      item.value === value && styles.dropdownOptionSelected,
+                    ]}
+                    onPress={() => {
+                      onSelect(item.value);
+                      setActiveDropdown(null);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.dropdownOptionText,
+                        item.value === value && styles.dropdownOptionTextSelected,
+                      ]}
+                    >
+                      {item.label}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          </Pressable>
+        </Modal>
+      </View>
+    );
+  };
 
   // ============================================================================
   // RENDER RESULT ITEM
@@ -353,17 +402,37 @@ const LeaderboardsScreen: React.FC = () => {
           {/* Filter Card */}
           <View style={styles.filterCard}>
             <View style={styles.filterControls}>
-              {/* Location Picker */}
-              {renderPicker(location, setLocation, LOCATION_OPTIONS)}
+              {/* Location Dropdown */}
+              <CustomDropdown
+                id="location"
+                value={location}
+                options={LOCATION_OPTIONS}
+                onSelect={setLocation}
+              />
 
-              {/* Genre Picker */}
-              {renderPicker(genre, setGenre, GENRE_OPTIONS)}
+              {/* Genre Dropdown */}
+              <CustomDropdown
+                id="genre"
+                value={genre}
+                options={GENRE_OPTIONS}
+                onSelect={setGenre}
+              />
 
-              {/* Category Picker */}
-              {renderPicker(category, (val) => setCategory(val as 'artist' | 'song'), CATEGORY_OPTIONS)}
+              {/* Category Dropdown */}
+              <CustomDropdown
+                id="category"
+                value={category}
+                options={CATEGORY_OPTIONS}
+                onSelect={(val) => setCategory(val as 'artist' | 'song')}
+              />
 
-              {/* Interval Picker */}
-              {renderPicker(interval, setInterval, INTERVAL_OPTIONS)}
+              {/* Interval Dropdown */}
+              <CustomDropdown
+                id="interval"
+                value={interval}
+                options={INTERVAL_OPTIONS}
+                onSelect={setInterval}
+              />
 
               {/* View Current Button */}
               <TouchableOpacity
@@ -450,25 +519,62 @@ const styles = StyleSheet.create({
     gap: IS_MOBILE ? 12 : 15,
   },
 
-  // Picker
-  pickerContainer: {
+  // Custom Dropdown
+  dropdownWrapper: {
+    width: IS_MOBILE ? '100%' : 'auto',
+    minWidth: IS_MOBILE ? undefined : 150,
+    zIndex: 1,
+  },
+  dropdownButton: {
     backgroundColor: COLORS.bgBlack,
     borderRadius: IS_MOBILE ? 12 : 50,
     borderWidth: 1,
     borderColor: COLORS.borderSilver,
-    overflow: 'hidden',
-    width: IS_MOBILE ? '100%' : 'auto',
-    minWidth: IS_MOBILE ? undefined : 140,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
   },
-  picker: {
+  dropdownButtonText: {
     color: COLORS.accentWhite,
-    height: 45,
-    width: '100%',
-    backgroundColor: 'transparent',
-  },
-  pickerItem: {
-    backgroundColor: COLORS.bgBlack,
     fontSize: 14,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  dropdownModal: {
+    backgroundColor: COLORS.subtleBlack,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.unisBlue,
+    width: '80%',
+    maxWidth: 300,
+    maxHeight: 300,
+    overflow: 'hidden',
+  },
+  dropdownOption: {
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(192, 192, 192, 0.1)',
+  },
+  dropdownOptionSelected: {
+    backgroundColor: COLORS.unisBlue,
+  },
+  dropdownOptionText: {
+    color: COLORS.textSilver,
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  dropdownOptionTextSelected: {
+    color: COLORS.accentWhite,
+    fontWeight: '600',
   },
 
   // View Current Button
