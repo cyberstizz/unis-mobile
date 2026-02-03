@@ -19,6 +19,8 @@ import FindScreen from '../screens/FindScreen';
 import SongScreen from '../screens/SongScreen';
 import ArtistScreen from '../screens/ArtistScreen';
 import LeaderboardsScreen from '../screens/Leaderboardsscreen';
+import MilestonesScreen from '../screens/Milestonesscreen';
+
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -76,6 +78,7 @@ const MainStack = () => {
       <Stack.Screen name="Song" component={SongScreen} />
       <Stack.Screen name="Artist" component={ArtistScreen} />
       <Stack.Screen name="Leaderboards" component={LeaderboardsScreen} />
+      <Stack.Screen name="Milestones" component={MilestonesScreen} />
     </Stack.Navigator>
   );
 };
