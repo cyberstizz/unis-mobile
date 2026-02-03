@@ -17,7 +17,8 @@ import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 import FindScreen from '../screens/FindScreen';
 import SongScreen from '../screens/SongScreen';
-import ArtistScreen from '../screens/ArtistScreen'; // ✅ NEW
+import ArtistScreen from '../screens/ArtistScreen';
+import LeaderboardsScreen from '../screens/LeaderboardsScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -74,6 +75,7 @@ const MainStack = () => {
       <Stack.Screen name="Feed" component={FeedScreen} />
       <Stack.Screen name="Song" component={SongScreen} />
       <Stack.Screen name="Artist" component={ArtistScreen} />
+      <Stack.Screen name="Leaderboards" component={LeaderboardsScreen} />
     </Stack.Navigator>
   );
 };
@@ -112,6 +114,12 @@ const VoteAwardsWithHeader = () => (
 const FindScreenWithHeader = () => (
   <LayoutWrapper>
     <FindScreen />
+  </LayoutWrapper>
+);
+
+const LeaderboardsWithHeader = () => (
+  <LayoutWrapper>
+    <LeaderboardsScreen />
   </LayoutWrapper>
 );
 
@@ -162,7 +170,7 @@ const AppNavigator = () => {
           <Drawer.Screen name="Home" component={MainStackWithHeader} />
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={FindScreenWithHeader} />
-          <Drawer.Screen name="Leaderboards" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Leaderboards" component={LeaderboardsWithHeader} />
           <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
