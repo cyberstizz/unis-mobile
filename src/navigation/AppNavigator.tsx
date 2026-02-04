@@ -18,6 +18,7 @@ import ArtistScreen from '../screens/ArtistScreen';
 import LeaderboardsScreen from '../screens/Leaderboardsscreen';
 import MilestonesScreen from '../screens/Milestonesscreen';
 import JurisdictionScreen from '../screens/JurisdictionScreen';
+import ArtistDashboardScreen from '../screens/ArtistdashboardScreen';
 
 
 // Components
@@ -79,6 +80,7 @@ const MainStack = () => {
       <Stack.Screen name="Leaderboards" component={LeaderboardsScreen} />
       <Stack.Screen name="Milestones" component={MilestonesScreen} />
       <Stack.Screen name="Jurisdiction" component={JurisdictionScreen} />
+      <Stack.Screen name="ArtistDashboard" component={ArtistDashboardScreen} />
     </Stack.Navigator>
   );
 };
@@ -132,6 +134,20 @@ const MilestonesWithHeader = () => (
   </LayoutWrapper>
 );
 
+const ArtistDashboardWithHeader = () => (
+  <LayoutWrapper>
+    <ArtistDashboardScreen />
+  </LayoutWrapper>
+);
+
+const JurisdictionScreenWithHeader = () => (
+  <LayoutWrapper>
+    <JurisdictionScreen />
+  </LayoutWrapper>
+);
+
+
+
 // Drawer Navigator
 const AppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -180,11 +196,11 @@ const AppNavigator = () => {
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={FindScreenWithHeader} />
           <Drawer.Screen name="Leaderboards" component={LeaderboardsWithHeader} />
-          <Drawer.Screen name="Settings" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Settings" component={ArtistDashboardWithHeader} />
           <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Milestones" component={MilestonesWithHeader} />
-          <Drawer.Screen name="Artist" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Artist" component={ArtistDashboardWithHeader} />
         </Drawer.Navigator>
       </NavigationContainer>
 

@@ -440,9 +440,9 @@ const ArtistDashboardScreen: React.FC = () => {
           </Modal>
 
           {/* Header */}
-          <View style={styles.header}>
+          {/* <View style={styles.header}>
             <Text style={styles.headerTitle}>Dashboard</Text>
-          </View>
+          </View> */}
 
           {/* Profile Section */}
           <View style={styles.card}>
