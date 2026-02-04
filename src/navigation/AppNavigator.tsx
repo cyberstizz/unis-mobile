@@ -1,6 +1,3 @@
-// src/navigation/AppNavigator.tsx
-// Main navigation structure - Drawer + Stack navigators with Header
-
 import React, { useState, useRef, useCallback } from 'react';
 import { View, StyleSheet, Dimensions } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
@@ -20,6 +17,7 @@ import SongScreen from '../screens/SongScreen';
 import ArtistScreen from '../screens/ArtistScreen';
 import LeaderboardsScreen from '../screens/Leaderboardsscreen';
 import MilestonesScreen from '../screens/Milestonesscreen';
+import JurisdictionScreen from '../screens/JurisdictionScreen';
 
 
 // Components
@@ -42,6 +40,7 @@ export type RootStackParamList = {
   Profile: undefined;
   ArtistDashboard: undefined;
   Settings: undefined;
+  Jurisdiction: undefined;
 };
 
 export type DrawerParamList = {
@@ -79,6 +78,7 @@ const MainStack = () => {
       <Stack.Screen name="Artist" component={ArtistScreen} />
       <Stack.Screen name="Leaderboards" component={LeaderboardsScreen} />
       <Stack.Screen name="Milestones" component={MilestonesScreen} />
+      <Stack.Screen name="Jurisdiction" component={JurisdictionScreen} />
     </Stack.Navigator>
   );
 };
