@@ -11,12 +11,11 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Modal,
-  Pressable,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Video, ResizeMode } from 'expo-av';
 import { useAuth } from '../context/AuthContext';
+import CreateAccountWizard from '../components/CreateAccountWizard';
 
 // ============================================================================
 // COLORS
@@ -49,11 +48,6 @@ const LoginScreen: React.FC = () => {
 
   // Create account wizard state
   const [showCreateAccount, setShowCreateAccount] = useState(false);
-  const [registerEmail, setRegisterEmail] = useState('');
-  const [registerPassword, setRegisterPassword] = useState('');
-  const [registerUsername, setRegisterUsername] = useState('');
-  const [registerLoading, setRegisterLoading] = useState(false);
-  const [registerError, setRegisterError] = useState('');
 
   // Logo
   const unisLogo = require('../../assets/UnisFireFinal.png');
@@ -80,37 +74,6 @@ const LoginScreen: React.FC = () => {
       setError('Login failed. Please try again.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleCreateAccount = async () => {
-    if (!registerUsername || !registerEmail || !registerPassword) {
-      setRegisterError('Please fill in all fields');
-      return;
-    }
-
-    setRegisterError('');
-    setRegisterLoading(true);
-
-    try {
-      // TODO: Implement actual registration
-      // await register({ email: registerEmail, password: registerPassword, username: registerUsername });
-      
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      
-      // For now, just close the modal and show success
-      setShowCreateAccount(false);
-      setRegisterEmail('');
-      setRegisterPassword('');
-      setRegisterUsername('');
-      
-      // Auto-fill login form with registered email
-      setEmail(registerEmail);
-    } catch (err) {
-      setRegisterError('Registration failed. Please try again.');
-    } finally {
-      setRegisterLoading(false);
     }
   };
 
@@ -206,85 +169,15 @@ const LoginScreen: React.FC = () => {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Create Account Modal (Simple Registration) */}
-      <Modal visible={showCreateAccount} transparent animationType="fade">
-        <Pressable style={styles.modalOverlay} onPress={() => setShowCreateAccount(false)}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.modalKeyboardView}
-          >
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              {/* Modal Header */}
-              <Text style={styles.modalTitle}>Create Account</Text>
-              <Text style={styles.modalSubtitle}>Join the UNIS community</Text>
-
-              {/* Register Error */}
-              {registerError ? <Text style={styles.errorText}>{registerError}</Text> : null}
-
-              {/* Username Input */}
-              <TextInput
-                style={styles.input}
-                placeholder="Username"
-                placeholderTextColor={COLORS.textGray}
-                value={registerUsername}
-                onChangeText={setRegisterUsername}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!registerLoading}
-              />
-
-              {/* Email Input */}
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor={COLORS.textGray}
-                value={registerEmail}
-                onChangeText={setRegisterEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!registerLoading}
-              />
-
-              {/* Password Input */}
-              <TextInput
-                style={styles.input}
-                placeholder="Password"
-                placeholderTextColor={COLORS.textGray}
-                value={registerPassword}
-                onChangeText={setRegisterPassword}
-                secureTextEntry
-                autoCapitalize="none"
-                editable={!registerLoading}
-              />
-
-              {/* Register Button */}
-              <TouchableOpacity
-                style={[styles.loginButton, registerLoading && styles.buttonDisabled]}
-                onPress={handleCreateAccount}
-                disabled={registerLoading}
-                activeOpacity={0.8}
-              >
-                {registerLoading ? (
-                  <ActivityIndicator color={COLORS.cardBg} size="small" />
-                ) : (
-                  <Text style={styles.loginButtonText}>Create Account</Text>
-                )}
-              </TouchableOpacity>
-
-              {/* Cancel Button */}
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={() => setShowCreateAccount(false)}
-                disabled={registerLoading}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </KeyboardAvoidingView>
-        </Pressable>
-      </Modal>
+      {/* Create Account Wizard */}
+      <CreateAccountWizard
+        visible={showCreateAccount}
+        onClose={() => setShowCreateAccount(false)}
+        onSuccess={() => {
+          setShowCreateAccount(false);
+          // Could auto-fill email or show success message
+        }}
+      />
     </View>
   );
 };
@@ -411,48 +304,6 @@ const styles = StyleSheet.create({
   // Disabled Button
   buttonDisabled: {
     opacity: 0.6,
-  },
-
-  // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalKeyboardView: {
-    width: '100%',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalCard: {
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 16,
-    padding: 32,
-    width: '100%',
-    maxWidth: 380,
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.unisBlue,
-    marginBottom: 8,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    marginBottom: 24,
-  },
-
-  // Cancel Button
-  cancelButton: {
-    marginTop: 12,
-    paddingVertical: 10,
-  },
-  cancelButtonText: {
-    color: COLORS.textGray,
-    fontSize: 14,
   },
 });
 
