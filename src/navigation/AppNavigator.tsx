@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, StyleSheet, Dimensions, ActivityIndicator, Text } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import {
@@ -8,7 +8,11 @@ import {
   DrawerActions,
 } from '@react-navigation/native';
 
+// Auth - import from your existing AuthContext
+import { useAuth } from '../context/AuthContext';
+
 // Screens
+import LoginScreen from '../screens/Loginscreen';
 import FeedScreen from '../screens/FeedScreen';
 import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
@@ -20,8 +24,7 @@ import MilestonesScreen from '../screens/Milestonesscreen';
 import JurisdictionScreen from '../screens/JurisdictionScreen';
 import ArtistDashboardScreen from '../screens/ArtistdashboardScreen';
 import ProfileScreen from '../screens/ProfileScreen';
-
-
+import EarningsScreen from '../screens/Earningsscreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -34,7 +37,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 export type RootStackParamList = {
   Feed: undefined;
   Song: { songId: string; type?: string };
-  Artist: { artistId: string }; // ✅ Already defined
+  Artist: { artistId: string };
   VoteAwards: undefined;
   Find: undefined;
   Leaderboards: undefined;
@@ -56,12 +59,13 @@ export type DrawerParamList = {
   Playlists: undefined;
   Milestones: undefined;
   Artist: undefined;
+  Profile: undefined;
 };
 
 const Drawer = createDrawerNavigator<DrawerParamList>();
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-// Placeholder screens - we'll build these out
+// Placeholder screens
 const PlaceholderScreen = () => {
   return <HomeScreen />;
 };
@@ -143,22 +147,32 @@ const ArtistDashboardWithHeader = () => (
   </LayoutWrapper>
 );
 
-const JurisdictionScreenWithHeader = () => (
+const ProfileScreenWithHeader = () => (
   <LayoutWrapper>
-    <JurisdictionScreen />
+    <ProfileScreen />
   </LayoutWrapper>
 );
 
+const EarningsScreenWithHeader = () => (
+  <LayoutWrapper>
+    <EarningsScreen />
+  </LayoutWrapper>
+);
 
+// Loading screen while checking auth
+const LoadingScreen = () => (
+  <View style={styles.loadingContainer}>
+    <ActivityIndicator size="large" color="#163387" />
+    <Text style={styles.loadingText}>Loading...</Text>
+  </View>
+);
 
-// Drawer Navigator
-const AppNavigator = () => {
+// Main App Navigator with Drawer (only shown when authenticated)
+const MainAppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
 
-  // Track drawer state to hide/show trigger
   const handleStateChange = useCallback((state: any) => {
-    // Check if drawer is open by looking at navigation state
     const drawerState = state?.routes?.[0]?.state;
     if (drawerState) {
       const isOpen = drawerState.history?.some(
@@ -170,7 +184,6 @@ const AppNavigator = () => {
     }
   }, []);
 
-  // Open drawer via ref
   const openDrawer = useCallback(() => {
     navigationRef.current?.dispatch(DrawerActions.openDrawer());
   }, []);
@@ -199,20 +212,46 @@ const AppNavigator = () => {
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={FindScreenWithHeader} />
           <Drawer.Screen name="Leaderboards" component={LeaderboardsWithHeader} />
+          <Drawer.Screen name="Profile" component={ProfileScreenWithHeader} />
           <Drawer.Screen name="Settings" component={ArtistDashboardWithHeader} />
-          <Drawer.Screen name="Earnings" component={PlaceholderWithHeader} />
+          <Drawer.Screen name="Earnings" component={EarningsScreenWithHeader} />
           <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Milestones" component={MilestonesWithHeader} />
           <Drawer.Screen name="Artist" component={ArtistDashboardWithHeader} />
         </Drawer.Navigator>
       </NavigationContainer>
 
-      {/* Drawer Trigger Arrow - positioned on left edge, hides when drawer is open */}
       {!isDrawerOpen && (
         <DrawerTrigger onPress={openDrawer} />
       )}
     </View>
   );
+};
+
+// ============================================================================
+// ROOT NAVIGATOR - This is the key part that checks auth state!
+// ============================================================================
+const AppNavigator = () => {
+  const { user, loading } = useAuth();
+
+  console.log('AppNavigator - loading:', loading, 'user:', user ? user.username : 'null');
+
+  // Show loading screen while checking auth status
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  // If no user, show login screen (NOT inside NavigationContainer here)
+  if (!user) {
+    return (
+      <NavigationContainer>
+        <LoginScreen />
+      </NavigationContainer>
+    );
+  }
+
+  // User is authenticated, show main app with drawer
+  return <MainAppNavigator />;
 };
 
 const styles = StyleSheet.create({
@@ -225,6 +264,17 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#000',
+  },
+  loadingText: {
+    color: '#fff',
+    marginTop: 16,
+    fontSize: 16,
   },
 });
 

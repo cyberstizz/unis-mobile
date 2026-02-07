@@ -11,11 +11,13 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Video, ResizeMode } from 'expo-av';
 import { useAuth } from '../context/AuthContext';
-import CreateAccountWizard from '../components/CreateAccountWizard';
+// Temporarily disabled to debug
+// import CreateAccountWizard from '../components/CreateAccountWizard';
 
 // ============================================================================
 // COLORS
@@ -50,7 +52,7 @@ const LoginScreen: React.FC = () => {
   const [showCreateAccount, setShowCreateAccount] = useState(false);
 
   // Logo
-  const unisLogo = require('../../assets/UnisFireFinal.png');
+  const unisLogo = require('../../assets/unisLogoThree.svg');
 
   // ============================================================================
   // HANDLERS
@@ -169,15 +171,18 @@ const LoginScreen: React.FC = () => {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Create Account Wizard */}
-      <CreateAccountWizard
-        visible={showCreateAccount}
-        onClose={() => setShowCreateAccount(false)}
-        onSuccess={() => {
-          setShowCreateAccount(false);
-          // Could auto-fill email or show success message
-        }}
-      />
+      {/* Create Account - Temporarily showing alert instead of wizard */}
+      {showCreateAccount && (
+        // Show alert and close
+        (() => {
+          Alert.alert(
+            'Coming Soon',
+            'Account creation wizard is being configured. Please try again later.',
+            [{ text: 'OK', onPress: () => setShowCreateAccount(false) }]
+          );
+          return null;
+        })()
+      )}
     </View>
   );
 };

@@ -30,7 +30,7 @@ const getBaseUrl = (): string => {
   return 'https://your-production-api.com/api';
 };
 
-const API_BASE_URL = getBaseUrl();
+const API_BASE_URL = 'http://192.168.1.154:8080'; 
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
