@@ -6,22 +6,13 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal",
-      "install": {
-        "command": "npm install"
-      }
+      "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal",
-      "install": {
-        "command": "npm install"
-      }
+      "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true,
-      "install": {
-        "command": "npm install"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {

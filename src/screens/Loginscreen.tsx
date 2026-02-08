@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import UnisLogo from '../../assets/unisLogoThree.svg';
 import {
   View,
   Text,
@@ -51,8 +52,16 @@ const LoginScreen: React.FC = () => {
   // Create account wizard state
   const [showCreateAccount, setShowCreateAccount] = useState(false);
 
-  // Logo
-  const unisLogo = require('../../assets/unisLogoThree.svg');
+  useEffect(() => {
+  if (showCreateAccount) {
+    Alert.alert(
+      'Coming Soon',
+      'Account creation wizard is being configured.',
+      [{ text: 'OK', onPress: () => setShowCreateAccount(false) }]
+    );
+  }
+}, [showCreateAccount]);
+
 
   // ============================================================================
   // HANDLERS
@@ -109,7 +118,7 @@ const LoginScreen: React.FC = () => {
         >
           <View style={styles.loginCard}>
             {/* Logo */}
-            <Image source={unisLogo} style={styles.logo} resizeMode="contain" />
+              <UnisLogo width={120} height={120} />
 
             {/* Title */}
             <Text style={styles.title}>Welcome back</Text>
