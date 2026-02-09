@@ -1,5 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Dimensions } from 'react-native';
+import { getMediaUrl } from '../services/axiosInstance';
+
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH > 768 ? 180 : 140;
@@ -68,7 +70,8 @@ const formatTimeAgo = (dateString?: string): string => {
 };
 
 const MediaCard: React.FC<MediaCardProps> = ({ item, onPress, onPlayPress }) => {
-  const artworkSource = item.artworkUrl || item.artwork;
+const artworkSource = getMediaUrl(item.artworkUrl || item.artwork);
+  if (artworkSource) console.log('[MediaCard] artworkUrl:', artworkSource);
   const artistName = item.artistData?.username || item.artistName || item.artist || 'Unknown';
   
   return (

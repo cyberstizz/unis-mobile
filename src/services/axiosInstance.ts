@@ -30,7 +30,7 @@ const getBaseUrl = (): string => {
   return 'https://your-production-api.com/api';
 };
 
-const API_BASE_URL = 'http://192.168.1.154:8080'; 
+const API_BASE_URL = 'http://192.168.1.154:8080/api'; 
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -96,6 +96,14 @@ axiosInstance.interceptors.response.use(
 
 // Helper function to get current base URL (useful for debugging)
 export const getApiBaseUrl = (): string => API_BASE_URL;
+
+// function to call the local server
+
+export const getMediaUrl = (path: string | null | undefined): string | undefined => {
+  if (!path) return undefined;
+  if (path.startsWith('http')) return path; 
+  return `http://192.168.1.154:8080${path}`;
+};
 
 // Logout helper
 export const logoutUser = async (): Promise<void> => {

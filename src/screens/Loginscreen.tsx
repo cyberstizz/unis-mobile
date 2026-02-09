@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import UnisLogo from '../../assets/unisLogoThree.svg';
 import {
   View,
@@ -6,19 +6,15 @@ import {
   StyleSheet,
   TextInput,
   TouchableOpacity,
-  Image,
   Dimensions,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Video, ResizeMode } from 'expo-av';
 import { useAuth } from '../context/AuthContext';
-// Temporarily disabled to debug
-// import CreateAccountWizard from '../components/CreateAccountWizard';
+import CreateAccountWizard from '../components/Createaccountwizard';
 
 // ============================================================================
 // COLORS
@@ -52,17 +48,6 @@ const LoginScreen: React.FC = () => {
   // Create account wizard state
   const [showCreateAccount, setShowCreateAccount] = useState(false);
 
-  useEffect(() => {
-  if (showCreateAccount) {
-    Alert.alert(
-      'Coming Soon',
-      'Account creation wizard is being configured.',
-      [{ text: 'OK', onPress: () => setShowCreateAccount(false) }]
-    );
-  }
-}, [showCreateAccount]);
-
-
   // ============================================================================
   // HANDLERS
   // ============================================================================
@@ -80,7 +65,6 @@ const LoginScreen: React.FC = () => {
       if (!result.success) {
         setError(result.error || 'Login failed');
       }
-      // If successful, AuthContext will handle navigation
     } catch (err) {
       setError('Login failed. Please try again.');
     } finally {
@@ -93,7 +77,7 @@ const LoginScreen: React.FC = () => {
   // ============================================================================
   return (
     <View style={styles.container}>
-      {/* Background Video - Falls back to black on mobile/if video fails */}
+      {/* Background Video */}
       <Video
         source={require('../../assets/space-bg.mp4')}
         style={styles.backgroundVideo}
@@ -118,7 +102,7 @@ const LoginScreen: React.FC = () => {
         >
           <View style={styles.loginCard}>
             {/* Logo */}
-              <UnisLogo width={120} height={120} />
+            <UnisLogo width={120} height={120} />
 
             {/* Title */}
             <Text style={styles.title}>Welcome back</Text>
@@ -180,18 +164,15 @@ const LoginScreen: React.FC = () => {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Create Account - Temporarily showing alert instead of wizard */}
-      {showCreateAccount && (
-        // Show alert and close
-        (() => {
-          Alert.alert(
-            'Coming Soon',
-            'Account creation wizard is being configured. Please try again later.',
-            [{ text: 'OK', onPress: () => setShowCreateAccount(false) }]
-          );
-          return null;
-        })()
-      )}
+      {/* Create Account Wizard - Modal handles its own visibility */}
+      <CreateAccountWizard
+        visible={showCreateAccount}
+        onClose={() => setShowCreateAccount(false)}
+        onSuccess={() => {
+          setShowCreateAccount(false);
+          // TODO: handle successful account creation
+        }}
+      />
     </View>
   );
 };
@@ -204,8 +185,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.bgBlack,
   },
-
-  // Background Video
   backgroundVideo: {
     position: 'absolute',
     top: 0,
@@ -213,14 +192,10 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT,
   },
-
-  // Dark Overlay
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
-
-  // Keyboard & Scroll
   keyboardView: {
     flex: 1,
   },
@@ -230,8 +205,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
-
-  // Login Card
   loginCard: {
     backgroundColor: COLORS.cardBg,
     borderRadius: 16,
@@ -245,31 +218,18 @@ const styles = StyleSheet.create({
     shadowRadius: 30,
     elevation: 20,
   },
-
-  // Logo
-  logo: {
-    width: 120,
-    height: 120,
-    marginBottom: 16,
-  },
-
-  // Title
   title: {
     fontSize: 28,
     fontWeight: '700',
     color: COLORS.unisBlue,
     marginBottom: 24,
   },
-
-  // Error Text
   errorText: {
     color: COLORS.errorRed,
     fontSize: 14,
     marginBottom: 12,
     textAlign: 'center',
   },
-
-  // Input
   input: {
     width: '100%',
     backgroundColor: '#FFFFFF',
@@ -282,8 +242,6 @@ const styles = StyleSheet.create({
     color: COLORS.textDark,
     marginBottom: 12,
   },
-
-  // Login Button
   loginButton: {
     width: '100%',
     backgroundColor: COLORS.unisBlue,
@@ -298,8 +256,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-
-  // Create Account Button
   createAccountButton: {
     width: '100%',
     backgroundColor: COLORS.createAccountGray,
@@ -314,8 +270,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-
-  // Disabled Button
   buttonDisabled: {
     opacity: 0.6,
   },
