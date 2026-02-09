@@ -2,7 +2,6 @@ import React from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Dimensions } from 'react-native';
 import { getMediaUrl } from '../services/axiosInstance';
 
-
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const CARD_WIDTH = SCREEN_WIDTH > 768 ? 180 : 140;
 const CARD_HEIGHT = SCREEN_WIDTH > 768 ? 180 : 140;

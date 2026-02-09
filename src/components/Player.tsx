@@ -1,8 +1,4 @@
-// src/components/Player.tsx
-// Full-featured audio player - ported from web Player.jsx
-// Supports mini mode (bottom bar) and expanded mode (fullscreen)
-// Uses expo-linear-gradient to match web SCSS gradients exactly
-
+import { getMediaUrl } from '../services/axiosInstance';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
@@ -273,8 +269,7 @@ const Player: React.FC = () => {
     return null;
   }
 
-  const artwork = currentMedia.artwork || currentMedia.artworkUrl || 'https://picsum.photos/200';
-
+const artwork = getMediaUrl(currentMedia.artwork || currentMedia.artworkUrl) || 'https://picsum.photos/200';
   // ==================== EXPANDED VIEW ====================
   if (isExpanded) {
     return (

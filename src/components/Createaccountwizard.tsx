@@ -1893,17 +1893,15 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    justifyContent: 'flex-end',
   },
   keyboardView: {
     flex: 1,
-    justifyContent: 'flex-end',
   },
   container: {
     backgroundColor: COLORS.bgDark,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: '95%',
+    flex: 1,
     overflow: 'hidden',
   },
   closeButton: {

@@ -12,7 +12,7 @@ import {
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+// import { Video, ResizeMode } from 'expo-av';
 import { useAuth } from '../context/AuthContext';
 import CreateAccountWizard from '../components/Createaccountwizard';
 
@@ -78,14 +78,14 @@ const LoginScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       {/* Background Video */}
-      <Video
+      {/* <Video
         source={require('../../assets/space-bg.mp4')}
         style={styles.backgroundVideo}
         resizeMode={ResizeMode.COVER}
         shouldPlay
         isLooping
         isMuted
-      />
+      /> */}
 
       {/* Dark Overlay */}
       <View style={styles.overlay} />

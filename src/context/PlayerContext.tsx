@@ -5,6 +5,7 @@ import React, { createContext, useState, useContext, useEffect, useCallback, use
 import { Audio, AVPlaybackStatus } from 'expo-av';
 import * as SecureStore from 'expo-secure-store';
 import playlistService, { Playlist, Track } from '../services/playlistService';
+import { getMediaUrl } from '../services/axiosInstance';
 
 // Types for our media/track objects
 export interface MediaItem {
@@ -50,8 +51,8 @@ const normalizeTrack = (track: Track | MediaItem): NormalizedTrack => ({
   playlistItemId: (track as any).playlistItemId,
   title: track.title,
   artist: (track as any).artistName || (track as any).artist || '',
-  artwork: (track as any).artworkUrl || (track as any).artwork || '',
-  url: (track as any).fileUrl || (track as any).url || '',
+  artwork: getMediaUrl((track as any).artworkUrl || (track as any).artwork) || '',
+  url: getMediaUrl((track as any).fileUrl || (track as any).url) || '',
   duration: track.duration,
   jurisdiction: track.jurisdiction
 });
