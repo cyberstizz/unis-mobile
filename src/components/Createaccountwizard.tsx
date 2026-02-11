@@ -19,6 +19,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import {
   X,
   ChevronRight,
@@ -46,7 +47,9 @@ import {
   Sparkles,
   Heart,
 } from 'lucide-react-native';
-// import axiosInstance from '../services/axiosInstance';
+import { JURISDICTION_IDS, GENRE_IDS } from '../utils/idMappings';
+
+
 
 // ============================================================================
 // CONSTANTS
@@ -72,23 +75,7 @@ const COLORS = {
   borderSubtle: 'rgba(255, 255, 255, 0.1)',
 };
 
-// Jurisdiction and Genre IDs (match your backend)
-const JURISDICTION_IDS: Record<string, string> = {
-  'uptown-harlem': 'jurisdiction-uptown',
-  'downtown-harlem': 'jurisdiction-downtown',
-};
 
-const GENRE_IDS: Record<string, string> = {
-  'hip-hop': 'genre-hiphop',
-  'r&b': 'genre-rnb',
-  'pop': 'genre-pop',
-  'rock': 'genre-rock',
-  'jazz': 'genre-jazz',
-  'electronic': 'genre-electronic',
-  'other': 'genre-other',
-};
-
-const API_BASE_URL = 'http://localhost:8080';
 
 // ============================================================================
 // INTERFACES
@@ -508,15 +495,11 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
   const loadArtists = async () => {
     setArtistsLoading(true);
     try {
-      // TODO: Replace with actual API call
-      // const response = await axiosInstance.get('/v1/users/artists/active');
-      // setArtists(response.data || []);
-
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      setArtists(DUMMY_ARTISTS);
+      const response = await axiosInstance.get('/v1/users/artists/active');
+      setArtists(response.data || []);
     } catch (err) {
-      setError('Could not load artists');
+      console.error('Failed to load artists:', err);
+      setError('Could not load artists. Please try again.');
     } finally {
       setArtistsLoading(false);
     }
@@ -1568,12 +1551,8 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
                   >
                     {artist.photoUrl ? (
                       <Image
-                        source={{
-                          uri: artist.photoUrl.startsWith('http')
-                            ? artist.photoUrl
-                            : `${API_BASE_URL}${artist.photoUrl}`,
-                        }}
-                        style={styles.artistPhoto}
+                          source={{ uri: getMediaUrl(artist.photoUrl) }}
+                          style={styles.artistPhoto}
                       />
                     ) : (
                       <View style={styles.artistPhotoPlaceholder}>
