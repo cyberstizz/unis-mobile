@@ -36,20 +36,20 @@ const COLORS = {
 // SIZE SETTINGS - Edit these to adjust header size
 // =============================================================================
 const SIZES = {
-  // Logo dimensions
-  logoSize: IS_MOBILE ? 60 : 70,           // Was 80, now smaller
+  // Logo dimensions — increased ~20% for better visibility
+  logoSize: IS_MOBILE ? 80 : 112,
   
   // Padding values
-  topRowPaddingVertical: IS_MOBILE ? 4 : 6, // Was 8, now smaller
-  optionsBarPaddingBottom: IS_MOBILE ? 6 : 8, // Was 10, now smaller
+  topRowPaddingVertical: IS_MOBILE ? 2 : 4,
+  optionsBarPaddingBottom: IS_MOBILE ? 5 : 6,
   
   // Search bar
   searchFontSize: IS_MOBILE ? 10 : 14,
-  searchPaddingVertical: IS_MOBILE ? 6 : 8,
+  searchPaddingVertical: IS_MOBILE ? 3 : 5,
   
   // Option buttons
   optionFontSize: IS_MOBILE ? 8 : 10,
-  optionPaddingVertical: IS_MOBILE ? 3 : 3,
+  optionPaddingVertical: IS_MOBILE ? 1 : 3,
   optionPaddingHorizontal: IS_MOBILE ? 10 : 14,
   
   // Logout text
@@ -146,6 +146,7 @@ const styles = StyleSheet.create({
     width: '100%',
     borderBottomWidth: 0.5,
     borderBottomColor: COLORS.borderColor,
+    // borderBottomColor: 'silver',
   },
   
   // Top row with logo, search, logout
@@ -189,6 +190,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingRight: 10,
+    alignSelf: 'flex-start',
+    marginTop: 22,
   },
   userName: {
     color: COLORS.textWhite,
@@ -212,6 +215,7 @@ const styles = StyleSheet.create({
     paddingBottom: SIZES.optionsBarPaddingBottom,
     gap: IS_MOBILE ? 8 : 15,
     flexWrap: 'wrap',
+    marginTop: -10,
   },
   
   // Individual option button

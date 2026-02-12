@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -9,6 +10,10 @@ import {
   Dimensions,
   RefreshControl,
   ImageBackground,
+  Animated,
+  Easing,
+  TouchableOpacity,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
@@ -16,13 +21,114 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance from '../services/axiosInstance';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import MediaCard, { MediaItem } from '../components/MediaCard';
 import ArtistCard, { ArtistItem } from '../components/ArtistCard';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// Dummy data for fallback/testing
+// ─────────────────────────────────────────────
+// ANIMATED SECTION — slides in from left like web
+// ─────────────────────────────────────────────
+const AnimatedSection: React.FC<{
+  title: string;
+  delay: number;
+  children: React.ReactNode;
+}> = ({ title, delay, children }) => {
+  const slideX = useRef(new Animated.Value(-50)).current;
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const [hasAnimated, setHasAnimated] = useState(false);
+
+useFocusEffect(
+  useCallback(() => {
+    // Reset to starting position
+    slideX.setValue(-50);
+    fadeIn.setValue(0);
+
+    const timer = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(slideX, {
+          toValue: 0,
+          duration: 600,
+          delay,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(fadeIn, {
+          toValue: 1,
+          duration: 600,
+          delay,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [])
+);
+
+  return (
+    <View style={styles.section}>
+      <Animated.View
+        style={{
+          opacity: fadeIn,
+          transform: [{ translateX: slideX }],
+        }}
+      >
+        <Text style={styles.sectionTitle}>{title}</Text>
+      </Animated.View>
+      <Animated.View style={{ opacity: fadeIn }}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
+// ─────────────────────────────────────────────
+// FOOTER LINKS
+// ─────────────────────────────────────────────
+const FOOTER_LINKS = [
+  { label: 'About', route: 'about' },
+  { label: 'Terms', route: 'terms' },
+  { label: 'Privacy', route: 'privacy' },
+  { label: 'Support', route: 'support' },
+];
+
+const FeedFooter: React.FC = () => {
+  const navigation = useNavigation<any>();
+
+  return (
+    <View style={styles.footer}>
+      <View style={styles.footerDivider} />
+      <View style={styles.footerLinks}>
+        {FOOTER_LINKS.map((link, index) => (
+          <React.Fragment key={link.label}>
+            {index > 0 && <Text style={styles.footerDot}>·</Text>}
+            <TouchableOpacity
+              onPress={() => {
+                // Navigate if screen exists, otherwise could open a URL
+                try {
+                  navigation.navigate(link.route);
+                } catch {
+                  console.log(`No route for ${link.route}`);
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.footerLinkText}>{link.label}</Text>
+            </TouchableOpacity>
+          </React.Fragment>
+        ))}
+      </View>
+      <Text style={styles.footerCopyright}>© {new Date().getFullYear()} Unis Music. All rights reserved.</Text>
+    </View>
+  );
+};
+
+// ─────────────────────────────────────────────
+// DUMMY DATA (fallback)
+// ─────────────────────────────────────────────
 const getDummyTrending = (): MediaItem[] => [
   {
     id: 'dummy1',
@@ -109,12 +215,14 @@ const getDummyNew = (): MediaItem[] => [
   },
 ];
 
+// ─────────────────────────────────────────────
+// MAIN COMPONENT
+// ─────────────────────────────────────────────
 const FeedScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { playMedia } = usePlayer();
   const navigation = useNavigation<any>();
-
 
   // State
   const [loading, setLoading] = useState(true);
@@ -122,32 +230,23 @@ const FeedScreen: React.FC = () => {
   const [error, setError] = useState('');
   const [userId, setUserId] = useState<string | null>(null);
   const [jurisdictionId, setJurisdictionId] = useState<string | null>(null);
-  
+
   // Data
   const [trendingToday, setTrendingToday] = useState<MediaItem[]>([]);
   const [newMedia, setNewMedia] = useState<MediaItem[]>([]);
   const [popularArtists, setPopularArtists] = useState<ArtistItem[]>([]);
 
-  // API Base URL helper
-  const buildUrl = (url?: string): string | undefined => {
-    if (!url) return undefined;
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      return url;
-    }
-    return url;
-  };
-
-  // Normalize media items from API response
+  // ─── NORMALIZE MEDIA — uses getMediaUrl for all image/audio paths ───
   const normalizeMedia = (items: any[]): MediaItem[] => {
     return (items || []).map(item => ({
       id: item.songId || item.videoId,
       title: item.title,
       artist: item.artist?.username || 'Unknown',
       artistData: item.artist || { userId: 'unknown', username: 'Unknown' },
-      artworkUrl: buildUrl(item.artworkUrl),
-      mediaUrl: buildUrl(item.fileUrl),
-      url: buildUrl(item.fileUrl),
-      artwork: buildUrl(item.artworkUrl),
+      artworkUrl: getMediaUrl(item.artworkUrl),
+      mediaUrl: getMediaUrl(item.fileUrl),
+      url: getMediaUrl(item.fileUrl),
+      artwork: getMediaUrl(item.artworkUrl),
       type: item.songId ? 'song' : 'video',
       score: item.score || 0,
       duration: item.duration || null,
@@ -158,15 +257,12 @@ const FeedScreen: React.FC = () => {
     }));
   };
 
-  // Fetch user profile to get jurisdiction
+  // ─── FETCH USER PROFILE ───
   const fetchProfile = async () => {
     try {
       const token = await SecureStore.getItemAsync('token');
-      if (!token) {
-        throw new Error('Not authenticated');
-      }
+      if (!token) throw new Error('Not authenticated');
 
-      // Decode token to get userId
       const payload = JSON.parse(atob(token.split('.')[1]));
       const uid = payload.userId;
       setUserId(uid);
@@ -182,7 +278,7 @@ const FeedScreen: React.FC = () => {
     }
   };
 
-  // Fetch media data
+  // ─── FETCH MEDIA DATA ───
   const fetchMediaData = async () => {
     if (!userId || !jurisdictionId) return;
 
@@ -195,16 +291,16 @@ const FeedScreen: React.FC = () => {
       setTrendingToday(normalizeMedia(trendingTodayRes.data || []));
       setNewMedia(normalizeMedia(newRes.data || []));
 
-      // Extract artists from media for Popular Artists section
+      // ─── EXTRACT ARTISTS — use getMediaUrl for photoUrl ───
       const artistMap = new Map<string, ArtistItem>();
       const allMedia = [...(trendingTodayRes.data || []), ...(newRes.data || [])];
-      
+
       allMedia.forEach((media: any) => {
         if (media.artist && !artistMap.has(media.artist.userId)) {
           artistMap.set(media.artist.userId, {
             userId: media.artist.userId,
             username: media.artist.username,
-            photoUrl: buildUrl(media.artist.photoUrl),
+            photoUrl: getMediaUrl(media.artist.photoUrl), // ← THIS was the fix
             jurisdictionId: media.artist.jurisdiction?.jurisdictionId,
             score: media.artist.score || 0,
           });
@@ -214,19 +310,18 @@ const FeedScreen: React.FC = () => {
       const artists = Array.from(artistMap.values())
         .sort((a, b) => (b.score || 0) - (a.score || 0))
         .slice(0, 5);
-      
+
       setPopularArtists(artists);
       setError('');
     } catch (err) {
       console.error('Media load error:', err);
       setError('Feed unavailable—showing demo content.');
-      // Use dummy data as fallback
       setTrendingToday(getDummyTrending());
       setNewMedia(getDummyNew());
     }
   };
 
-  // Initial load
+  // ─── LIFECYCLE ───
   useEffect(() => {
     const init = async () => {
       setLoading(true);
@@ -235,13 +330,11 @@ const FeedScreen: React.FC = () => {
     init();
   }, []);
 
-  // Fetch data when jurisdiction is set OR show dummy data if no auth
   useEffect(() => {
     if (jurisdictionId) {
       if (userId) {
         fetchMediaData().finally(() => setLoading(false));
       } else {
-        // No auth - just show dummy data
         setTrendingToday(getDummyTrending());
         setNewMedia(getDummyNew());
         setLoading(false);
@@ -249,42 +342,37 @@ const FeedScreen: React.FC = () => {
     }
   }, [userId, jurisdictionId]);
 
-  // Pull to refresh
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchMediaData();
     setRefreshing(false);
   }, [userId, jurisdictionId]);
 
-  // Navigation handlers
+  // ─── NAVIGATION ───
   const handleSongNav = (mediaId: string, type: string = 'song') => {
-     navigation.navigate('Song', { songId: mediaId, type });
+    navigation.navigate('Song', { songId: mediaId, type });
   };
 
-  // ✅ UNCOMMENTED - Navigate to ArtistScreen
   const handleArtistNav = (artistId: string) => {
     navigation.navigate('Artist', { artistId });
   };
 
-  // Play media handler
+  // ─── PLAY MEDIA ───
   const handlePlayMedia = async (media: MediaItem) => {
-    // Track play on backend
     try {
       const endpoint = media.type === 'song'
         ? `/v1/media/song/${media.id}/play?userId=${userId}`
         : `/v1/media/video/${media.id}/play?userId=${userId}`;
       await axiosInstance.post(endpoint);
-      console.log('Play tracked successfully');
     } catch (err) {
       console.error('Failed to track play:', err);
     }
 
-    // Create playlist and play
     const playlist = [media, ...newMedia.slice(0, 2).filter(m => m.id !== media.id)];
     playMedia(media as any, playlist as any);
   };
 
-  // Use dummy data if API data is empty
+  // Final display lists
   const trendingList = trendingToday.length > 0 ? trendingToday : getDummyTrending();
   const newList = newMedia.length > 0 ? newMedia : getDummyNew();
 
@@ -332,9 +420,8 @@ const FeedScreen: React.FC = () => {
           </View>
         ) : null}
 
-        {/* Trending Today Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>TRENDING TODAY</Text>
+        {/* Trending Today — slides in with 100ms delay */}
+        <AnimatedSection title="TRENDING TODAY" delay={100}>
           <FlatList
             data={trendingList}
             horizontal
@@ -350,11 +437,10 @@ const FeedScreen: React.FC = () => {
             )}
             ItemSeparatorComponent={() => <View style={{ width: 16 }} />}
           />
-        </View>
+        </AnimatedSection>
 
-        {/* New Releases Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>NEW RELEASES</Text>
+        {/* New Releases — slides in with 300ms delay */}
+        <AnimatedSection title="NEW RELEASES" delay={300}>
           <FlatList
             data={newList}
             horizontal
@@ -370,11 +456,10 @@ const FeedScreen: React.FC = () => {
             )}
             ItemSeparatorComponent={() => <View style={{ width: 16 }} />}
           />
-        </View>
+        </AnimatedSection>
 
-        {/* Popular Artists Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>POPULAR ARTISTS</Text>
+        {/* Popular Artists — slides in with 500ms delay */}
+        <AnimatedSection title="POPULAR ARTISTS" delay={500}>
           <View style={styles.artistsGrid}>
             {(popularArtists.length > 0 ? popularArtists : [
               { userId: '1', username: 'Tony Fadd', photoUrl: 'https://picsum.photos/200?random=a1', score: 100 },
@@ -389,7 +474,10 @@ const FeedScreen: React.FC = () => {
               />
             ))}
           </View>
-        </View>
+        </AnimatedSection>
+
+        {/* Footer */}
+        <FeedFooter />
 
         {/* Bottom padding for MiniPlayer */}
         <View style={{ height: 100 }} />
@@ -398,7 +486,7 @@ const FeedScreen: React.FC = () => {
   );
 };
 
-// Base64 decode helper for token parsing
+// ─── Base64 decode for token parsing ───
 const atob = (input: string): string => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
   let str = input.replace(/=+$/, '');
@@ -420,6 +508,9 @@ const atob = (input: string): string => {
   return output;
 };
 
+// ─────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -466,6 +557,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 14,
   },
+
+  // ── Sections ──
   section: {
     marginBottom: 32,
   },
@@ -485,6 +578,44 @@ const styles = StyleSheet.create({
   },
   artistsGrid: {
     gap: 16,
+  },
+
+  // ── Footer ──
+  footer: {
+    alignItems: 'center',
+    paddingTop: 20,
+    paddingBottom: 10,
+    marginTop: 10,
+  },
+  footerDivider: {
+    width: '40%',
+    height: 1,
+    backgroundColor: 'rgba(192, 192, 192, 0.15)',
+    marginBottom: 16,
+  },
+  footerLinks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  footerDot: {
+    color: 'rgba(192, 192, 192, 0.3)',
+    marginHorizontal: 10,
+    fontSize: 12,
+  },
+  footerLinkText: {
+    color: 'rgba(192, 192, 192, 0.5)',
+    fontSize: 12,
+    fontWeight: '500',
+    letterSpacing: 0.5,
+  },
+  footerCopyright: {
+    color: 'rgba(192, 192, 192, 0.25)',
+    fontSize: 10,
+    letterSpacing: 0.5,
+    marginTop: 4,
   },
 });
 

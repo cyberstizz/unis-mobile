@@ -47,7 +47,7 @@ import {
   Sparkles,
   Heart,
 } from 'lucide-react-native';
-import { JURISDICTION_IDS, GENRE_IDS } from '../utils/idMappings';
+import { JURISDICTION_IDS, GENRE_IDS } from '../utils/IdMappings';
 
 
 
@@ -727,25 +727,98 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
   // ============================================================================
   // SUBMIT
   // ============================================================================
-  const handleSubmit = async () => {
+const handleSubmit = async () => {
     setLoading(true);
     setError('');
 
     try {
-      // TODO: Implement actual registration
-      // 1. Upload photo
-      // 2. Register user
-      // 3. Upload song (if artist)
+      let photoUrl = null;
 
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Step 1: Upload photo (endpoint doesn't require auth)
+      const photoUri = formData.role === 'artist'
+        ? formData.artistPhotoUri
+        : formData.listenerPhotoUri;
+
+      if (photoUri) {
+        console.log('Photo URI:', photoUri);
+        
+        const photoFormData = new FormData();
+        photoFormData.append('photo', {
+          uri: photoUri,
+          type: 'image/jpeg',
+          name: 'profile-photo.jpg',
+        } as any);
+
+        console.log('Uploading photo...');
+        const photoResponse = await fetch('http://192.168.1.154:8080/api/v1/users/profile/photo', {
+          method: 'PATCH',
+          body: photoFormData,
+        });
+        const photoData = await photoResponse.json();
+        console.log('Photo response:', photoData);
+        photoUrl = photoData?.photoUrl;
+      }
+
+      // Step 2: Register user with photoUrl
+      const registerPayload = {
+        username: formData.username,
+        email: formData.email,
+        password: formData.password,
+        role: formData.role,
+        jurisdictionId: formData.jurisdictionId,
+        supportedArtistId: formData.supportedArtistId,
+        referralCode: formData.referralCode,
+        bio: formData.bio || null,
+        genreId: formData.role === 'artist' ? formData.genreId : null,
+        photoUrl: photoUrl,
+      };
+
+      console.log('Registering user...');
+      const registerResponse = await axiosInstance.post('/v1/users/register', registerPayload);
+      const newUser = registerResponse.data;
+      console.log('User registered:', newUser.userId);
+
+      // Step 3: Upload song if artist
+      if (formData.role === 'artist' && formData.songFileUri) {
+        const songData = {
+          title: formData.songTitle,
+          artistId: newUser.userId,
+          genreId: formData.genreId,
+          jurisdictionId: formData.jurisdictionId,
+        };
+
+        const songFormData = new FormData();
+        songFormData.append('song', JSON.stringify(songData));
+        songFormData.append('file', {
+          uri: formData.songFileUri,
+          type: 'audio/mpeg',
+          name: formData.songFileName || 'song.mp3',
+        } as any);
+
+        if (formData.songArtworkUri) {
+          songFormData.append('artwork', {
+            uri: formData.songArtworkUri,
+            type: 'image/jpeg',
+            name: 'artwork.jpg',
+          } as any);
+        }
+
+        console.log('Uploading song...');
+        const songResponse = await fetch('http://192.168.1.154:8080/api/v1/media/song', {
+          method: 'POST',
+          body: songFormData,
+        });
+        const songResult = await songResponse.json();
+        console.log('Song uploaded:', songResult);
+      }
 
       setSuccess(true);
       setTimeout(() => {
         onSuccess();
       }, 1500);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Registration failed. Please try again.');
+      console.error('Registration failed:', err.response?.data || err.message);
+      setError(err.response?.data?.message || err.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }
