@@ -1,16 +1,3 @@
-// src/components/VotingWizard/VotingWizard.tsx
-//
-// The VotingWizard is the backbone of Unis — the 3-step flow where users 
-// cast votes on nominees within their jurisdiction. This is a full port
-// from the React web version with these key changes:
-//
-// - framer-motion  →  React Native Animated API
-// - HTML <select>  →  Custom PremiumPicker (bottom sheet)
-// - HTML <form>    →  TextInput with keyboard handling  
-// - canvas-confetti →  Custom animated confetti (pure RN, no native dep)
-// - SCSS           →  StyleSheet with the same dark luxury aesthetic
-// - SVG icons      →  react-native-svg (already in your project)
-
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
@@ -30,17 +17,17 @@ import {
 } from 'react-native';
 import Svg, { Path, Circle, G } from 'react-native-svg';
 import { X } from 'lucide-react-native';
-import axiosInstance from '../../services/axiosInstance';
-import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../../utils/idMappings';
-import PremiumPicker from './PremiumPicker';
-import ConfettiCannon from './ConfettiCannon';
+import axiosInstance from '../services/axiosInstance';
+import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
+import PremiumPicker from './Premiumpicker';
+import ConfettiCannon from './Confetticannon';
 
 import type {
   Nominee,
   VoteFilters,
   VoteResult,
   VotingWizardProps,
-} from '../../types/voting';
+} from '../types/voting';
 
 // ─────────────────────────────────────────────
 // CONSTANTS

@@ -1,7 +1,3 @@
-// src/screens/VoteAwardsScreen.tsx
-// Vote & Awards page - browse and vote for artists/songs by category
-// Ported from web VoteAwards.jsx
-
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -19,11 +15,14 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Trophy, Play } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance from '../services/axiosInstance';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
+import VotingWizard from '../components/VotingWizard';
+import type { Nominee as VotingNominee } from '../types/voting';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
@@ -73,143 +72,19 @@ const JURISDICTIONS = [
 ];
 
 // =============================================================================
-// DUMMY DATA
-// =============================================================================
-const getDummyArtists = () => [
-  {
-    id: 'artist1',
-    name: 'Tony Fadd',
-    type: 'artist',
-    imageUrl: 'https://picsum.photos/200?random=a1',
-    votes: 142,
-    totalLifetimeVotes: 1250,
-    jurisdiction: 'Uptown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'artist2',
-    name: 'SD Boomin',
-    type: 'artist',
-    imageUrl: 'https://picsum.photos/200?random=a2',
-    votes: 98,
-    totalLifetimeVotes: 890,
-    jurisdiction: 'Downtown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'artist3',
-    name: 'Harlem Rose',
-    type: 'artist',
-    imageUrl: 'https://picsum.photos/200?random=a3',
-    votes: 76,
-    totalLifetimeVotes: 654,
-    jurisdiction: 'Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'artist4',
-    name: 'King Uptown',
-    type: 'artist',
-    imageUrl: 'https://picsum.photos/200?random=a4',
-    votes: 65,
-    totalLifetimeVotes: 521,
-    jurisdiction: 'Uptown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'artist5',
-    name: 'Metro Mike',
-    type: 'artist',
-    imageUrl: 'https://picsum.photos/200?random=a5',
-    votes: 54,
-    totalLifetimeVotes: 432,
-    jurisdiction: 'Downtown Harlem',
-    genre: 'Rap',
-  },
-];
-
-const getDummySongs = () => [
-  {
-    id: 'song1',
-    name: 'Paranoid',
-    type: 'song',
-    artist: 'Tony Fadd',
-    artistId: 'artist1',
-    imageUrl: 'https://picsum.photos/200?random=s1',
-    mediaUrl: 'https://example.com/song1.mp3',
-    votes: 89,
-    plays: 2450,
-    jurisdiction: 'Uptown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'song2',
-    name: 'Waited All Night',
-    type: 'song',
-    artist: 'SD Boomin',
-    artistId: 'artist2',
-    imageUrl: 'https://picsum.photos/200?random=s2',
-    mediaUrl: 'https://example.com/song2.mp3',
-    votes: 72,
-    plays: 1890,
-    jurisdiction: 'Downtown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'song3',
-    name: 'Golden Hour',
-    type: 'song',
-    artist: 'Harlem Rose',
-    artistId: 'artist3',
-    imageUrl: 'https://picsum.photos/200?random=s3',
-    mediaUrl: 'https://example.com/song3.mp3',
-    votes: 61,
-    plays: 1560,
-    jurisdiction: 'Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'song4',
-    name: 'Street Dreams',
-    type: 'song',
-    artist: 'King Uptown',
-    artistId: 'artist4',
-    imageUrl: 'https://picsum.photos/200?random=s4',
-    mediaUrl: 'https://example.com/song4.mp3',
-    votes: 45,
-    plays: 1230,
-    jurisdiction: 'Uptown Harlem',
-    genre: 'Rap',
-  },
-  {
-    id: 'song5',
-    name: 'Night Shift',
-    type: 'song',
-    artist: 'Metro Mike',
-    artistId: 'artist5',
-    imageUrl: 'https://picsum.photos/200?random=s5',
-    mediaUrl: 'https://example.com/song5.mp3',
-    votes: 38,
-    plays: 980,
-    jurisdiction: 'Downtown Harlem',
-    genre: 'Rap',
-  },
-];
-
-// =============================================================================
 // NOMINEE INTERFACE
 // =============================================================================
 interface Nominee {
   id: string;
   name: string;
   type: 'artist' | 'song';
-  imageUrl: string;
+  genreKey: string;
+  imageUrl?: string;
   jurisdiction: string;
+  jurisdictionData?: any;
   genre: string;
   votes: number;
-  // Artist-specific
   totalLifetimeVotes?: number;
-  // Song-specific
   artist?: string;
   artistId?: string;
   mediaUrl?: string;
@@ -222,6 +97,7 @@ interface Nominee {
 const VoteAwardsScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { playMedia } = usePlayer();
+  const navigation = useNavigation<any>();
 
   // Filter state
   const [selectedGenre, setSelectedGenre] = useState('rap');
@@ -236,24 +112,12 @@ const VoteAwardsScreen: React.FC = () => {
   const [error, setError] = useState('');
   const [userId, setUserId] = useState<string | null>(null);
 
-  // Active filter for UI (which dropdown is open)
-  const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  // VotingWizard state
+  const [showVoteWizard, setShowVoteWizard] = useState(false);
+  const [selectedNominee, setSelectedNominee] = useState<VotingNominee | null>(null);
 
-  // Get userId on mount
-  useEffect(() => {
-    const getUserId = async () => {
-      try {
-        const token = await SecureStore.getItemAsync('token');
-        if (token) {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          setUserId(payload.userId);
-        }
-      } catch (e) {
-        console.error('Failed to decode token:', e);
-      }
-    };
-    getUserId();
-  }, []);
+  // Active filter dropdown
+  const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   // Base64 decode helper
   const atob = (input: string): string => {
@@ -271,73 +135,141 @@ const VoteAwardsScreen: React.FC = () => {
     return output;
   };
 
+  // Get userId on mount
+  useEffect(() => {
+    const getUserId = async () => {
+      try {
+        const token = await SecureStore.getItemAsync('token');
+        if (token) {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          setUserId(payload.userId);
+        }
+      } catch (e) {
+        console.error('Failed to decode token:', e);
+      }
+    };
+    getUserId();
+  }, []);
+
   // Fetch nominees when filters change
   useEffect(() => {
     fetchNominees();
   }, [selectedGenre, selectedType, selectedInterval, selectedJurisdiction]);
 
+  // ─── REAL API CALL — matches web fetchNominees exactly ───
   const fetchNominees = async () => {
     setLoading(true);
     setError('');
 
     try {
-      // For now, use dummy data since backend isn't connected
-      // When ready, uncomment the API call below
-      
-      /*
       const genreId = GENRE_IDS[selectedGenre];
       const jurisdictionId = JURISDICTION_IDS[selectedJurisdiction];
       const intervalId = INTERVAL_IDS[selectedInterval];
 
+      if (!genreId || !jurisdictionId || !intervalId) {
+        console.warn('Missing ID mapping:', { selectedGenre, selectedJurisdiction, selectedInterval });
+        setError('Invalid filter selection.');
+        setNominees([]);
+        return;
+      }
+
       const response = await axiosInstance.get(
         `/v1/vote/nominees?targetType=${selectedType}&genreId=${genreId}&jurisdictionId=${jurisdictionId}&intervalId=${intervalId}&limit=20`
       );
-      
-      const nomineesData = response.data || [];
-      // Normalize nominees...
-      setNominees(normalized);
-      */
 
-      // Dummy data fallback
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate loading
-      const dummyData = selectedType === 'artist' ? getDummyArtists() : getDummySongs();
-      setNominees(dummyData);
-      
-    } catch (err) {
+      const nomineesData = response.data || [];
+      console.log('Raw nominees response:', nomineesData.length, 'items');
+
+      // Normalize — matches web normalization exactly
+      const normalized: Nominee[] = nomineesData.map((nominee: any) => {
+        if (selectedType === 'artist') {
+          return {
+            id: nominee.userId,
+            name: nominee.username,
+            type: 'artist' as const,
+            genreKey: selectedGenre,
+            imageUrl: getMediaUrl(nominee.photoUrl),
+            votes: nominee.voteCount || 0,
+            totalLifetimeVotes: nominee.totalVotes || 0,
+            jurisdiction: nominee.jurisdiction?.name || 'Unknown',
+            jurisdictionData: nominee.jurisdiction,
+            genre: nominee.genre?.name || 'Unknown',
+          };
+        } else {
+          return {
+            id: nominee.songId,
+            name: nominee.title,
+            type: 'song' as const,
+            genreKey: selectedGenre,
+            artist: nominee.artist?.username || 'Unknown Artist',
+            artistId: nominee.artist?.userId,
+            imageUrl: getMediaUrl(nominee.artworkUrl),
+            mediaUrl: getMediaUrl(nominee.fileUrl),
+            votes: nominee.voteCount || 0,
+            plays: nominee.playCount || nominee.totalPlays || 0,
+            jurisdiction: nominee.jurisdiction?.name || 'Unknown',
+            jurisdictionData: nominee.jurisdiction,
+            genre: nominee.genre?.name || 'Unknown',
+          };
+        }
+      });
+
+      setNominees(normalized);
+      console.log('Normalized nominees:', normalized.length);
+    } catch (err: any) {
       console.error('Failed to fetch nominees:', err);
-      setError('Failed to load nominees. Please try again.');
-      // Fallback to dummy data on error
-      const dummyData = selectedType === 'artist' ? getDummyArtists() : getDummySongs();
-      setNominees(dummyData);
+      const status = err.response?.status;
+      if (status === 404) {
+        setError('No nominees found for this category.');
+      } else {
+        setError('Failed to load nominees. Please try again.');
+      }
+      setNominees([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // Filter nominees by search query
+  // Filter by search
   const filteredNominees = nominees.filter((nominee) => {
     if (searchQuery.length === 0) return true;
     return nominee.name.toLowerCase().includes(searchQuery.toLowerCase());
   });
 
-  // Get display labels
+  // Display labels
   const genreLabel = GENRES.find(g => g.value === selectedGenre)?.label || selectedGenre;
   const typeLabel = TYPES.find(t => t.value === selectedType)?.label || selectedType;
   const intervalLabel = INTERVALS.find(i => i.value === selectedInterval)?.label || selectedInterval;
   const jurisdictionLabel = JURISDICTIONS.find(j => j.value === selectedJurisdiction)?.label || selectedJurisdiction;
 
-  // Handle vote click
+  // ─── VOTE — opens VotingWizard ───
   const handleVoteClick = (nominee: Nominee) => {
     if (!userId) {
-      Alert.alert('Login Required', 'Please log in to vote');
+      Alert.alert('Login Required', 'Please log in to vote.');
       return;
     }
-    // TODO: Open VotingWizard
-    console.log('Vote clicked for:', nominee.name);
-    Alert.alert('Coming Soon', `Voting for ${nominee.name} will be available soon`);
+
+    // Convert to VotingWizard's Nominee type
+    const wizardNominee: VotingNominee = {
+      id: nominee.id,
+      name: nominee.name,
+      type: nominee.type,
+      genreKey: nominee.genreKey,
+      jurisdiction: nominee.jurisdictionData || nominee.jurisdiction,
+    };
+
+    setSelectedNominee(wizardNominee);
+    setShowVoteWizard(true);
   };
 
-  // Handle play song
+  const handleVoteSuccess = (nomineeId: string) => {
+    setShowVoteWizard(false);
+    setSelectedNominee(null);
+    // Refresh nominees to reflect updated vote counts
+    fetchNominees();
+  };
+
+  // ─── PLAY ───
   const handlePlaySong = async (nominee: Nominee) => {
     if (nominee.type === 'song' && nominee.mediaUrl) {
       playMedia(
@@ -348,25 +280,66 @@ const VoteAwardsScreen: React.FC = () => {
           artist: nominee.artist || 'Unknown Artist',
           url: nominee.mediaUrl,
           artwork: nominee.imageUrl,
-        },
+        } as any,
         []
       );
-      console.log('Playing song:', nominee.name);
+
+      // Track play
+      if (userId) {
+        try {
+          await axiosInstance.post(`/v1/media/song/${nominee.id}/play?userId=${userId}`);
+        } catch (err) {
+          console.error('Failed to track play:', err);
+        }
+      }
+    } else if (nominee.type === 'artist') {
+      // Fetch artist's default song
+      try {
+        const response = await axiosInstance.get(`/v1/users/${nominee.id}/default-song`);
+        const defaultSong = response.data;
+
+        if (defaultSong?.fileUrl) {
+          playMedia(
+            {
+              id: defaultSong.songId || nominee.id,
+              songId: defaultSong.songId || nominee.id,
+              title: defaultSong.title,
+              artist: nominee.name,
+              url: getMediaUrl(defaultSong.fileUrl)!,
+              artwork: getMediaUrl(defaultSong.artworkUrl) || nominee.imageUrl,
+            } as any,
+            []
+          );
+
+          // Track play
+          if (userId && defaultSong.songId) {
+            try {
+              await axiosInstance.post(`/v1/media/song/${defaultSong.songId}/play?userId=${userId}`);
+            } catch (err) {
+              console.error('Failed to track play:', err);
+            }
+          }
+        } else {
+          Alert.alert('No Song', 'This artist has no default song yet.');
+        }
+      } catch (err) {
+        console.error('Failed to fetch default song:', err);
+        Alert.alert('Error', 'Could not load artist song.');
+      }
     }
   };
 
-  // Handle nominee click (navigate to detail page)
+  // ─── NAVIGATION ───
   const handleNomineeClick = (nominee: Nominee) => {
     if (nominee.type === 'artist') {
-      console.log('Navigate to artist:', nominee.id);
-      // TODO: navigation.navigate('Artist', { artistId: nominee.id });
+      navigation.navigate('Artist', { artistId: nominee.id });
     } else {
-      console.log('Navigate to song:', nominee.id);
-      // TODO: navigation.navigate('Song', { songId: nominee.id });
+      navigation.navigate('Song', { songId: nominee.id, type: 'song' });
     }
   };
 
-  // Render filter button
+  // ─── RENDER HELPERS ───
+
   const renderFilterButton = (
     value: string,
     options: { value: string; label: string }[],
@@ -386,16 +359,13 @@ const VoteAwardsScreen: React.FC = () => {
             {currentLabel}
           </Text>
         </TouchableOpacity>
-        
+
         {isActive && (
           <View style={styles.filterDropdown}>
             {options.map((option) => (
               <TouchableOpacity
                 key={option.value}
-                style={[
-                  styles.filterOption,
-                  value === option.value && styles.filterOptionActive,
-                ]}
+                style={[styles.filterOption, value === option.value && styles.filterOptionActive]}
                 onPress={() => {
                   onSelect(option.value);
                   setActiveFilter(null);
@@ -417,73 +387,48 @@ const VoteAwardsScreen: React.FC = () => {
     );
   };
 
-  // Render nominee card
   const renderNomineeCard = (nominee: Nominee) => (
     <View key={nominee.id} style={styles.nomineeCard}>
       {/* Image */}
       <TouchableOpacity onPress={() => handleNomineeClick(nominee)}>
-        <Image source={{ uri: nominee.imageUrl }} style={styles.nomineeImage} />
+        <Image
+          source={{ uri: nominee.imageUrl || 'https://picsum.photos/200?random=fallback' }}
+          style={styles.nomineeImage}
+        />
       </TouchableOpacity>
 
       {/* Info */}
-      <TouchableOpacity
-        style={styles.nomineeInfo}
-        onPress={() => handleNomineeClick(nominee)}
-      >
-        <Text style={styles.nomineeName} numberOfLines={1}>
-          {nominee.name}
-        </Text>
-        
-        {nominee.type === 'song' && (
-          <Text style={styles.nomineeArtist} numberOfLines={1}>
-            by {nominee.artist}
-          </Text>
-        )}
-        
-        <Text style={styles.nomineeJurisdiction} numberOfLines={1}>
-          {nominee.jurisdiction}
-        </Text>
+      <TouchableOpacity style={styles.nomineeInfo} onPress={() => handleNomineeClick(nominee)}>
+        <Text style={styles.nomineeName} numberOfLines={1}>{nominee.name}</Text>
 
-        {/* Stats */}
+        {nominee.type === 'song' && (
+          <Text style={styles.nomineeArtist} numberOfLines={1}>by {nominee.artist}</Text>
+        )}
+
+        <Text style={styles.nomineeJurisdiction} numberOfLines={1}>{nominee.jurisdiction}</Text>
+
         {nominee.type === 'song' && (
           <View style={styles.statRow}>
             <Play size={14} color={COLORS.playBlue} />
-            <Text style={styles.statTextPlays}>{nominee.plays} Plays</Text>
+            <Text style={styles.statTextPlays}>{nominee.plays || 0} Plays</Text>
           </View>
         )}
-        
+
         {nominee.type === 'artist' && (
           <View style={styles.statRow}>
             <Trophy size={14} color={COLORS.voteGold} />
-            <Text style={styles.statTextVotes}>{nominee.totalLifetimeVotes} Votes</Text>
+            <Text style={styles.statTextVotes}>{nominee.totalLifetimeVotes || 0} Votes</Text>
           </View>
         )}
       </TouchableOpacity>
 
       {/* Buttons */}
       <View style={styles.nomineeButtons}>
-        {nominee.type === 'song' && nominee.mediaUrl && (
-          <TouchableOpacity
-            style={styles.listenButton}
-            onPress={() => handlePlaySong(nominee)}
-          >
-            <Text style={styles.listenButtonText}>Listen</Text>
-          </TouchableOpacity>
-        )}
-        
-        {nominee.type === 'artist' && (
-          <TouchableOpacity
-            style={styles.listenButton}
-            onPress={() => console.log('Play artist default song:', nominee.id)}
-          >
-            <Text style={styles.listenButtonText}>Listen</Text>
-          </TouchableOpacity>
-        )}
-        
-        <TouchableOpacity
-          style={styles.voteButton}
-          onPress={() => handleVoteClick(nominee)}
-        >
+        <TouchableOpacity style={styles.listenButton} onPress={() => handlePlaySong(nominee)}>
+          <Text style={styles.listenButtonText}>Listen</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.voteButton} onPress={() => handleVoteClick(nominee)}>
           <Text style={styles.voteButtonText}>Vote</Text>
         </TouchableOpacity>
       </View>
@@ -492,7 +437,6 @@ const VoteAwardsScreen: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      {/* Background Image */}
       <ImageBackground
         source={require('../../assets/randomrapper.jpeg')}
         style={styles.backgroundImage}
@@ -558,18 +502,37 @@ const VoteAwardsScreen: React.FC = () => {
             {filteredNominees.length > 0 ? (
               filteredNominees.map(renderNomineeCard)
             ) : (
-              <Text style={styles.noNomineesText}>
-                {searchQuery
-                  ? 'No nominees match your search.'
-                  : 'No nominees found for this category yet.'}
-              </Text>
+              !error && (
+                <Text style={styles.noNomineesText}>
+                  {searchQuery
+                    ? 'No nominees match your search.'
+                    : 'No nominees found for this category yet.'}
+                </Text>
+              )
             )}
           </View>
         )}
 
-        {/* Bottom padding for Player */}
         <View style={{ height: 100 }} />
       </ScrollView>
+
+      {/* VotingWizard Modal */}
+      <VotingWizard
+        visible={showVoteWizard}
+        onClose={() => {
+          setShowVoteWizard(false);
+          setSelectedNominee(null);
+        }}
+        onVoteSuccess={handleVoteSuccess}
+        nominee={selectedNominee}
+        userId={userId || ''}
+        filters={{
+          selectedGenre,
+          selectedType,
+          selectedInterval,
+          selectedJurisdiction,
+        }}
+      />
     </View>
   );
 };
@@ -578,263 +541,118 @@ const VoteAwardsScreen: React.FC = () => {
 // STYLES
 // =============================================================================
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.bgBlack,
-  },
-  
-  // Background
-  backgroundImage: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  backgroundOverlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  
-  // Scroll
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 20,
-  },
-  
+  container: { flex: 1, backgroundColor: COLORS.bgBlack },
+  backgroundImage: { ...StyleSheet.absoluteFillObject },
+  backgroundOverlay: { ...StyleSheet.absoluteFillObject },
+  scrollView: { flex: 1 },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 20 },
+
   // Filters
   filtersContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: IS_MOBILE ? 8 : 15,
-    marginBottom: 30,
-    zIndex: 100,
+    flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
+    gap: IS_MOBILE ? 8 : 15, marginBottom: 30, zIndex: 100,
   },
-  filterWrapper: {
-    position: 'relative',
-    zIndex: 10,
-  },
+  filterWrapper: { position: 'relative', zIndex: 10 },
   filterButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 18,
+    paddingVertical: 10, paddingHorizontal: 18,
     backgroundColor: 'rgba(26, 26, 26, 0.8)',
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    borderRadius: 50,
+    borderWidth: 1, borderColor: COLORS.borderSilver, borderRadius: 50,
   },
-  filterButtonActive: {
-    borderColor: COLORS.unisBlue,
-    backgroundColor: 'rgba(22, 51, 135, 0.1)',
-  },
-  filterButtonText: {
-    color: COLORS.textSilver,
-    fontSize: IS_MOBILE ? 12 : 14,
-  },
-  filterButtonTextActive: {
-    color: COLORS.accentWhite,
-  },
+  filterButtonActive: { borderColor: COLORS.unisBlue, backgroundColor: 'rgba(22, 51, 135, 0.1)' },
+  filterButtonText: { color: COLORS.textSilver, fontSize: IS_MOBILE ? 12 : 14 },
+  filterButtonTextActive: { color: COLORS.accentWhite },
   filterDropdown: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    right: 0,
-    marginTop: 4,
-    backgroundColor: COLORS.subtleBlack,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    overflow: 'hidden',
-    minWidth: 120,
+    position: 'absolute', top: '100%' as any, left: 0, right: 0, marginTop: 4,
+    backgroundColor: COLORS.subtleBlack, borderRadius: 8,
+    borderWidth: 1, borderColor: COLORS.borderSilver, overflow: 'hidden', minWidth: 120,
   },
-  filterOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
-  filterOptionActive: {
-    backgroundColor: 'rgba(22, 51, 135, 0.2)',
-  },
-  filterOptionText: {
-    color: COLORS.textSilver,
-    fontSize: 13,
-  },
-  filterOptionTextActive: {
-    color: COLORS.unisBlue,
-  },
-  
+  filterOption: { paddingVertical: 10, paddingHorizontal: 14 },
+  filterOptionActive: { backgroundColor: 'rgba(22, 51, 135, 0.2)' },
+  filterOptionText: { color: COLORS.textSilver, fontSize: 13 },
+  filterOptionTextActive: { color: COLORS.unisBlue },
+
   // Title
-  titleContainer: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
+  titleContainer: { alignItems: 'center', marginBottom: 24 },
   titleText: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 20 : 24,
-    fontWeight: '300',
-    textAlign: 'center',
-    letterSpacing: 1,
+    color: COLORS.accentWhite, fontSize: IS_MOBILE ? 20 : 24,
+    fontWeight: '300', textAlign: 'center', letterSpacing: 1,
   },
   jurisdictionText: {
-    color: COLORS.unisBlue,
-    fontSize: IS_MOBILE ? 24 : 28,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginTop: 4,
+    color: COLORS.unisBlue, fontSize: IS_MOBILE ? 24 : 28,
+    fontWeight: '600', textAlign: 'center', marginTop: 4,
   },
-  
+
   // Search
-  searchContainer: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
+  searchContainer: { alignItems: 'center', marginBottom: 24 },
   searchInput: {
-    width: IS_MOBILE ? '90%' : '60%',
-    maxWidth: 500,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+    width: IS_MOBILE ? '90%' : '60%', maxWidth: 500,
+    paddingVertical: 12, paddingHorizontal: 24,
     backgroundColor: 'rgba(26, 26, 26, 0.5)',
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    borderRadius: 50,
-    color: COLORS.accentWhite,
-    fontSize: 16,
-    textAlign: 'center',
+    borderWidth: 1, borderColor: COLORS.borderSilver, borderRadius: 50,
+    color: COLORS.accentWhite, fontSize: 16, textAlign: 'center',
   },
-  
-  // Loading
-  loadingContainer: {
-    alignItems: 'center',
-    paddingVertical: 50,
-  },
-  loadingText: {
-    color: COLORS.textSilver,
-    marginTop: 12,
-    fontSize: 16,
-  },
-  
-  // Error
-  errorContainer: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  errorText: {
-    color: '#ff6b6b',
-    fontSize: 14,
-  },
-  
+
+  // Loading / Error
+  loadingContainer: { alignItems: 'center', paddingVertical: 50 },
+  loadingText: { color: COLORS.textSilver, marginTop: 12, fontSize: 16 },
+  errorContainer: { alignItems: 'center', paddingVertical: 20 },
+  errorText: { color: '#ff6b6b', fontSize: 14 },
+
   // Nominee List
-  nomineeList: {
-    gap: 16,
-  },
-  
-  // Nominee Card
+  nomineeList: { gap: 16 },
   nomineeCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(26, 26, 26, 0.95)',
-    borderRadius: 8,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(26, 26, 26, 0.95)', borderRadius: 8,
     padding: IS_MOBILE ? 12 : 20,
-    borderLeftWidth: IS_MOBILE ? 3 : 4,
-    borderLeftColor: COLORS.unisBlue,
-    borderRightWidth: IS_MOBILE ? 3 : 4,
-    borderRightColor: COLORS.unisBlue,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(192, 192, 192, 0.05)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(192, 192, 192, 0.05)',
+    borderLeftWidth: IS_MOBILE ? 3 : 4, borderLeftColor: COLORS.unisBlue,
+    borderRightWidth: IS_MOBILE ? 3 : 4, borderRightColor: COLORS.unisBlue,
+    borderTopWidth: 1, borderTopColor: 'rgba(192, 192, 192, 0.05)',
+    borderBottomWidth: 1, borderBottomColor: 'rgba(192, 192, 192, 0.05)',
   },
   nomineeImage: {
-    width: IS_MOBILE ? 55 : 70,
-    height: IS_MOBILE ? 55 : 70,
-    borderRadius: 12,
-    marginRight: IS_MOBILE ? 10 : 20,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
+    width: IS_MOBILE ? 55 : 70, height: IS_MOBILE ? 55 : 70,
+    borderRadius: 12, marginRight: IS_MOBILE ? 10 : 20,
+    borderWidth: 1, borderColor: COLORS.borderSilver,
+    backgroundColor: COLORS.subtleBlack,
   },
-  nomineeInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
+  nomineeInfo: { flex: 1, minWidth: 0 },
   nomineeName: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 15 : 22,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 2,
+    color: COLORS.accentWhite, fontSize: IS_MOBILE ? 15 : 22,
+    fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2,
   },
-  nomineeArtist: {
-    color: COLORS.unisSilver,
-    fontSize: IS_MOBILE ? 10 : 14,
-    marginBottom: 2,
-  },
+  nomineeArtist: { color: COLORS.unisSilver, fontSize: IS_MOBILE ? 10 : 14, marginBottom: 2 },
   nomineeJurisdiction: {
-    color: COLORS.unisBlue,
-    fontSize: IS_MOBILE ? 10 : 14,
-    fontWeight: '500',
-    marginTop: 2,
+    color: COLORS.unisBlue, fontSize: IS_MOBILE ? 10 : 14, fontWeight: '500', marginTop: 2,
   },
-  statRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-  },
-  statTextPlays: {
-    color: COLORS.playBlue,
-    fontSize: IS_MOBILE ? 11 : 13,
-  },
-  statTextVotes: {
-    color: COLORS.voteGold,
-    fontSize: IS_MOBILE ? 11 : 13,
-  },
-  
+  statRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 },
+  statTextPlays: { color: COLORS.playBlue, fontSize: IS_MOBILE ? 11 : 13 },
+  statTextVotes: { color: COLORS.voteGold, fontSize: IS_MOBILE ? 11 : 13 },
+
   // Buttons
   nomineeButtons: {
-    flexDirection: IS_MOBILE ? 'column' : 'row',
-    gap: IS_MOBILE ? 8 : 10,
+    flexDirection: IS_MOBILE ? 'column' : 'row', gap: IS_MOBILE ? 8 : 10,
     marginLeft: IS_MOBILE ? 10 : 0,
   },
   listenButton: {
-    paddingVertical: IS_MOBILE ? 6 : 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 20,
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: COLORS.textGray,
-    borderRadius: 4,
-    minWidth: IS_MOBILE ? 60 : 80,
-    alignItems: 'center',
+    paddingVertical: IS_MOBILE ? 6 : 8, paddingHorizontal: IS_MOBILE ? 12 : 20,
+    backgroundColor: 'transparent', borderWidth: 1, borderColor: COLORS.textGray,
+    borderRadius: 4, minWidth: IS_MOBILE ? 60 : 80, alignItems: 'center',
   },
   listenButtonText: {
-    color: COLORS.textSilver,
-    fontSize: IS_MOBILE ? 10 : 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: COLORS.textSilver, fontSize: IS_MOBILE ? 10 : 13,
+    fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5,
   },
   voteButton: {
-    paddingVertical: IS_MOBILE ? 6 : 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 20,
-    backgroundColor: COLORS.unisBlue,
-    borderWidth: 1,
-    borderColor: COLORS.unisBlue,
-    borderRadius: 4,
-    minWidth: IS_MOBILE ? 60 : 80,
-    alignItems: 'center',
+    paddingVertical: IS_MOBILE ? 6 : 8, paddingHorizontal: IS_MOBILE ? 12 : 20,
+    backgroundColor: COLORS.unisBlue, borderWidth: 1, borderColor: COLORS.unisBlue,
+    borderRadius: 4, minWidth: IS_MOBILE ? 60 : 80, alignItems: 'center',
   },
   voteButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 10 : 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: COLORS.accentWhite, fontSize: IS_MOBILE ? 10 : 13,
+    fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5,
   },
-  
-  // No nominees
   noNomineesText: {
-    color: COLORS.textGray,
-    fontSize: 16,
-    textAlign: 'center',
-    marginTop: 50,
-    fontWeight: '300',
+    color: COLORS.textGray, fontSize: 16, textAlign: 'center', marginTop: 50, fontWeight: '300',
   },
 });
 
