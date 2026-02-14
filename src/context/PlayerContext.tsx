@@ -1,5 +1,6 @@
 // src/context/PlayerContext.tsx
 // Ported from web - uses expo-av instead of HTML5 <audio>
+// Added: clearPlayer() to reset state on logout
 
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { Audio, AVPlaybackStatus } from 'expo-av';
@@ -96,6 +97,9 @@ interface PlayerContextType {
   openPlaylistManager: () => void;
   closePlaylistManager: () => void;
   
+  // Cleanup
+  clearPlayer: () => Promise<void>;
+  
   // Playlist operations
   createPlaylist: (name: string) => Promise<void>;
   addToPlaylist: (playlistId: string, track: MediaItem) => Promise<void>;
@@ -139,7 +143,7 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(false);
   const [showPlaylistManager, setShowPlaylistManager] = useState(false);
   
-  // Audio reference - using useRef to persist across renders
+  // Audio reference
   const soundRef = useRef<Audio.Sound | null>(null);
 
   // Configure audio mode on mount
@@ -158,7 +162,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     
     setupAudio();
     
-    // Cleanup on unmount
     return () => {
       if (soundRef.current) {
         soundRef.current.unloadAsync();
@@ -184,7 +187,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
   // Playback status update handler
   const onPlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
     if (!status.isLoaded) {
-      // Error handling
       if (status.error) {
         console.error('Playback error:', status.error);
       }
@@ -196,7 +198,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     setPosition(status.positionMillis);
     setDuration(status.durationMillis || 0);
 
-    // Handle track ended
     if (status.didJustFinish && !status.isLooping) {
       console.log('Track finished, playing next');
       handleTrackEnd();
@@ -215,7 +216,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
   // Load and play a track
   const loadAndPlayTrack = async (track: NormalizedTrack) => {
     try {
-      // Unload previous sound
       if (soundRef.current) {
         await soundRef.current.unloadAsync();
         soundRef.current = null;
@@ -223,7 +223,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
 
       console.log('Loading track:', track.title, track.url);
 
-      // Create and load new sound
       const { sound } = await Audio.Sound.createAsync(
         { uri: track.url },
         { shouldPlay: true },
@@ -257,7 +256,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
       const index = normalizedPlaylist.findIndex(t => t.id === normalizedMedia.id);
       setCurrentIndex(index >= 0 ? index : 0);
     } else {
-      // Find in existing playlist or set as single track
       const existingIndex = playlist.findIndex(t => t.id === normalizedMedia.id);
       if (existingIndex >= 0) {
         setCurrentIndex(existingIndex);
@@ -273,7 +271,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
   // Toggle play/pause
   const togglePlayPause = useCallback(async () => {
     if (!soundRef.current) {
-      // No sound loaded, try to load current media
       if (currentMedia) {
         await loadAndPlayTrack(currentMedia);
       }
@@ -313,6 +310,30 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
 
   // Toggle expanded view
   const toggleExpand = () => setIsExpanded(!isExpanded);
+
+  // ─── CLEAR PLAYER — call this on logout ───
+  const clearPlayer = async () => {
+    try {
+      if (soundRef.current) {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+    } catch (err) {
+      console.error('Error clearing player audio:', err);
+    }
+
+    setCurrentMedia(null);
+    setPlaylist([]);
+    setCurrentIndex(0);
+    setIsPlaying(false);
+    setIsBuffering(false);
+    setIsExpanded(false);
+    setPosition(0);
+    setDuration(0);
+    setPlaylists([]);
+    setShowPlaylistManager(false);
+  };
 
   // Playlist management functions
   const loadUserPlaylists = async () => {
@@ -439,6 +460,9 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     toggleExpand,
     openPlaylistManager: () => setShowPlaylistManager(true),
     closePlaylistManager: () => setShowPlaylistManager(false),
+    
+    // Cleanup
+    clearPlayer,
     
     // Playlist operations
     createPlaylist,

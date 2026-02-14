@@ -8,7 +8,7 @@ import {
   DrawerActions,
 } from '@react-navigation/native';
 
-// Auth - import from your existing AuthContext
+// Auth
 import { useAuth } from '../context/AuthContext';
 
 // Screens
@@ -70,7 +70,7 @@ const PlaceholderScreen = () => {
   return <HomeScreen />;
 };
 
-// Main Stack Navigator (for screens that need full-screen navigation)
+// Main Stack Navigator
 const MainStack = () => {
   return (
     <Stack.Navigator
@@ -106,60 +106,34 @@ const LayoutWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
 // Wrapped screens with Header
 const MainStackWithHeader = () => (
-  <LayoutWrapper>
-    <MainStack />
-  </LayoutWrapper>
+  <LayoutWrapper><MainStack /></LayoutWrapper>
 );
-
 const PlaceholderWithHeader = () => (
-  <LayoutWrapper>
-    <PlaceholderScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><PlaceholderScreen /></LayoutWrapper>
 );
-
 const VoteAwardsWithHeader = () => (
-  <LayoutWrapper>
-    <VoteAwardsScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><VoteAwardsScreen /></LayoutWrapper>
 );
-
 const FindScreenWithHeader = () => (
-  <LayoutWrapper>
-    <FindScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><FindScreen /></LayoutWrapper>
 );
-
 const LeaderboardsWithHeader = () => (
-  <LayoutWrapper>
-    <LeaderboardsScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><LeaderboardsScreen /></LayoutWrapper>
 );
-
 const MilestonesWithHeader = () => (
-  <LayoutWrapper>
-    <MilestonesScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><MilestonesScreen /></LayoutWrapper>
 );
-
 const ArtistDashboardWithHeader = () => (
-  <LayoutWrapper>
-    <ArtistDashboardScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><ArtistDashboardScreen /></LayoutWrapper>
 );
-
 const ProfileScreenWithHeader = () => (
-  <LayoutWrapper>
-    <ProfileScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><ProfileScreen /></LayoutWrapper>
 );
-
 const EarningsScreenWithHeader = () => (
-  <LayoutWrapper>
-    <EarningsScreen />
-  </LayoutWrapper>
+  <LayoutWrapper><EarningsScreen /></LayoutWrapper>
 );
 
-// Loading screen while checking auth
+// Loading screen
 const LoadingScreen = () => (
   <View style={styles.loadingContainer}>
     <ActivityIndicator size="large" color="#163387" />
@@ -167,19 +141,27 @@ const LoadingScreen = () => (
   </View>
 );
 
-// Main App Navigator with Drawer (only shown when authenticated)
+// Main App Navigator with Drawer
 const MainAppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
 
   const handleStateChange = useCallback((state: any) => {
-    const drawerState = state?.routes?.[0]?.state;
-    if (drawerState) {
-      const isOpen = drawerState.history?.some(
-        (item: any) => item.type === 'drawer' && item.status === 'open'
-      );
-      setIsDrawerOpen(!!isOpen);
-    } else {
+    try {
+      const routes = state?.routes;
+      if (!routes) return;
+      for (const route of routes) {
+        const drawerState = route.state;
+        if (drawerState?.type === 'drawer') {
+          const isOpen = drawerState.history?.some(
+            (item: any) => item.type === 'drawer'
+          );
+          setIsDrawerOpen(!!isOpen);
+          return;
+        }
+      }
+      setIsDrawerOpen(false);
+    } catch {
       setIsDrawerOpen(false);
     }
   }, []);
@@ -203,7 +185,9 @@ const MainAppNavigator = () => {
               backgroundColor: 'transparent',
               width: 250,
             },
-            overlayColor: 'rgba(22, 51, 135, 0.5)',
+            // Dark overlay like web: rgba(0,0,0,0.5) + backdrop-filter: blur
+            // RN can't blur, but dark overlay looks clean
+            overlayColor: 'rgba(0, 0, 0, 0.7)',
             swipeEnabled: true,
             swipeEdgeWidth: 50,
           }}
@@ -221,6 +205,7 @@ const MainAppNavigator = () => {
         </Drawer.Navigator>
       </NavigationContainer>
 
+      {/* Hide trigger when drawer is open */}
       {!isDrawerOpen && (
         <DrawerTrigger onPress={openDrawer} />
       )}
@@ -228,20 +213,16 @@ const MainAppNavigator = () => {
   );
 };
 
-// ============================================================================
-// ROOT NAVIGATOR - This is the key part that checks auth state!
-// ============================================================================
+// Root Navigator — checks auth
 const AppNavigator = () => {
   const { user, loading } = useAuth();
 
   console.log('AppNavigator - loading:', loading, 'user:', user ? user.username : 'null');
 
-  // Show loading screen while checking auth status
   if (loading) {
     return <LoadingScreen />;
   }
 
-  // If no user, show login screen (NOT inside NavigationContainer here)
   if (!user) {
     return (
       <NavigationContainer>
@@ -250,7 +231,6 @@ const AppNavigator = () => {
     );
   }
 
-  // User is authenticated, show main app with drawer
   return <MainAppNavigator />;
 };
 

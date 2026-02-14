@@ -4,11 +4,7 @@
 // Slides in from the left, displays artwork + title + artist,
 // pulses with a Unis blue border glow, then slides out after 3 seconds.
 //
-// Port notes:
-// - CSS @keyframes slideIn/slideOut → Animated translateX + opacity
-// - CSS @keyframes flashingBlueBorder → Animated loop on border color + shadow
-// - backdrop-filter: blur → not available in RN, using solid dark bg instead
-// - Sits above the Player component (bottom: 100+ in web)
+// Sits ABOVE the Player (zIndex: 1100 > Player's 1000)
 
 import React, { useEffect, useRef } from 'react';
 import {
@@ -24,7 +20,7 @@ import { usePlayer } from '../context/PlayerContext';
 import { getMediaUrl } from '../services/axiosInstance';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const NOTIFICATION_DURATION = 3000; // 3 seconds visible
+const NOTIFICATION_DURATION = 3000;
 const SLIDE_IN_DURATION = 500;
 const SLIDE_OUT_DURATION = 400;
 
@@ -45,17 +41,14 @@ const SongNotification: React.FC = () => {
   useEffect(() => {
     if (!currentMedia) return;
 
-    // Only trigger on actual song change, not re-renders
     const mediaId = currentMedia.id || currentMedia.title;
     if (mediaId === prevMediaId.current) return;
     prevMediaId.current = mediaId;
 
-    // Clear any existing hide timer
     if (hideTimer.current) {
       clearTimeout(hideTimer.current);
     }
 
-    // Reset position if already visible
     if (isVisible.current) {
       translateX.setValue(-SCREEN_WIDTH);
       opacity.setValue(0);
@@ -63,7 +56,6 @@ const SongNotification: React.FC = () => {
 
     isVisible.current = true;
 
-    // Slide in
     Animated.parallel([
       Animated.spring(translateX, {
         toValue: 0,
@@ -79,14 +71,13 @@ const SongNotification: React.FC = () => {
       }),
     ]).start();
 
-    // Start border glow loop
     glowAnimation.current = Animated.loop(
       Animated.sequence([
         Animated.timing(borderGlow, {
           toValue: 1,
           duration: 750,
           easing: Easing.inOut(Easing.sin),
-          useNativeDriver: false, // borderColor can't use native driver
+          useNativeDriver: false,
         }),
         Animated.timing(borderGlow, {
           toValue: 0,
@@ -98,9 +89,7 @@ const SongNotification: React.FC = () => {
     );
     glowAnimation.current.start();
 
-    // Schedule slide out
     hideTimer.current = setTimeout(() => {
-      // Stop glow
       glowAnimation.current?.stop();
 
       Animated.parallel([
@@ -129,7 +118,6 @@ const SongNotification: React.FC = () => {
 
   if (!currentMedia) return null;
 
-  // Interpolate border color for the flashing effect
   const animatedBorderColor = borderGlow.interpolate({
     inputRange: [0, 1],
     outputRange: ['rgba(0, 123, 255, 0)', 'rgba(0, 123, 255, 0.9)'],
@@ -140,7 +128,7 @@ const SongNotification: React.FC = () => {
     outputRange: [0.2, 0.7],
   });
 
-  const artworkUrl = getMediaUrl(currentMedia.artwork || currentMedia.imageUrl);
+  const artworkUrl = getMediaUrl(currentMedia.artwork || (currentMedia as any).imageUrl);
 
   return (
     <Animated.View
@@ -163,7 +151,6 @@ const SongNotification: React.FC = () => {
           },
         ]}
       >
-        {/* Artwork */}
         <View style={styles.artworkContainer}>
           {artworkUrl ? (
             <Image
@@ -178,7 +165,6 @@ const SongNotification: React.FC = () => {
           )}
         </View>
 
-        {/* Info */}
         <View style={styles.info}>
           <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">
             {currentMedia.title || 'Unknown Track'}
@@ -195,10 +181,11 @@ const SongNotification: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 90, // Above the mini player
+    bottom: 140,       // Well above mini player
     left: 12,
-    right: 60, // Don't stretch full width — keep it compact
-    zIndex: 101,
+    right: 60,
+    zIndex: 1100,      // Above Player's 1000
+    elevation: 20,     // Android z-ordering
   },
   card: {
     flexDirection: 'row',
@@ -209,7 +196,6 @@ const styles = StyleSheet.create({
     gap: 12,
     borderWidth: 2,
     borderColor: 'transparent',
-    // Shadow
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
@@ -217,7 +203,6 @@ const styles = StyleSheet.create({
     elevation: 12,
   },
   artworkContainer: {
-    // Subtle glow behind artwork
     shadowColor: FLASH_BLUE,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.25,

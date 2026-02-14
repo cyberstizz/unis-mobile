@@ -1,6 +1,7 @@
-// CustomDrawer.tsx
+// src/components/CustomDrawer.tsx
 // Slide-out navigation drawer matching web sidebar mobile behavior
-// Transparent background, Unis blue overlay (handled by navigator), Bitcount font, lucide icons
+// Black background, dark overlay (handled by navigator), Bitcount font, lucide icons
+// Font sized down to prevent text wrapping on narrow drawer
 
 import React from 'react';
 import {
@@ -25,7 +26,6 @@ import {
 } from 'lucide-react-native';
 import { useAuth } from '../context/AuthContext';
 
-// Design tokens from sidebar.scss
 const COLORS = {
   textSilver: '#C0C0C0',
   accentWhite: '#FFFFFF',
@@ -48,45 +48,14 @@ const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
   const { navigation } = props;
   const { user } = useAuth();
 
-  // Routes match DrawerParamList in AppNavigator
   const navItems: NavItem[] = [
-    {
-      label: 'Home',
-      icon: House,
-      route: 'Home',
-      isHome: true,
-    },
-    {
-      label: 'Vote',
-      icon: Vote,
-      route: 'Vote',
-    },
-    {
-      label: 'Find',
-      icon: Search,
-      route: 'Find',
-    },
-    {
-      label: 'Leaderboards',
-      icon: Trophy,
-      route: 'Leaderboards',
-    },
-    {
-      label: 'Settings',
-      icon: Settings,
-      // Settings goes to Settings screen; role-based routing can be handled in that screen
-      route: 'Settings',
-    },
-    {
-      label: 'Earnings',
-      icon: DollarSign,
-      route: 'Earnings',
-    },
-    {
-      label: 'Playlists',
-      icon: Music,
-      route: 'Playlists',
-    },
+    { label: 'Home', icon: House, route: 'Home', isHome: true },
+    { label: 'Vote', icon: Vote, route: 'Vote' },
+    { label: 'Find', icon: Search, route: 'Find' },
+    { label: 'Leaderboards', icon: Trophy, route: 'Leaderboards' },
+    { label: 'Settings', icon: Settings, route: 'Settings' },
+    { label: 'Earnings', icon: DollarSign, route: 'Earnings' },
+    { label: 'Playlists', icon: Music, route: 'Playlists' },
   ];
 
   const handleNavPress = (item: NavItem) => {
@@ -115,9 +84,12 @@ const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
                 activeOpacity={0.7}
               >
                 <View style={styles.iconContainer}>
-                  <IconComponent size={24} color={iconColor} />
+                  <IconComponent size={22} color={iconColor} />
                 </View>
-                <Text style={[styles.navText, { color: textColor }]}>
+                <Text
+                  style={[styles.navText, { color: textColor }]}
+                  numberOfLines={1}
+                >
                   {item.label}
                 </Text>
               </TouchableOpacity>
@@ -132,7 +104,7 @@ const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'transparent', // Transparent on mobile per SCSS
+    backgroundColor: 'rgba(0, 0, 0, 0.95)', // Black bg matching web .sidebar { background: black }
   },
   scrollContent: {
     paddingTop: SCREEN_HEIGHT * 0.11, // top: 11vh from SCSS
@@ -144,24 +116,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingTop: 15,
-    paddingBottom: 8,
+    paddingBottom: 10,
     paddingLeft: 15,
-    paddingRight: 1,
-    // Border is transparent on mobile per SCSS @media (max-width: 768px)
-    borderBottomWidth: 0,
+    paddingRight: 10,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(192, 192, 192, 0.15)', // Subtle separator like web
   },
   iconContainer: {
     width: 25,
-    height: 35,
+    height: 30,
     marginRight: 7,
     justifyContent: 'center',
     alignItems: 'center',
   },
   navText: {
     fontFamily: 'BitcountGridDouble',
-    fontSize: 23,
+    fontSize: 18,         // Down from 23 — prevents "Leaderboards" from wrapping
     paddingTop: 2,
     marginLeft: 3,
+    flexShrink: 1,        // Allows text to shrink if still tight
   },
 });
 

@@ -103,6 +103,13 @@ const Player: React.FC = () => {
   const seekbarRef = useRef<View>(null);
   const seekbarLayout = useRef({ x: 0, y: 0, width: 0, height: 0 });
 
+  const durationRef = useRef(0);
+
+// Add this useEffect to keep it synced:
+useEffect(() => {
+  durationRef.current = duration;
+}, [duration]);
+
   // Extract user ID from token
   useEffect(() => {
     const getUserId = async () => {
@@ -232,19 +239,28 @@ const Player: React.FC = () => {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: (evt) => {
-        const { locationX } = evt.nativeEvent;
-        const percentage = Math.max(0, Math.min(1, locationX / seekbarLayout.current.width));
-        const newPosition = percentage * duration;
-        seekTo(newPosition);
+        seekbarRef.current?.measure((x, y, width, height, pageX, pageY) => {
+          if (width > 0 && durationRef.current > 0) {
+            const touchX = evt.nativeEvent.pageX - pageX;
+            const percentage = Math.max(0, Math.min(1, touchX / width));
+            const newPosition = percentage * durationRef.current;
+            seekTo(newPosition);
+          }
+        });
       },
       onPanResponderMove: (evt) => {
-        const { locationX } = evt.nativeEvent;
-        const percentage = Math.max(0, Math.min(1, locationX / seekbarLayout.current.width));
-        const newPosition = percentage * duration;
-        seekTo(newPosition);
+        seekbarRef.current?.measure((x, y, width, height, pageX, pageY) => {
+          if (width > 0 && durationRef.current > 0) {
+            const touchX = evt.nativeEvent.pageX - pageX;
+            const percentage = Math.max(0, Math.min(1, touchX / width));
+            const newPosition = percentage * durationRef.current;
+            seekTo(newPosition);
+          }
+        });
       },
     })
   ).current;
+
 
   // Base64 decode helper
   const atob = (input: string): string => {
