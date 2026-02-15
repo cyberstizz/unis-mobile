@@ -104,10 +104,10 @@ const CustomDrawer: React.FC<DrawerContentComponentProps> = (props) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.95)', // Black bg matching web .sidebar { background: black }
+    backgroundColor: 'transparent',
   },
   scrollContent: {
-    paddingTop: SCREEN_HEIGHT * 0.11, // top: 11vh from SCSS
+    paddingTop: SCREEN_HEIGHT * 0.11, 
   },
   navList: {
     flex: 1,
@@ -131,10 +131,10 @@ const styles = StyleSheet.create({
   },
   navText: {
     fontFamily: 'BitcountGridDouble',
-    fontSize: 18,         // Down from 23 — prevents "Leaderboards" from wrapping
+    fontSize: 13,         
     paddingTop: 2,
     marginLeft: 3,
-    flexShrink: 1,        // Allows text to shrink if still tight
+    flexShrink: 1,        
   },
 });
 

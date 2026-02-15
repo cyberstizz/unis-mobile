@@ -146,35 +146,27 @@ const MainAppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
 
-  const handleStateChange = useCallback((state: any) => {
-    try {
-      const routes = state?.routes;
-      if (!routes) return;
-      for (const route of routes) {
-        const drawerState = route.state;
-        if (drawerState?.type === 'drawer') {
-          const isOpen = drawerState.history?.some(
-            (item: any) => item.type === 'drawer'
-          );
-          setIsDrawerOpen(!!isOpen);
-          return;
-        }
-      }
-      setIsDrawerOpen(false);
-    } catch {
-      setIsDrawerOpen(false);
-    }
-  }, []);
-
   const openDrawer = useCallback(() => {
     navigationRef.current?.dispatch(DrawerActions.openDrawer());
   }, []);
+
+  console.log('=== DRAWER OPEN:', isDrawerOpen, '===');
 
   return (
     <View style={styles.navigatorContainer}>
       <NavigationContainer
         ref={navigationRef}
-        onStateChange={handleStateChange}
+        onStateChange={(state) => {
+          const history = state?.routes?.[0]?.state?.history;
+          if (history) {
+            const isOpen = history.some(
+              (entry: any) => entry.type === 'drawer'
+            );
+            setIsDrawerOpen(isOpen);
+          } else {
+            setIsDrawerOpen(false);
+          }
+        }}
       >
         <Drawer.Navigator
           drawerContent={(props) => <CustomDrawer {...props} />}
@@ -185,8 +177,6 @@ const MainAppNavigator = () => {
               backgroundColor: 'transparent',
               width: 250,
             },
-            // Dark overlay like web: rgba(0,0,0,0.5) + backdrop-filter: blur
-            // RN can't blur, but dark overlay looks clean
             overlayColor: 'rgba(0, 0, 0, 0.7)',
             swipeEnabled: true,
             swipeEdgeWidth: 50,
@@ -205,13 +195,13 @@ const MainAppNavigator = () => {
         </Drawer.Navigator>
       </NavigationContainer>
 
-      {/* Hide trigger when drawer is open */}
       {!isDrawerOpen && (
         <DrawerTrigger onPress={openDrawer} />
       )}
     </View>
   );
 };
+
 
 // Root Navigator — checks auth
 const AppNavigator = () => {
