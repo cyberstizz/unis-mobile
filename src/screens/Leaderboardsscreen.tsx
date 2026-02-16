@@ -12,14 +12,15 @@ import {
   Modal,
   FlatList,
   Pressable,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
-// import axiosInstance from '../services/axiosInstance';
-import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/idMappings';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
 
 // ============================================================================
 // COLORS & SIZES (matches web SCSS variables)
@@ -38,25 +39,6 @@ const COLORS = {
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
-
-// ============================================================================
-// DUMMY DATA (for testing without API)
-// ============================================================================
-const DUMMY_ARTISTS = [
-  { id: 'artist-1', type: 'artist', rank: 1, name: 'The Quiet', title: 'The Quiet', artist: 'The Quiet', votes: 1250, artwork: null },
-  { id: 'artist-2', type: 'artist', rank: 2, name: 'Tony Fadd', title: 'Tony Fadd', artist: 'Tony Fadd', votes: 980, artwork: null },
-  { id: 'artist-3', type: 'artist', rank: 3, name: 'SD Boomin', title: 'SD Boomin', artist: 'SD Boomin', votes: 756, artwork: null },
-  { id: 'artist-4', type: 'artist', rank: 4, name: 'Harlem Heat', title: 'Harlem Heat', artist: 'Harlem Heat', votes: 623, artwork: null },
-  { id: 'artist-5', type: 'artist', rank: 5, name: 'Uptown Flow', title: 'Uptown Flow', artist: 'Uptown Flow', votes: 512, artwork: null },
-];
-
-const DUMMY_SONGS = [
-  { id: 'song-1', type: 'song', rank: 1, title: 'Midnight in Harlem', artist: 'The Quiet', votes: 890, artwork: null, fileUrl: null },
-  { id: 'song-2', type: 'song', rank: 2, title: 'Paranoid', artist: 'Tony Fadd', votes: 745, artwork: null, fileUrl: null },
-  { id: 'song-3', type: 'song', rank: 3, title: 'Block Party', artist: 'SD Boomin', votes: 632, artwork: null, fileUrl: null },
-  { id: 'song-4', type: 'song', rank: 4, title: 'Street Dreams', artist: 'Harlem Heat', votes: 521, artwork: null, fileUrl: null },
-  { id: 'song-5', type: 'song', rank: 5, title: 'Uptown Anthem', artist: 'Uptown Flow', votes: 445, artwork: null, fileUrl: null },
-];
 
 // ============================================================================
 // FILTER OPTIONS
@@ -90,12 +72,6 @@ const INTERVAL_OPTIONS = [
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
-const API_BASE_URL = 'http://localhost:8080';
-
-const buildUrl = (url: string | null): string | null => {
-  if (!url) return null;
-  return url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
-};
 
 // Base64 decode for token parsing
 const atob = (input: string): string => {
@@ -168,7 +144,7 @@ const LeaderboardsScreen: React.FC = () => {
   }, []);
 
   // ============================================================================
-  // FETCH LEADERBOARDS
+  // FETCH LEADERBOARDS — REAL API
   // ============================================================================
   const handleViewCurrent = async () => {
     setIsLoading(true);
@@ -176,75 +152,141 @@ const LeaderboardsScreen: React.FC = () => {
     setResults([]);
 
     try {
-      // TODO: Replace with actual API call
-      // const jurId = JURISDICTION_IDS[location];
-      // const genreId = GENRE_IDS[genre];
-      // const intervalId = INTERVAL_IDS[interval];
-      // 
-      // const response = await axiosInstance.get(
-      //   `/v1/vote/leaderboards?jurisdictionId=${jurId}&genreId=${genreId}&targetType=${category}&intervalId=${intervalId}&limit=50`
-      // );
-      // const rawResults = response.data;
+      const jurId = JURISDICTION_IDS[location];
+      const genreId = GENRE_IDS[genre];
+      const intervalId = INTERVAL_IDS[interval];
+      const type = category;
 
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 800));
+      if (!jurId) throw new Error('Invalid location');
+      if (!genreId) throw new Error('Invalid genre');
+      if (!intervalId) throw new Error('Invalid interval');
 
-      // Use dummy data based on category
-      const dummyResults = category === 'artist' ? DUMMY_ARTISTS : DUMMY_SONGS;
-      
-      if (dummyResults.length === 0) {
+      console.log('Fetching leaderboards:', { jurId, genreId, type, intervalId });
+
+      const response = await axiosInstance.get(
+        `/v1/vote/leaderboards?jurisdictionId=${jurId}&genreId=${genreId}&targetType=${type}&intervalId=${intervalId}&limit=50`
+      );
+
+      const rawResults = response.data;
+      console.log('Raw leaderboard results:', rawResults);
+
+      if (!rawResults || rawResults.length === 0) {
         setError('No results found for this combination. Try different filters.');
         return;
       }
 
-      setResults(dummyResults);
-    } catch (err) {
+      // Normalize — matches web version's mapping exactly
+      const normalized: LeaderboardItem[] = rawResults.map((item: any, i: number) => {
+        if (type === 'artist') {
+          return {
+            id: item.targetId,
+            type: 'artist' as const,
+            rank: item.rank || i + 1,
+            name: item.name || 'Unknown Artist',
+            title: item.name || 'Unknown Artist',
+            artist: item.name || 'Unknown Artist',
+            votes: item.votes || 0,
+            artwork: item.artwork ? getMediaUrl(item.artwork) || null : null,
+            fileUrl: null,
+          };
+        } else {
+          return {
+            id: item.targetId,
+            type: 'song' as const,
+            rank: item.rank || i + 1,
+            title: item.name || 'Unknown Song',
+            artist: item.artist || 'Unknown',
+            votes: item.votes || 0,
+            fileUrl: item.fileUrl ? getMediaUrl(item.fileUrl) || null : null,
+            artwork: item.artwork ? getMediaUrl(item.artwork) || null : null,
+          };
+        }
+      });
+
+      console.log('Normalized results:', normalized);
+      setResults(normalized);
+    } catch (err: any) {
       console.error('Leaderboards fetch error:', err);
-      setError('Failed to load leaderboards. Please try again.');
+      setError(
+        `Failed to load leaderboards: ${err.response?.data?.message || err.message}`
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   // ============================================================================
-  // PLAY HANDLER
+  // PLAY HANDLER — REAL API
   // ============================================================================
   const handlePlay = async (item: LeaderboardItem) => {
-    if (item.type === 'song' && item.fileUrl) {
-      // Play song directly
-      const fullUrl = buildUrl(item.fileUrl);
+    let trackingId: string | null = null;
+
+    // Song with fileUrl — play directly
+    if (item.fileUrl) {
+      console.log('Playing song directly:', item.title);
+
       playMedia(
         {
           type: 'song',
-          url: fullUrl || '',
+          url: item.fileUrl,
           title: item.title,
           artist: item.artist,
-          artwork: buildUrl(item.artwork),
-        },
+          artwork: item.artwork,
+        } as any,
         []
       );
 
-      // Track play
-      // if (userId) {
-      //   try {
-      //     await axiosInstance.post(`/v1/media/song/${item.id}/play?userId=${userId}`);
-      //   } catch (err) {
-      //     console.error('Failed to track play:', err);
-      //   }
-      // }
-    } else if (item.type === 'artist') {
-      // Fetch and play default song for artist
+      trackingId = item.id;
+    }
+    // Artist — fetch default song
+    else if (item.type === 'artist' && item.id) {
       console.log('Fetching default song for artist:', item.name);
-      // TODO: Implement default song fetch
-      // try {
-      //   const response = await axiosInstance.get(`/v1/users/${item.id}/default-song`);
-      //   const defaultSong = response.data;
-      //   if (defaultSong?.fileUrl) {
-      //     playMedia({ ... }, []);
-      //   }
-      // } catch (err) {
-      //   console.error('Failed to fetch default song:', err);
-      // }
+
+      try {
+        const response = await axiosInstance.get(
+          `/v1/users/${item.id}/default-song`
+        );
+        const defaultSong = response.data;
+
+        if (defaultSong && defaultSong.fileUrl) {
+          const fullUrl = getMediaUrl(defaultSong.fileUrl);
+
+          playMedia(
+            {
+              type: 'song',
+              url: fullUrl,
+              title: defaultSong.title,
+              artist: item.name || item.artist,
+              artwork: getMediaUrl(defaultSong.artworkUrl) || item.artwork,
+            } as any,
+            []
+          );
+
+          trackingId = defaultSong.songId;
+        } else {
+          Alert.alert('Unavailable', `${item.name} has no default song`);
+          return;
+        }
+      } catch (err) {
+        console.error('Default song fetch failed:', err);
+        Alert.alert('Error', "Could not load artist's song");
+        return;
+      }
+    } else {
+      Alert.alert('Unavailable', 'This track is not available for playback');
+      return;
+    }
+
+    // Track the play
+    if (trackingId && userId) {
+      try {
+        await axiosInstance.post(
+          `/v1/media/song/${trackingId}/play?userId=${userId}`
+        );
+        console.log('Play tracked for:', trackingId);
+      } catch (err) {
+        console.error('Failed to track play:', err);
+      }
     }
   };
 
@@ -337,53 +379,54 @@ const LeaderboardsScreen: React.FC = () => {
   // ============================================================================
   // RENDER RESULT ITEM
   // ============================================================================
-  const renderResultItem = (item: LeaderboardItem) => (
-    <View key={`${item.type}-${item.id}-${item.rank}`} style={styles.resultItem}>
-      {/* Rank */}
-      <Text style={styles.rank}>#{item.rank}</Text>
+  const renderResultItem = (item: LeaderboardItem) => {
+    const itemArtwork = item.artwork ? { uri: item.artwork } : fallbackImage;
 
-      {/* Artwork */}
-      <Image
-        source={item.artwork ? { uri: item.artwork } : fallbackImage}
-        style={styles.itemArtwork}
-      />
+    return (
+      <View key={`${item.type}-${item.id}-${item.rank}`} style={styles.resultItem}>
+        {/* Rank */}
+        <Text style={styles.rank}>#{item.rank}</Text>
 
-      {/* Info */}
-      <View style={styles.itemInfo}>
-        <Text style={styles.itemTitle} numberOfLines={1}>
-          {item.title}
-        </Text>
-        {item.type === 'song' && (
-          <Text style={styles.itemArtist} numberOfLines={1}>
-            {item.artist}
+        {/* Artwork */}
+        <Image source={itemArtwork} style={styles.itemArtwork} />
+
+        {/* Info */}
+        <View style={styles.itemInfo}>
+          <Text style={styles.itemTitle} numberOfLines={1}>
+            {item.title}
           </Text>
-        )}
-      </View>
+          {item.type === 'song' && (
+            <Text style={styles.itemArtist} numberOfLines={1}>
+              {item.artist}
+            </Text>
+          )}
+        </View>
 
-      {/* Actions */}
-      <View style={styles.resultActions}>
-        <TouchableOpacity
-          style={styles.listenButton}
-          onPress={() => handlePlay(item)}
-        >
-          <Text style={styles.listenButtonText}>Listen</Text>
-        </TouchableOpacity>
+        {/* Actions */}
+        <View style={styles.resultActions}>
+          <TouchableOpacity
+            style={styles.listenButton}
+            onPress={() => handlePlay(item)}
+          >
+            <Text style={styles.listenButtonText}>Listen</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.viewButton}
-          onPress={() =>
-            item.type === 'artist'
-              ? handleArtistView(item.id)
-              : handleSongView(item.id)
-          }
-        >
-          <Text style={styles.viewButtonText}>
-            {item.type === 'artist' ? 'View' : 'View Song'}
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.viewButton}
+            onPress={() =>
+              item.type === 'artist'
+                ? handleArtistView(item.id)
+                : handleSongView(item.id)
+            }
+          >
+            <Text style={styles.viewButtonText}>
+              {item.type === 'artist' ? 'View' : 'View Song'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
-  );
+    );
+  };
 
   // ============================================================================
   // MAIN RENDER
@@ -402,31 +445,24 @@ const LeaderboardsScreen: React.FC = () => {
           {/* Filter Card */}
           <View style={styles.filterCard}>
             <View style={styles.filterControls}>
-              {/* Location Dropdown */}
               <CustomDropdown
                 id="location"
                 value={location}
                 options={LOCATION_OPTIONS}
                 onSelect={setLocation}
               />
-
-              {/* Genre Dropdown */}
               <CustomDropdown
                 id="genre"
                 value={genre}
                 options={GENRE_OPTIONS}
                 onSelect={setGenre}
               />
-
-              {/* Category Dropdown */}
               <CustomDropdown
                 id="category"
                 value={category}
                 options={CATEGORY_OPTIONS}
                 onSelect={(val) => setCategory(val as 'artist' | 'song')}
               />
-
-              {/* Interval Dropdown */}
               <CustomDropdown
                 id="interval"
                 value={interval}
@@ -434,7 +470,6 @@ const LeaderboardsScreen: React.FC = () => {
                 onSelect={setInterval}
               />
 
-              {/* View Current Button */}
               <TouchableOpacity
                 style={[styles.viewCurrentButton, isLoading && styles.viewCurrentButtonDisabled]}
                 onPress={handleViewCurrent}

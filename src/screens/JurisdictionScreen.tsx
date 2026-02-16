@@ -9,13 +9,15 @@ import {
   Dimensions,
   ActivityIndicator,
   ImageBackground,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { Music, Play, Heart, Eye } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
-// import axiosInstance from '../services/axiosInstance';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import HarlemGif from '../../assets/downtownHarlem.gif';
 
 // ============================================================================
 // COLORS & SIZES
@@ -33,60 +35,6 @@ const COLORS = {
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
-
-// ============================================================================
-// DUMMY DATA
-// ============================================================================
-const DUMMY_DATA = {
-  symbolImage: null,
-  description: 'Explore the vibrant music scene of Harlem',
-  
-  artistOfMonth: {
-    id: 'artist-001',
-    name: 'The Quiet',
-    image: null,
-    bio: 'Rising star in the community.',
-    supporters: 4523,
-    plays: 12847,
-  },
-  
-  songOfWeek: {
-    id: 'song-001',
-    title: 'Midnight in Harlem',
-    artist: 'The Quiet',
-    artistId: 'artist-001',
-    plays: 8934,
-    likes: 2156,
-    image: null,
-    fileUrl: null,
-  },
-  
-  topArtists: [
-    { id: 'artist-001', rank: 1, name: 'The Quiet', supporters: 4523, plays: 12847, thumbnail: null },
-    { id: 'artist-002', rank: 2, name: 'Tony Fadd', supporters: 3891, plays: 10234, thumbnail: null },
-    { id: 'artist-003', rank: 3, name: 'SD Boomin', supporters: 2987, plays: 8765, thumbnail: null },
-    { id: 'artist-004', rank: 4, name: 'Harlem Heat', supporters: 2456, plays: 7234, thumbnail: null },
-    { id: 'artist-005', rank: 5, name: 'Uptown Flow', supporters: 1987, plays: 5678, thumbnail: null },
-  ],
-  
-  topSongs: [
-    { id: 'song-001', rank: 1, title: 'Midnight in Harlem', artist: 'The Quiet', artistId: 'artist-001', plays: 8934, likes: 2156, thumbnail: null, fileUrl: null },
-    { id: 'song-002', rank: 2, title: 'Paranoid', artist: 'Tony Fadd', artistId: 'artist-002', plays: 7654, likes: 1876, thumbnail: null, fileUrl: null },
-    { id: 'song-003', rank: 3, title: 'Block Party', artist: 'SD Boomin', artistId: 'artist-003', plays: 6543, likes: 1543, thumbnail: null, fileUrl: null },
-    { id: 'song-004', rank: 4, title: 'Street Dreams', artist: 'Harlem Heat', artistId: 'artist-004', plays: 5432, likes: 1234, thumbnail: null, fileUrl: null },
-    { id: 'song-005', rank: 5, title: 'Uptown Anthem', artist: 'Uptown Flow', artistId: 'artist-005', plays: 4321, likes: 987, thumbnail: null, fileUrl: null },
-  ],
-};
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-const API_BASE_URL = 'http://localhost:8080';
-
-const buildUrl = (url: string | null): string | null => {
-  if (!url) return null;
-  return url.startsWith('http://') || url.startsWith('https://') ? url : `${API_BASE_URL}${url}`;
-};
 
 // Base64 decode for token parsing
 const atob = (input: string): string => {
@@ -161,7 +109,7 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   const [userId, setUserId] = useState<string | null>(null);
 
   // Fallback image
-  const fallbackImage = require('../../assets/randomrapper.jpeg');
+  const fallbackImage = HarlemGif;
 
   // ============================================================================
   // GET USER ID FROM TOKEN
@@ -182,7 +130,7 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   }, []);
 
   // ============================================================================
-  // FETCH JURISDICTION DATA
+  // FETCH JURISDICTION DATA — REAL API
   // ============================================================================
   useEffect(() => {
     const fetchData = async () => {
@@ -196,20 +144,81 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
         setLoading(true);
         setError(null);
 
-        // TODO: Replace with actual API calls
         // Step 1: Get jurisdiction ID by name
-        // const jurResponse = await axiosInstance.get(`/v1/jurisdictions/byName/${encodeURIComponent(jurName)}`);
-        // const jurId = jurResponse.data?.[0]?.jurisdictionId;
-        // 
+        const jurResponse = await axiosInstance.get(
+          `/v1/jurisdictions/byName/${encodeURIComponent(jurName)}`
+        );
+        const firstResult = jurResponse.data?.[0];
+        if (!firstResult) throw new Error('Jurisdiction not found');
+        const jurId = firstResult.jurisdictionId;
+        const jurDetails = firstResult;
+        if (!jurId) throw new Error('Jurisdiction not found');
+
         // Step 2: Get tops
-        // const topsResponse = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
+        const topsResponse = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
+        const rawData = { ...topsResponse.data, jurisdiction: jurDetails };
 
-        // Simulate API delay
-        await new Promise((resolve) => setTimeout(resolve, 800));
+        // Normalize — matches web version's mapping exactly
+        const topArtist = rawData.topArtist || (rawData.topArtists || [])[0];
+        const topSong = rawData.topSong || (rawData.topSongs || [])[0];
 
-        // Use dummy data
-        setData(DUMMY_DATA);
-      } catch (err) {
+        const normalized: JurisdictionData = {
+          symbolImage: rawData.jurisdiction.symbolUrl
+            ? getMediaUrl(rawData.jurisdiction.symbolUrl) || null
+            : null,
+          description: rawData.jurisdiction.bio || `Explore ${jurName}`,
+
+          // Only set if exists — no dummy fallbacks
+          artistOfMonth: topArtist
+            ? {
+                id: topArtist.userId,
+                name: topArtist.username,
+                image: getMediaUrl(topArtist.photoUrl) || null,
+                bio: topArtist.bio || 'Rising star in the community.',
+                supporters: topArtist.score || 0,
+                plays: topArtist.score || 0,
+              }
+            : null,
+
+          songOfWeek: topSong
+            ? {
+                id: topSong.songId,
+                title: topSong.title,
+                artist: topSong.artist?.username || 'Unknown',
+                artistId: topSong.artist?.userId,
+                plays: topSong.plays || topSong.score || 0,
+                likes: topSong.likes || 0,
+                image: getMediaUrl(topSong.artworkUrl) || null,
+                fileUrl: getMediaUrl(topSong.fileUrl) || null,
+              }
+            : null,
+
+          // Only real artists
+          topArtists: (rawData.topArtists || []).map((artist: any, i: number) => ({
+            id: artist.userId,
+            rank: i + 1,
+            name: artist.username,
+            supporters: artist.score || 0,
+            plays: artist.score || 0,
+            thumbnail: getMediaUrl(artist.photoUrl) || null,
+          })),
+
+          // Only real songs
+          topSongs: (rawData.topSongs || []).map((song: any, i: number) => ({
+            id: song.songId,
+            rank: i + 1,
+            title: song.title,
+            artist: song.artist?.username || 'Unknown',
+            artistId: song.artist?.userId,
+            plays: song.plays || song.score || 0,
+            likes: song.likes || 0,
+            thumbnail: getMediaUrl(song.artworkUrl) || null,
+            fileUrl: getMediaUrl(song.fileUrl) || null,
+          })),
+        };
+
+        setData(normalized);
+      } catch (err: any) {
         console.error('Jurisdiction fetch error:', err);
         setError(`Failed to load data for ${jurName}.`);
         setData(null);
@@ -222,28 +231,57 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   }, [jurName]);
 
   // ============================================================================
-  // PLAY HANDLERS
+  // PLAY HANDLERS — ALL WIRED TO REAL BACKEND
   // ============================================================================
+
+  // Play top artist's default song
   const handlePlayTopArtist = async () => {
     if (!data?.artistOfMonth) return;
 
-    // TODO: Fetch default song for artist
-    // try {
-    //   const response = await axiosInstance.get(`/v1/users/${data.artistOfMonth.id}/default-song`);
-    //   const defaultSong = response.data;
-    //   if (defaultSong?.fileUrl) {
-    //     playMedia({ ... }, []);
-    //   }
-    // } catch (err) {
-    //   console.error('Failed to fetch default song:', err);
-    // }
+    try {
+      const response = await axiosInstance.get(
+        `/v1/users/${data.artistOfMonth.id}/default-song`
+      );
+      const defaultSong = response.data;
 
-    console.log('Play top artist:', data.artistOfMonth.name);
+      if (defaultSong && defaultSong.fileUrl) {
+        const fullUrl = getMediaUrl(defaultSong.fileUrl);
+
+        playMedia(
+          {
+            type: 'song',
+            url: fullUrl,
+            title: defaultSong.title,
+            artist: data.artistOfMonth.name,
+            artwork: getMediaUrl(defaultSong.artworkUrl) || data.artistOfMonth.image,
+          } as any,
+          []
+        );
+
+        // Track the play
+        if (defaultSong.songId && userId) {
+          try {
+            await axiosInstance.post(
+              `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
+            );
+            console.log('Top artist play tracked');
+          } catch (err) {
+            console.error('Failed to track play:', err);
+          }
+        }
+      } else {
+        Alert.alert('Unavailable', 'No default song available for this artist');
+      }
+    } catch (err) {
+      console.error('Failed to fetch default song:', err);
+      Alert.alert('Error', "Could not load artist's song");
+    }
   };
 
-  const handlePlayTopSong = () => {
+  // Play top song
+  const handlePlayTopSong = async () => {
     if (!data?.songOfWeek?.fileUrl) {
-      console.log('Song not available');
+      Alert.alert('Unavailable', 'Song not available');
       return;
     }
 
@@ -253,20 +291,70 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
         url: data.songOfWeek.fileUrl,
         title: data.songOfWeek.title,
         artist: data.songOfWeek.artist,
-        artwork: buildUrl(data.songOfWeek.image),
-      },
+        artwork: data.songOfWeek.image,
+      } as any,
       []
     );
+
+    // Track the play
+    if (data.songOfWeek.id && userId) {
+      try {
+        await axiosInstance.post(
+          `/v1/media/song/${data.songOfWeek.id}/play?userId=${userId}`
+        );
+        console.log('Top song play tracked');
+      } catch (err) {
+        console.error('Failed to track play:', err);
+      }
+    }
   };
 
+  // Play artist from list — fetches their default song
   const handlePlayArtist = async (artist: Artist) => {
-    // TODO: Fetch default song for artist
-    console.log('Play artist:', artist.name);
+    try {
+      const response = await axiosInstance.get(
+        `/v1/users/${artist.id}/default-song`
+      );
+      const defaultSong = response.data;
+
+      if (defaultSong && defaultSong.fileUrl) {
+        const fullUrl = getMediaUrl(defaultSong.fileUrl);
+
+        playMedia(
+          {
+            type: 'song',
+            url: fullUrl,
+            title: defaultSong.title,
+            artist: artist.name,
+            artwork: getMediaUrl(defaultSong.artworkUrl) || artist.thumbnail,
+          } as any,
+          []
+        );
+
+        // Track the play
+        if (defaultSong.songId && userId) {
+          try {
+            await axiosInstance.post(
+              `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
+            );
+            console.log('Artist play tracked');
+          } catch (err) {
+            console.error('Failed to track play:', err);
+          }
+        }
+      } else {
+        Alert.alert('Unavailable', `${artist.name} has no default song`);
+      }
+    } catch (err) {
+      console.error('Failed to fetch default song:', err);
+      Alert.alert('Error', "Could not load artist's song");
+    }
   };
 
-  const handlePlaySong = (song: Song) => {
+  // Play song from list
+  const handlePlaySong = async (song: Song) => {
     if (!song.fileUrl) {
-      console.log('Song not available');
+      Alert.alert('Unavailable', 'Song not available');
       return;
     }
 
@@ -276,10 +364,22 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
         url: song.fileUrl,
         title: song.title,
         artist: song.artist,
-        artwork: buildUrl(song.thumbnail),
-      },
+        artwork: song.thumbnail,
+      } as any,
       []
     );
+
+    // Track the play
+    if (song.id && userId) {
+      try {
+        await axiosInstance.post(
+          `/v1/media/song/${song.id}/play?userId=${userId}`
+        );
+        console.log(`Song play tracked for ${song.id}`);
+      } catch (err) {
+        console.error('Failed to track play:', err);
+      }
+    }
   };
 
   // ============================================================================
@@ -338,7 +438,9 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   // ============================================================================
   return (
     <ImageBackground
-      source={data.artistOfMonth?.image ? { uri: data.artistOfMonth.image } : fallbackImage}
+      source={
+        data.artistOfMonth?.image ? { uri: data.artistOfMonth.image } : fallbackImage
+      }
       style={styles.backgroundImage}
       blurRadius={25}
     >
@@ -371,11 +473,15 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
                   style={styles.highlightOverlay}
                 >
                   <View style={styles.sectionHeaderContainer}>
-                    <Text style={styles.highlightSectionTitle}>#1 Artist in {jurName}</Text>
+                    <Text style={styles.highlightSectionTitle}>
+                      #1 Artist in {jurName}
+                    </Text>
                   </View>
 
                   <View style={styles.highlightContent}>
-                    <TouchableOpacity onPress={() => handleViewArtist(data.artistOfMonth!.id)}>
+                    <TouchableOpacity
+                      onPress={() => handleViewArtist(data.artistOfMonth!.id)}
+                    >
                       <Image
                         source={
                           data.artistOfMonth.image
@@ -387,11 +493,18 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
                     </TouchableOpacity>
 
                     <View style={styles.highlightInfo}>
-                      <TouchableOpacity onPress={() => handleViewArtist(data.artistOfMonth!.id)}>
-                        <Text style={styles.highlightName}>{data.artistOfMonth.name}</Text>
+                      <TouchableOpacity
+                        onPress={() => handleViewArtist(data.artistOfMonth!.id)}
+                      >
+                        <Text style={styles.highlightName}>
+                          {data.artistOfMonth.name}
+                        </Text>
                       </TouchableOpacity>
 
-                      <TouchableOpacity style={styles.listenButton} onPress={handlePlayTopArtist}>
+                      <TouchableOpacity
+                        style={styles.listenButton}
+                        onPress={handlePlayTopArtist}
+                      >
                         <Text style={styles.listenButtonText}>Listen Now</Text>
                       </TouchableOpacity>
                     </View>
@@ -403,7 +516,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
             {/* Top Song Card */}
             {data.songOfWeek && (
               <ImageBackground
-                source={data.songOfWeek.image ? { uri: data.songOfWeek.image } : fallbackImage}
+                source={
+                  data.songOfWeek.image
+                    ? { uri: data.songOfWeek.image }
+                    : fallbackImage
+                }
                 style={styles.highlightCard}
                 imageStyle={styles.highlightCardImage}
               >
@@ -412,21 +529,36 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
                   style={styles.highlightOverlay}
                 >
                   <View style={styles.sectionHeaderContainer}>
-                    <Text style={styles.highlightSectionTitle}>#1 Song in {jurName}</Text>
+                    <Text style={styles.highlightSectionTitle}>
+                      #1 Song in {jurName}
+                    </Text>
                   </View>
 
                   <View style={styles.highlightContent}>
                     <View style={styles.songIcon}>
-                      <Play size={28} color={COLORS.accentWhite} fill={COLORS.accentWhite} />
+                      <Play
+                        size={28}
+                        color={COLORS.accentWhite}
+                        fill={COLORS.accentWhite}
+                      />
                     </View>
 
                     <View style={styles.highlightInfo}>
-                      <TouchableOpacity onPress={() => handleViewSong(data.songOfWeek!.id)}>
-                        <Text style={styles.highlightName}>{data.songOfWeek.title}</Text>
+                      <TouchableOpacity
+                        onPress={() => handleViewSong(data.songOfWeek!.id)}
+                      >
+                        <Text style={styles.highlightName}>
+                          {data.songOfWeek.title}
+                        </Text>
                       </TouchableOpacity>
-                      <Text style={styles.highlightArtist}>by {data.songOfWeek.artist}</Text>
+                      <Text style={styles.highlightArtist}>
+                        by {data.songOfWeek.artist}
+                      </Text>
 
-                      <TouchableOpacity style={styles.listenButton} onPress={handlePlayTopSong}>
+                      <TouchableOpacity
+                        style={styles.listenButton}
+                        onPress={handlePlayTopSong}
+                      >
                         <Text style={styles.listenButtonText}>Play</Text>
                       </TouchableOpacity>
                     </View>
@@ -455,7 +587,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
 
                       <TouchableOpacity onPress={() => handleViewArtist(artist.id)}>
                         <Image
-                          source={artist.thumbnail ? { uri: artist.thumbnail } : fallbackImage}
+                          source={
+                            artist.thumbnail
+                              ? { uri: artist.thumbnail }
+                              : fallbackImage
+                          }
                           style={styles.topThumbnail}
                         />
                       </TouchableOpacity>
@@ -479,7 +615,9 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
                           </View>
                           <View style={styles.statItem}>
                             <Eye size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>{artist.plays.toLocaleString()}</Text>
+                            <Text style={styles.statText}>
+                              {artist.plays.toLocaleString()}
+                            </Text>
                           </View>
                         </View>
                       )}
@@ -515,7 +653,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
 
                       <TouchableOpacity onPress={() => handleViewSong(song.id)}>
                         <Image
-                          source={song.thumbnail ? { uri: song.thumbnail } : fallbackImage}
+                          source={
+                            song.thumbnail
+                              ? { uri: song.thumbnail }
+                              : fallbackImage
+                          }
                           style={styles.topThumbnail}
                         />
                       </TouchableOpacity>
@@ -536,11 +678,15 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
                         <View style={styles.itemStats}>
                           <View style={styles.statItem}>
                             <Eye size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>{song.plays.toLocaleString()}</Text>
+                            <Text style={styles.statText}>
+                              {song.plays.toLocaleString()}
+                            </Text>
                           </View>
                           <View style={styles.statItem}>
                             <Heart size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>{song.likes.toLocaleString()}</Text>
+                            <Text style={styles.statText}>
+                              {song.likes.toLocaleString()}
+                            </Text>
                           </View>
                         </View>
                       )}
@@ -640,7 +786,6 @@ const styles = StyleSheet.create({
     fontSize: IS_MOBILE ? 32 : 42,
     color: COLORS.textSilver,
     fontWeight: '400',
-    fontFamily: 'System', // Would use Delicious Handrawn if available
     textAlign: 'center',
   },
 

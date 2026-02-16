@@ -18,8 +18,8 @@ import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { usePlayer } from '../context/PlayerContext';
 import IntervalDatePicker from '../components/IntervalDatePicker';
-// import axiosInstance from '../services/axiosInstance';
-import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/idMappings';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
 
 // ============================================================================
 // COLORS & SIZES (matches web SCSS variables)
@@ -72,33 +72,6 @@ const INTERVAL_OPTIONS = [
 ];
 
 // ============================================================================
-// DUMMY DATA
-// ============================================================================
-const DUMMY_WINNER = {
-  rank: 1,
-  id: 'artist-001',
-  targetType: 'artist',
-  title: 'The Quiet',
-  artist: 'The Quiet',
-  jurisdiction: 'Downtown Harlem',
-  votes: 156,
-  weightedPoints: 1560,
-  playsCount: 2847,
-  likesCount: 892,
-  artwork: null,
-  determinationMethod: 'WEIGHTED_VOTES',
-  tiedCandidatesCount: 0,
-  caption: 'Dominated the daily charts with pure lyrical prowess!',
-};
-
-const DUMMY_RUNNERS_UP = [
-  { rank: 2, id: 'artist-002', targetType: 'artist', title: 'Tony Fadd', artist: 'Tony Fadd', jurisdiction: 'Uptown Harlem', votes: 134, weightedPoints: 1340, playsCount: 2156, likesCount: 654, artwork: null, determinationMethod: 'WEIGHTED_VOTES', tiedCandidatesCount: 0 },
-  { rank: 3, id: 'artist-003', targetType: 'artist', title: 'SD Boomin', artist: 'SD Boomin', jurisdiction: 'Downtown Harlem', votes: 98, weightedPoints: 980, playsCount: 1823, likesCount: 521, artwork: null, determinationMethod: 'WEIGHTED_VOTES', tiedCandidatesCount: 0 },
-  { rank: 4, id: 'artist-004', targetType: 'artist', title: 'Harlem Heat', artist: 'Harlem Heat', jurisdiction: 'Harlem', votes: 87, weightedPoints: 870, playsCount: 1456, likesCount: 398, artwork: null, determinationMethod: 'PLAYS', tiedCandidatesCount: 2 },
-  { rank: 5, id: 'artist-005', targetType: 'artist', title: 'Uptown Flow', artist: 'Uptown Flow', jurisdiction: 'Uptown Harlem', votes: 76, weightedPoints: 760, playsCount: 1234, likesCount: 312, artwork: null, determinationMethod: 'WEIGHTED_VOTES', tiedCandidatesCount: 0 },
-];
-
-// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 const formatLocation = (loc: string): string => {
@@ -129,40 +102,41 @@ const getIntervalText = (int: string): string => {
   return intervalMap[int] || 'OF THE DAY';
 };
 
-const formatDateDisplay = (date: Date, intervalType: string): string => {
+const formatDateDisplay = (dateString: string, intervalType: string): string => {
+  if (!dateString) return '';
+
+  const [year, month, day] = dateString.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December',
   ];
 
-  const year = date.getFullYear();
-  const month = date.getMonth();
-  const day = date.getDate();
-
   switch (intervalType) {
     case 'daily':
-      return `${days[date.getDay()]}, ${months[month]} ${day}, ${year}`;
+      return `${days[date.getDay()]}, ${months[month - 1]} ${day}, ${year}`;
 
     case 'weekly': {
       const dayOfWeek = date.getDay();
       const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      const monday = new Date(year, month, day - daysToMonday);
+      const monday = new Date(year, month - 1, day - daysToMonday);
       const sunday = new Date(monday);
       sunday.setDate(monday.getDate() + 6);
       return `Week of ${months[monday.getMonth()]} ${monday.getDate()} - ${sunday.getDate()}, ${monday.getFullYear()}`;
     }
 
     case 'monthly':
-      return `${months[month]} ${year}`;
+      return `${months[month - 1]} ${year}`;
 
     case 'quarterly': {
-      const q = Math.floor(month / 3) + 1;
+      const q = Math.floor((month - 1) / 3) + 1;
       return `Q${q} ${year}`;
     }
 
     case 'midterm': {
-      const h = month <= 5 ? 1 : 2;
+      const h = month <= 6 ? 1 : 2;
       return `${h === 1 ? 'First' : 'Second'} Half of ${year}`;
     }
 
@@ -170,20 +144,19 @@ const formatDateDisplay = (date: Date, intervalType: string): string => {
       return `Year ${year}`;
 
     default:
-      return `${months[month]} ${day}, ${year}`;
+      return `${months[month - 1]} ${day}, ${year}`;
   }
 };
 
 const getDateRangeForInterval = (
-  selectedDate: Date,
+  selectedDate: string,
   intervalType: string
 ): { startDate: string; endDate: string } => {
-  const year = selectedDate.getFullYear();
-  const month = selectedDate.getMonth();
-  const day = selectedDate.getDate();
+  if (!selectedDate) return { startDate: '', endDate: '' };
 
-  const startDate = new Date(year, month, day);
-  const endDate = new Date(year, month, day);
+  const [year, month, day] = selectedDate.split('-').map(Number);
+  const startDate = new Date(year, month - 1, day);
+  const endDate = new Date(year, month - 1, day);
 
   switch (intervalType) {
     case 'daily':
@@ -197,10 +170,10 @@ const getDateRangeForInterval = (
     }
     case 'monthly':
       startDate.setDate(1);
-      endDate.setDate(new Date(year, month + 1, 0).getDate());
+      endDate.setDate(new Date(year, month, 0).getDate());
       break;
     case 'quarterly': {
-      const quarterStartMonth = Math.floor(month / 3) * 3;
+      const quarterStartMonth = Math.floor((month - 1) / 3) * 3;
       startDate.setMonth(quarterStartMonth);
       startDate.setDate(1);
       endDate.setMonth(quarterStartMonth + 2);
@@ -208,7 +181,7 @@ const getDateRangeForInterval = (
       break;
     }
     case 'midterm':
-      if (month <= 5) {
+      if (month <= 6) {
         startDate.setMonth(0);
         startDate.setDate(1);
         endDate.setMonth(5);
@@ -301,19 +274,30 @@ const MilestonesScreen: React.FC = () => {
   const getMaxDate = (): string => {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    
+
     if (interval === 'annual') {
       const lastYear = new Date().getFullYear() - 1;
       return `${lastYear}-12-31`;
     }
-    
+
     const year = yesterday.getFullYear();
     const month = String(yesterday.getMonth() + 1).padStart(2, '0');
     const day = String(yesterday.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
-  
+
   const minDate = '2025-10-26';
+
+  // ============================================================================
+  // HELPER: Generate winner caption (fallback if backend doesn't provide one)
+  // ============================================================================
+  const generateWinnerCaption = (award: any): string => {
+    const method = award.determinationMethod;
+    if (!method || method === 'WEIGHTED_VOTES') {
+      return `Winner with ${award.weightedPoints || 0} points!`;
+    }
+    return 'Winner!';
+  };
 
   // ============================================================================
   // CUSTOM DROPDOWN COMPONENT
@@ -389,24 +373,7 @@ const MilestonesScreen: React.FC = () => {
   };
 
   // ============================================================================
-  // DATE PICKER HANDLER
-  // ============================================================================
-  const handleDateChange = (event: any, date?: Date) => {
-    if (Platform.OS === 'android') {
-      setShowDatePicker(false);
-    }
-    if (date) {
-      setSelectedDate(date);
-    }
-  };
-
-  const formatSelectedDateDisplay = (): string => {
-    if (!selectedDate) return 'Select Date';
-    return `${selectedDate.getMonth() + 1}/${selectedDate.getDate()}/${selectedDate.getFullYear()}`;
-  };
-
-  // ============================================================================
-  // FETCH MILESTONES
+  // FETCH MILESTONES — REAL API
   // ============================================================================
   const handleView = async () => {
     if (!selectedDate) {
@@ -419,30 +386,72 @@ const MilestonesScreen: React.FC = () => {
     setResults([]);
 
     try {
-      // TODO: Replace with actual API call
-      // const jurId = JURISDICTION_IDS[location];
-      // const genreId = GENRE_IDS[genre];
-      // const intervalId = INTERVAL_IDS[interval];
-      // const { startDate, endDate } = getDateRangeForInterval(parseDateString(selectedDate), interval);
-      //
-      // const response = await axiosInstance.get(
-      //   `/v1/awards/past?type=${category}&startDate=${startDate}&endDate=${endDate}&jurisdictionId=${jurId}&genreId=${genreId}&intervalId=${intervalId}`
-      // );
+      const jurId = JURISDICTION_IDS[location];
+      const genreId = GENRE_IDS[genre];
+      const intervalId = INTERVAL_IDS[interval];
+      const type = category;
 
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (!jurId) throw new Error('Invalid location');
+      if (!genreId) throw new Error('Invalid genre');
+      if (!intervalId) throw new Error('Invalid interval');
 
-      // Use dummy data
-      const dummyResults = [DUMMY_WINNER, ...DUMMY_RUNNERS_UP];
+      const { startDate, endDate } = getDateRangeForInterval(selectedDate, interval);
 
-      if (dummyResults.length === 0) {
+      console.log('Milestones API params:', { type, startDate, endDate, jurId, genreId, intervalId });
+
+      const response = await axiosInstance.get(
+        `/v1/awards/past?type=${type}&startDate=${startDate}&endDate=${endDate}&jurisdictionId=${jurId}&genreId=${genreId}&intervalId=${intervalId}`
+      );
+
+      const rawResults = response.data;
+
+      if (!rawResults || rawResults.length === 0) {
         setError('No awards found for this date. Try a different date.');
+        setResults([]);
         return;
       }
 
-      setResults(dummyResults);
+      // Normalize API response — matches web version's mapping exactly
+      const normalized: MilestoneItem[] = rawResults.map((award: any, i: number) => {
+        let title: string;
+        let artist: string;
+        let artwork: string | null;
 
-      // Freeze the displayed context
+        if (award.targetType === 'artist') {
+          title = award.user?.username || 'Unknown Artist';
+          artist = award.user?.username || 'Unknown Artist';
+          artwork = award.user?.photoUrl
+            ? getMediaUrl(award.user.photoUrl) || null
+            : null;
+        } else {
+          title = award.song?.title || 'Unknown Song';
+          artist = award.song?.artist?.username || 'Unknown Artist';
+          artwork = award.song?.artworkUrl
+            ? getMediaUrl(award.song.artworkUrl) || null
+            : null;
+        }
+
+        return {
+          rank: i + 1,
+          id: award.targetId,
+          targetType: award.targetType,
+          title,
+          artist,
+          jurisdiction: award.jurisdiction?.name || location,
+          votes: award.votesCount || 0,
+          weightedPoints: award.weightedPoints || 0,
+          playsCount: award.playsCount || 0,
+          likesCount: award.likesCount || 0,
+          artwork,
+          determinationMethod: award.determinationMethod,
+          tiedCandidatesCount: award.tiedCandidatesCount || 0,
+          caption: award.caption || generateWinnerCaption(award),
+        };
+      });
+
+      setResults(normalized);
+
+      // Freeze the displayed context so caption doesn't change until next search
       setDisplayedContext({
         location,
         genre,
@@ -450,9 +459,9 @@ const MilestonesScreen: React.FC = () => {
         interval,
         selectedDate,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Milestones fetch error:', err);
-      setError('Failed to load milestones. Please try again.');
+      setError(err.message || 'Failed to load milestones. Please try again.');
       setResults([]);
     } finally {
       setIsLoading(false);
@@ -507,11 +516,7 @@ const MilestonesScreen: React.FC = () => {
     const genreText = formatGenre(displayedContext.genre);
     const categoryText = formatCategory(displayedContext.category);
     const intervalText = getIntervalText(displayedContext.interval);
-    
-    // Parse the string date
-    const [year, month, day] = displayedContext.selectedDate.split('-').map(Number);
-    const dateObj = new Date(year, month - 1, day);
-    const dateText = formatDateDisplay(dateObj, displayedContext.interval);
+    const dateText = formatDateDisplay(displayedContext.selectedDate, displayedContext.interval);
 
     return (
       <View style={styles.captionContainer}>
@@ -595,33 +600,34 @@ const MilestonesScreen: React.FC = () => {
   // ============================================================================
   // RENDER RESULT ITEM
   // ============================================================================
-  const renderResultItem = (item: MilestoneItem) => (
-    <View key={`${item.id}-${item.rank}`} style={styles.resultItem}>
-      <Text style={styles.rank}>#{item.rank}</Text>
-      <Image
-        source={item.artwork ? { uri: item.artwork } : fallbackImage}
-        style={styles.itemArtwork}
-      />
-      <View style={styles.itemInfo}>
-        <Text style={styles.itemTitle} numberOfLines={1}>
-          {item.title}
-        </Text>
-        <Text style={styles.itemArtist} numberOfLines={1}>
-          {item.artist}
-        </Text>
+  const renderResultItem = (item: MilestoneItem) => {
+    const itemArtwork = item.artwork ? { uri: item.artwork } : fallbackImage;
+
+    return (
+      <View key={`${item.id}-${item.rank}`} style={styles.resultItem}>
+        <Text style={styles.rank}>#{item.rank}</Text>
+        <Image source={itemArtwork} style={styles.itemArtwork} />
+        <View style={styles.itemInfo}>
+          <Text style={styles.itemTitle} numberOfLines={1}>
+            {item.title}
+          </Text>
+          <Text style={styles.itemArtist} numberOfLines={1}>
+            {item.artist}
+          </Text>
+        </View>
+        <View style={styles.itemStats}>
+          <Text style={styles.points}>{item.weightedPoints} pts</Text>
+          {getDeterminationBadge(
+            item.determinationMethod,
+            item.tiedCandidatesCount,
+            item.weightedPoints,
+            item.playsCount,
+            item.likesCount
+          )}
+        </View>
       </View>
-      <View style={styles.itemStats}>
-        <Text style={styles.points}>{item.weightedPoints} pts</Text>
-        {getDeterminationBadge(
-          item.determinationMethod,
-          item.tiedCandidatesCount,
-          item.weightedPoints,
-          item.playsCount,
-          item.likesCount
-        )}
-      </View>
-    </View>
-  );
+    );
+  };
 
   // ============================================================================
   // MAIN RENDER
