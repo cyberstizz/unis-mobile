@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -9,6 +9,8 @@ import { PlayerProvider, usePlayer } from './src/context/PlayerContext';import A
 import Player from './src/components/Player';
 import SongNotification from './src/components/SongNotification';
 import WinnersNotification from './src/components/WinnersNotification';
+import * as NavigationBar from 'expo-navigation-bar';
+
 
 
 // Inner component that can use safe area hooks and auth context
@@ -22,6 +24,14 @@ const AppContent: React.FC = () => {
     clearPlayer();
   }
 }, [user]);
+
+useEffect(() => {
+  if (Platform.OS === 'android') {
+    NavigationBar.setBackgroundColorAsync('#000000');
+    NavigationBar.setButtonStyleAsync('light'); // white buttons on black bar
+  }
+}, []);
+
 
 
   return (
