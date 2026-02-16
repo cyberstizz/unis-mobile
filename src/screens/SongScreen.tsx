@@ -27,6 +27,8 @@ import * as ExpoClipboard from 'expo-clipboard';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import  VotingWizard  from '../components/VotingWizard';
+import CommentSection from '../components/Commentsection';
+
 import type { Nominee as VotingNominee } from '../types/voting';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -571,13 +573,16 @@ const SongScreen: React.FC = () => {
 
           {/* Comments Section Placeholder */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Comments</Text>
-            <View style={styles.commentsPlaceholder}>
-              <Text style={styles.placeholderText}>
-                Premium comments coming soon...
-              </Text>
-            </View>
+            <CommentSection
+              songId={song.id}
+              userId={userId}
+              songArtistId={song.artistId}
+              dominantColor={dominantColor}
+            />
           </View>
+
+
+
         </Animated.View>
 
         {/* Bottom padding for Player */}

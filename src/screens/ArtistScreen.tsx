@@ -19,7 +19,7 @@ import { Users, Heart, PlayCircle, Camera, Music2 } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import { VotingWizard } from '../components/VotingWizard';
+import VotingWizard  from '../components/VotingWizard';
 import type { Nominee as VotingNominee } from '../types/voting';
 
 // ============================================================================
