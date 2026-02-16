@@ -49,6 +49,9 @@ export type RootStackParamList = {
   Jurisdiction: undefined;
 };
 
+// FIXED: Removed "Artist" and "Profile" from DrawerParamList
+// - "Artist" was conflicting with the Stack-level Artist screen
+// - "Settings" now conditionally shows ArtistDashboard or Profile based on user role
 export type DrawerParamList = {
   Home: undefined;
   Vote: undefined;
@@ -58,8 +61,6 @@ export type DrawerParamList = {
   Earnings: undefined;
   Playlists: undefined;
   Milestones: undefined;
-  Artist: undefined;
-  Profile: undefined;
 };
 
 const Drawer = createDrawerNavigator<DrawerParamList>();
@@ -146,11 +147,20 @@ const MainAppNavigator = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
 
+  // FIXED: Pull user from auth context to determine artist vs listener
+  const { user } = useAuth();
+
   const openDrawer = useCallback(() => {
     navigationRef.current?.dispatch(DrawerActions.openDrawer());
   }, []);
 
   console.log('=== DRAWER OPEN:', isDrawerOpen, '===');
+
+  // FIXED: Conditionally pick Settings screen based on user role
+  // Artists see ArtistDashboardScreen, listeners see ProfileScreen
+  const SettingsScreen = user?.isArtist
+    ? ArtistDashboardWithHeader
+    : ProfileScreenWithHeader;
 
   return (
     <View style={styles.navigatorContainer}>
@@ -186,12 +196,13 @@ const MainAppNavigator = () => {
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={FindScreenWithHeader} />
           <Drawer.Screen name="Leaderboards" component={LeaderboardsWithHeader} />
-          <Drawer.Screen name="Profile" component={ProfileScreenWithHeader} />
-          <Drawer.Screen name="Settings" component={ArtistDashboardWithHeader} />
+          {/* FIXED: Settings conditionally renders based on user.isArtist */}
+          <Drawer.Screen name="Settings" component={SettingsScreen} />
           <Drawer.Screen name="Earnings" component={EarningsScreenWithHeader} />
           <Drawer.Screen name="Playlists" component={PlaceholderWithHeader} />
           <Drawer.Screen name="Milestones" component={MilestonesWithHeader} />
-          <Drawer.Screen name="Artist" component={ArtistDashboardWithHeader} />
+          {/* REMOVED: Drawer.Screen "Artist" — was intercepting Stack navigation */}
+          {/* REMOVED: Drawer.Screen "Profile" — now handled by conditional Settings */}
         </Drawer.Navigator>
       </NavigationContainer>
 

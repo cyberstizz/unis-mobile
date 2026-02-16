@@ -11,13 +11,16 @@ import {
   ActivityIndicator,
   Linking,
   ImageBackground,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { Users, Heart, PlayCircle, Camera, Music2 } from 'lucide-react-native';
+import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
-// import { AuthContext } from '../context/AuthContext';
-// import axiosInstance from '../services/axiosInstance';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import { VotingWizard } from '../components/VotingWizard';
+import type { Nominee as VotingNominee } from '../types/voting';
 
 // ============================================================================
 // COLORS & SIZES (easy to edit, matches web SCSS variables)
@@ -53,70 +56,21 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
 // ============================================================================
-// DUMMY DATA (replace with API calls)
+// BASE64 DECODE HELPER
 // ============================================================================
-const DUMMY_ARTIST = {
-  id: 'artist-001',
-  username: 'The Quiet',
-  photoUrl: null, // Will use fallback
-  jurisdiction: { name: 'Harlem' },
-  genre: { name: 'Hip-Hop' },
-  bio: 'Rising from the streets of Harlem, The Quiet brings a unique blend of introspective lyrics and hard-hitting beats. With influences ranging from classic New York hip-hop to modern trap, every track tells a story of struggle, triumph, and the pursuit of greatness.',
-  instagramUrl: 'https://instagram.com/thequiet',
-  twitterUrl: 'https://twitter.com/thequiet',
-  tiktokUrl: 'https://tiktok.com/@thequiet',
-  totalPlays: 12847,
-  score: 4523,
-};
-
-const DUMMY_SONGS = [
-  {
-    songId: 'song-001',
-    title: 'Midnight in Harlem',
-    artworkUrl: null,
-    fileUrl: 'https://example.com/song1.mp3',
-    score: 1200,
-  },
-  {
-    songId: 'song-002',
-    title: 'Block Party',
-    artworkUrl: null,
-    fileUrl: 'https://example.com/song2.mp3',
-    score: 980,
-  },
-  {
-    songId: 'song-003',
-    title: 'Silent Streets',
-    artworkUrl: null,
-    fileUrl: 'https://example.com/song3.mp3',
-    score: 756,
-  },
-  {
-    songId: 'song-004',
-    title: 'Crown Heights Dreams',
-    artworkUrl: null,
-    fileUrl: 'https://example.com/song4.mp3',
-    score: 543,
-  },
-  {
-    songId: 'song-005',
-    title: 'Uptown Anthem',
-    artworkUrl: null,
-    fileUrl: 'https://example.com/song5.mp3',
-    score: 421,
-  },
-];
-
-const DUMMY_DEFAULT_SONG = DUMMY_SONGS[0];
-
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-const API_BASE_URL = 'http://localhost:8080'; // Update with your actual API URL
-
-const buildUrl = (url: string | null): string | null => {
-  if (!url) return null;
-  return url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
+const atob = (input: string): string => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  let str = input.replace(/=+$/, '');
+  let output = '';
+  for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
+    buffer = chars.indexOf(buffer) as any;
+    if (buffer === -1) continue;
+    bs = bc % 4 ? bs * 64 + buffer : buffer;
+    if (bc++ % 4) {
+      output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+    }
+  }
+  return output;
 };
 
 // ============================================================================
@@ -131,8 +85,7 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
   const navigation = useNavigation<any>();
   const { playMedia } = usePlayer();
 
-  // Get artistId from route params
-  const artistId = (route.params as any)?.artistId || 'artist-001';
+  const artistId = (route.params as any)?.artistId || '';
 
   // State
   const [artist, setArtist] = useState<any>(null);
@@ -142,41 +95,85 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
 
   // Follower states
   const [isFollowing, setIsFollowing] = useState(false);
-  const [followerCount, setFollowerCount] = useState(847);
+  const [followerCount, setFollowerCount] = useState(0);
 
-  // Bio state (for own profile editing)
+  // Bio state
   const [bio, setBio] = useState('');
   const [isEditingBio, setIsEditingBio] = useState(false);
 
-  // Voting wizard state
+  // Voting wizard
   const [showVotingWizard, setShowVotingWizard] = useState(false);
+  const [selectedNominee, setSelectedNominee] = useState<VotingNominee | null>(null);
 
   const [defaultSong, setDefaultSong] = useState<any>(null);
-  const [userId, setUserId] = useState<string | null>('user-001'); // Dummy user ID
+  const [userId, setUserId] = useState<string | null>(null);
 
   // ============================================================================
-  // DATA FETCHING (currently using dummy data)
+  // EXTRACT USER ID FROM TOKEN
   // ============================================================================
   useEffect(() => {
-    fetchArtistData();
+    const getUserId = async () => {
+      try {
+        const token = await SecureStore.getItemAsync('token');
+        if (token) {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          setUserId(payload.userId);
+        }
+      } catch (err) {
+        console.error('Failed to get userId:', err);
+      }
+    };
+    getUserId();
+  }, []);
+
+  // ============================================================================
+  // FETCH ARTIST DATA — REAL BACKEND
+  // ============================================================================
+  useEffect(() => {
+    if (artistId) fetchArtistData();
   }, [artistId]);
+
+  // Check follow status when both IDs are available
+  useEffect(() => {
+    if (userId && artistId && userId !== artistId) {
+      checkFollowStatus();
+    }
+  }, [userId, artistId]);
 
   const fetchArtistData = async () => {
     setLoading(true);
     setError('');
 
     try {
-      // TODO: Replace with actual API calls
-      // const artistRes = await axiosInstance.get(`/v1/users/profile/${artistId}`);
-      // const songsRes = await axiosInstance.get(`/v1/media/songs/artist/${artistId}`);
+      // 1. Profile
+      const artistRes = await axiosInstance.get(`/v1/users/profile/${artistId}`);
+      const artistData = artistRes.data;
+      setArtist(artistData);
+      setBio(artistData.bio || 'No bio available.');
 
-      // Using dummy data for now
-      await new Promise((resolve) => setTimeout(resolve, 500)); // Simulate network delay
+      // 2. Follower count
+      try {
+        const countRes = await axiosInstance.get(`/v1/users/${artistId}/followers/count`);
+        setFollowerCount(countRes.data.count || 0);
+      } catch {
+        setFollowerCount(0);
+      }
 
-      setArtist(DUMMY_ARTIST);
-      setSongs(DUMMY_SONGS);
-      setBio(DUMMY_ARTIST.bio);
-      setDefaultSong(DUMMY_DEFAULT_SONG);
+      // 3. Songs
+      try {
+        const songsRes = await axiosInstance.get(`/v1/media/songs/artist/${artistId}`);
+        setSongs(songsRes.data || []);
+      } catch {
+        setSongs([]);
+      }
+
+      // 4. Default song
+      try {
+        const defaultRes = await axiosInstance.get(`/v1/users/${artistId}/default-song`);
+        setDefaultSong(defaultRes.data);
+      } catch {
+        setDefaultSong(null);
+      }
     } catch (err) {
       console.error('Failed to load artist:', err);
       setError('Failed to load artist details');
@@ -185,8 +182,17 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
     }
   };
 
+  const checkFollowStatus = async () => {
+    try {
+      const res = await axiosInstance.get(`/v1/users/${artistId}/is-following`);
+      setIsFollowing(res.data.isFollowing || false);
+    } catch (err) {
+      console.error('Failed to check follow status:', err);
+    }
+  };
+
   // ============================================================================
-  // HANDLERS
+  // HANDLERS — REAL BACKEND
   // ============================================================================
   const handleFollow = async () => {
     const previousState = isFollowing;
@@ -194,80 +200,115 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
 
     // Optimistic update
     setIsFollowing(!previousState);
-    setFollowerCount((prev) => (!previousState ? prev + 1 : prev - 1));
+    setFollowerCount(prev => (!previousState ? prev + 1 : prev - 1));
 
     try {
-      // TODO: Replace with actual API call
-      // if (!previousState) {
-      //   await axiosInstance.post(`/v1/users/${artistId}/follow`);
-      // } else {
-      //   await axiosInstance.delete(`/v1/users/${artistId}/follow`);
-      // }
+      if (!previousState) {
+        await axiosInstance.post(`/v1/users/${artistId}/follow`);
+      } else {
+        await axiosInstance.delete(`/v1/users/${artistId}/follow`);
+      }
     } catch (err) {
       console.error('Failed to toggle follow:', err);
-      // Revert on error
       setIsFollowing(previousState);
       setFollowerCount(previousCount);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
     }
   };
 
   const handleSaveBio = async () => {
     try {
-      // TODO: Replace with actual API call
-      // await axiosInstance.put(`/v1/users/profile/${artistId}/bio`, { bio });
+      await axiosInstance.put(`/v1/users/profile/${artistId}/bio`, { bio });
       setIsEditingBio(false);
+      Alert.alert('Success', 'Bio updated successfully.');
     } catch (err) {
       console.error('Failed to save bio:', err);
+      Alert.alert('Error', 'Failed to update bio.');
     }
   };
 
   const handleVote = () => {
-    // TODO: Open VotingWizard modal
+    if (!userId) {
+      Alert.alert('Login Required', 'Please log in to vote.');
+      return;
+    }
+    if (!artist) return;
+
+    setSelectedNominee({
+      id: artistId,
+      name: artist.username,
+      type: 'artist',
+      jurisdiction: artist.jurisdiction?.name || 'Unknown',
+    });
     setShowVotingWizard(true);
-    console.log('Opening voting wizard for:', artist?.username);
   };
 
-  const handlePlayDefault = () => {
-    if (defaultSong && defaultSong.fileUrl) {
-      playMedia(
-        {
-          type: 'song',
-          url: buildUrl(defaultSong.fileUrl) || '',
-          title: defaultSong.title,
-          artist: artist?.username || 'Unknown',
-          artwork: buildUrl(defaultSong.artworkUrl) || buildUrl(artist?.photoUrl),
-        },
-        []
-      );
+  const handlePlayDefault = async () => {
+    if (!defaultSong?.fileUrl) {
+      Alert.alert('No Song', 'No default song available for this artist.');
+      return;
+    }
+
+    playMedia(
+      {
+        id: defaultSong.songId,
+        songId: defaultSong.songId,
+        title: defaultSong.title,
+        artist: artist?.username || 'Unknown',
+        url: getMediaUrl(defaultSong.fileUrl)!,
+        artwork: getMediaUrl(defaultSong.artworkUrl) || getMediaUrl(artist?.photoUrl) || '',
+      } as any,
+      []
+    );
+
+    // Track play
+    if (defaultSong.songId && userId) {
+      try {
+        await axiosInstance.post(`/v1/media/song/${defaultSong.songId}/play?userId=${userId}`);
+      } catch (err) {
+        console.error('Failed to track default song play:', err);
+      }
     }
   };
 
-  const handlePlaySong = (song: any) => {
+  const handlePlaySong = async (song: any) => {
+    if (!song.fileUrl) return;
+
     playMedia(
       {
-        type: 'song',
-        url: buildUrl(song.fileUrl) || '',
+        id: song.songId,
+        songId: song.songId,
         title: song.title,
         artist: artist?.username || 'Unknown',
-        artwork: buildUrl(song.artworkUrl) || buildUrl(artist?.photoUrl),
-      },
+        url: getMediaUrl(song.fileUrl)!,
+        artwork: getMediaUrl(song.artworkUrl) || getMediaUrl(artist?.photoUrl) || '',
+      } as any,
       []
     );
+
+    // Track play
+    if (song.songId && userId) {
+      try {
+        await axiosInstance.post(`/v1/media/song/${song.songId}/play?userId=${userId}`);
+      } catch (err) {
+        console.error('Failed to track song play:', err);
+      }
+    }
   };
 
   const handleSongClick = (songId: string) => {
-    navigation.navigate('Song', { songId });
+    navigation.navigate('Song', { songId, type: 'song' });
   };
 
   const handleJurisdictionClick = () => {
     if (artist?.jurisdiction?.name) {
-      navigation.navigate('Find', { jurisdiction: artist.jurisdiction.name });
+      navigation.navigate('Jurisdiction', { jurisdictionName: artist.jurisdiction.name });
     }
   };
 
   const handleSocialLink = (url: string | null) => {
     if (url && url !== '#') {
-      Linking.openURL(url);
+      Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open link.'));
     }
   };
 
@@ -285,11 +326,10 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
         )
       : null;
 
-  // Fallback image
+  // Artist photo — use getMediaUrl for backend paths, fallback to local image
   const fallbackImage = require('../../assets/randomrapper.jpeg');
-  const artistPhoto = artist?.photoUrl
-    ? { uri: `${API_BASE_URL}${artist.photoUrl}` }
-    : fallbackImage;
+  const artistPhotoUri = getMediaUrl(artist?.photoUrl);
+  const artistPhoto = artistPhotoUri ? { uri: artistPhotoUri } : fallbackImage;
 
   // ============================================================================
   // LOADING STATE
@@ -439,7 +479,7 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
                   <Image
                     source={
                       topSong.artworkUrl
-                        ? { uri: buildUrl(topSong.artworkUrl) }
+                        ? { uri: getMediaUrl(topSong.artworkUrl) }
                         : artistPhoto
                     }
                     style={styles.songArtwork}
@@ -468,7 +508,7 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
                     <Image
                       source={
                         song.artworkUrl
-                          ? { uri: buildUrl(song.artworkUrl) }
+                          ? { uri: getMediaUrl(song.artworkUrl) }
                           : artistPhoto
                       }
                       style={styles.songArtwork}
@@ -562,23 +602,34 @@ const ArtistScreen: React.FC<ArtistScreenProps> = ({ isOwnProfile = false }) => 
         </ScrollView>
       </LinearGradient>
 
-      {/* TODO: VotingWizard Modal */}
-      {/* {showVotingWizard && (
-        <VotingWizard
-          visible={showVotingWizard}
-          onClose={() => setShowVotingWizard(false)}
-          nominee={{ id: artistId, name: artist.username, type: 'artist' }}
-        />
-      )} */}
+      {/* VotingWizard Modal */}
+      <VotingWizard
+        visible={showVotingWizard}
+        onClose={() => {
+          setShowVotingWizard(false);
+          setSelectedNominee(null);
+        }}
+        onVoteSuccess={() => {
+          setShowVotingWizard(false);
+          fetchArtistData();
+        }}
+        nominee={selectedNominee}
+        userId={userId || ''}
+        filters={{
+          selectedGenre: artist?.genre?.name?.toLowerCase().replace('/', '-') || 'unknown',
+          selectedType: 'artist',
+          selectedInterval: 'daily',
+          selectedJurisdiction: artist?.jurisdiction?.name?.toLowerCase().replace(' ', '-') || 'unknown',
+        }}
+      />
     </ImageBackground>
   );
 };
 
 // ============================================================================
-// STYLES (converted from artistpage.scss)
+// STYLES (preserved from your existing version)
 // ============================================================================
 const styles = StyleSheet.create({
-  // Background & Layout
   backgroundImage: {
     flex: 1,
     width: '100%',
@@ -594,8 +645,6 @@ const styles = StyleSheet.create({
     paddingTop: IS_MOBILE ? 100 : 80,
     paddingBottom: 20,
   },
-
-  // Loading & Error States
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -628,8 +677,6 @@ const styles = StyleSheet.create({
     color: COLORS.textSilver,
     fontWeight: '600',
   },
-
-  // Artist Header
   artistHeader: {
     alignItems: 'center',
     width: '100%',
@@ -677,8 +724,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: IS_MOBILE ? 12 : 16,
   },
-
-  // Stats Row
   statsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -695,8 +740,6 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
     fontSize: IS_MOBILE ? 13 : 14,
   },
-
-  // Action Buttons
   actionButtonsContainer: {
     width: '100%',
     maxWidth: 300,
@@ -744,8 +787,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: IS_MOBILE ? 13 : 14,
   },
-
-  // Content Wrapper
   contentWrapper: {
     width: '100%',
     maxWidth: 900,
@@ -753,8 +794,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_MOBILE ? 8 : 16,
     gap: IS_MOBILE ? 16 : 20,
   },
-
-  // Card (shared section style)
   card: {
     backgroundColor: COLORS.cardBg,
     borderWidth: 1,
@@ -774,8 +813,6 @@ const styles = StyleSheet.create({
     fontFamily: 'BitcountGridDouble',
     fontWeight: '400',
   },
-
-  // Fans Pick
   fansPickItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -784,8 +821,6 @@ const styles = StyleSheet.create({
     padding: IS_MOBILE ? 12 : 16,
     gap: IS_MOBILE ? 12 : 16,
   },
-
-  // Song List
   songsList: {
     gap: 12,
   },
@@ -827,8 +862,6 @@ const styles = StyleSheet.create({
     padding: 16,
     fontSize: 14,
   },
-
-  // Bio Section
   bioText: {
     color: COLORS.textSilver,
     lineHeight: IS_MOBILE ? 22 : 26,
@@ -861,8 +894,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: IS_MOBILE ? 13 : 14,
   },
-
-  // Social Media Section
   socialLinks: {
     gap: 12,
   },
@@ -881,7 +912,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   instagramIcon: {
-    // Instagram gradient approximation
     backgroundColor: '#E1306C',
   },
   twitterIcon: {

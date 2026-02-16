@@ -1,6 +1,6 @@
 // src/screens/SongScreen.tsx
 // Song detail page with ambient color mode
-// Ported from web SongPage.jsx
+// Ported from web SongPage.jsx — NOW WITH REAL BACKEND API CALLS
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -15,15 +15,19 @@ import {
   Dimensions,
   Alert,
   Animated,
+  Share,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Heart, FileText, Share2, Flag, Ban, Link, UserPlus } from 'lucide-react-native';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import { Heart, FileText } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as ExpoClipboard from 'expo-clipboard';
 
-
 import { usePlayer } from '../context/PlayerContext';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import  VotingWizard  from '../components/VotingWizard';
+import type { Nominee as VotingNominee } from '../types/voting';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
@@ -41,50 +45,6 @@ const COLORS = {
   borderSilver: 'rgba(192, 192, 192, 0.5)',
   explicitRed: 'rgba(255, 0, 0, 0.85)',
 };
-
-// =============================================================================
-// DUMMY SONG DATA
-// =============================================================================
-const getDummySong = (songId: string) => ({
-  id: songId,
-  title: 'Paranoid',
-  artist: 'Tony Fadd',
-  artistId: 'artist1',
-  jurisdiction: 'Uptown Harlem',
-  genre: 'Rap/Hip-Hop',
-  artwork: 'https://picsum.photos/400?random=song1',
-  url: 'https://example.com/paranoid.mp3',
-  description: 'A introspective track about the pressures of street life and staying vigilant. Produced in the heart of Harlem with authentic sounds that capture the essence of uptown.',
-  playCount: 2450,
-  playsToday: 156,
-  likeCount: 342,
-  score: 89,
-  explicit: true,
-  lyrics: `[Verse 1]
-Walking through these streets at night
-Every shadow got me feeling tight
-Can't trust nobody, that's the code
-Paranoid mind, heavy load
-
-[Chorus]
-I'm paranoid, paranoid
-Can't let my guard down
-Paranoid, paranoid
-In this part of town
-
-[Verse 2]
-Phone ringing, who that be?
-Unknown numbers calling me
-Mama praying for my soul
-While I'm chasing all this gold`,
-  credits: {
-    producer: 'SD Boomin',
-    writer: 'Tony Fadd',
-    mix: 'Harlem Studios',
-  },
-  duration: 214,
-  createdAt: '2024-01-15',
-});
 
 // =============================================================================
 // INTERFACES
@@ -114,41 +74,54 @@ interface Song {
   createdAt: string;
 }
 
-interface SongScreenProps {
-  route?: {
-    params?: {
-      songId?: string;
-    };
-  };
-}
-
 // =============================================================================
 // COMPONENT
 // =============================================================================
-const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
+const SongScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const { playMedia } = usePlayer();
-  
-  // Get songId from route params or use default
-  const songId = route?.params?.songId || 'song1';
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
+
+  const songId = route.params?.songId || 'song1';
 
   // State
   const [song, setSong] = useState<Song | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [userId, setUserId] = useState<string | null>(null);
-  
+
   // Interaction state
   const [isLiked, setIsLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [isFollowing, setIsFollowing] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
 
+  // Voting wizard
+  const [showVotingWizard, setShowVotingWizard] = useState(false);
+  const [selectedNominee, setSelectedNominee] = useState<VotingNominee | null>(null);
+
   // Ambient color state
   const [dominantColor, setDominantColor] = useState('rgba(22, 51, 135, 0.3)');
-  
+
   // Animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Base64 decode helper
+  const atob = (input: string): string => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    let str = input.replace(/=+$/, '');
+    let output = '';
+    for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
+      buffer = chars.indexOf(buffer) as any;
+      if (buffer === -1) continue;
+      bs = bc % 4 ? bs * 64 + buffer : buffer;
+      if (bc++ % 4) {
+        output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+      }
+    }
+    return output;
+  };
 
   // ==========================================================================
   // INITIALIZATION
@@ -169,46 +142,75 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
     getUserId();
   }, []);
 
-  // Base64 decode helper
-  const atob = (input: string): string => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-    let str = input.replace(/=+$/, '');
-    let output = '';
-    for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-      buffer = chars.indexOf(buffer) as any;
-      if (buffer === -1) continue;
-      bs = bc % 4 ? bs * 64 + buffer : buffer;
-      if (bc++ % 4) {
-        output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
-      }
-    }
-    return output;
-  };
-
-  // Fetch song data
   useEffect(() => {
     fetchSongData();
   }, [songId]);
+
+  // Fetch like status when song + user ready
+  useEffect(() => {
+    if (song?.id && userId) {
+      const fetchLikes = async () => {
+        try {
+          const [likedRes, countRes] = await Promise.all([
+            axiosInstance.get(`/v1/media/song/${song.id}/is-liked?userId=${userId}`),
+            axiosInstance.get(`/v1/media/song/${song.id}/likes/count`),
+          ]);
+          setIsLiked(likedRes.data.isLiked || false);
+          setLikeCount(countRes.data.count || 0);
+        } catch {
+          setIsLiked(false);
+          setLikeCount(0);
+        }
+      };
+      fetchLikes();
+    }
+  }, [song?.id, userId]);
+
+  // ==========================================================================
+  // REAL API: FETCH SONG DATA
+  // ==========================================================================
 
   const fetchSongData = async () => {
     setLoading(true);
     setError('');
 
     try {
-      // Simulate API call with dummy data
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      const songData = getDummySong(songId);
-      setSong(songData);
-      setLikeCount(songData.likeCount);
+      const response = await axiosInstance.get(`/v1/media/song/${songId}`);
+      const d = response.data;
+      console.log('Song data loaded:', d.title);
 
-      // Animate in
+      const songData: Song = {
+        id: d.songId,
+        title: d.title,
+        artist: d.artist?.username || 'Unknown',
+        artistId: d.artist?.userId || '',
+        jurisdiction: d.jurisdiction?.name || 'Unknown',
+        genre: d.genre?.name || 'Unknown',
+        artwork: getMediaUrl(d.artworkUrl) || 'https://picsum.photos/400',
+        url: getMediaUrl(d.fileUrl) || null,
+        description: d.description || 'No description available.',
+        playCount: d.playCount || 0,
+        playsToday: d.playsToday || 0,
+        likeCount: 0, // fetched separately via likes/count
+        score: d.score || 0,
+        explicit: d.explicit || false,
+        lyrics: d.lyrics || '',
+        credits: {
+          producer: 'N/A',
+          writer: 'N/A',
+          mix: 'N/A',
+        },
+        duration: d.duration || 0,
+        createdAt: d.createdAt || '',
+      };
+
+      setSong(songData);
+
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 600,
         useNativeDriver: true,
       }).start();
-
     } catch (err) {
       console.error('Failed to load song:', err);
       setError('Failed to load song details');
@@ -218,7 +220,7 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
   };
 
   // ==========================================================================
-  // HANDLERS
+  // HANDLERS — ALL WIRED TO REAL BACKEND
   // ==========================================================================
 
   const handlePlay = async () => {
@@ -235,25 +237,42 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
         artist: song.artist,
         url: song.url,
         artwork: song.artwork,
-      },
+      } as any,
       []
     );
 
     // Optimistic update
-    setSong(prev => prev ? {
-      ...prev,
-      playCount: prev.playCount + 1,
-      playsToday: prev.playsToday + 1,
-    } : null);
+    setSong(prev =>
+      prev ? { ...prev, playCount: prev.playCount + 1, playsToday: prev.playsToday + 1 } : null
+    );
+
+    // Track play
+    if (song.id && userId) {
+      try {
+        await axiosInstance.post(`/v1/media/song/${song.id}/play?userId=${userId}`);
+      } catch (err) {
+        console.error('Failed to track play:', err);
+        setSong(prev =>
+          prev ? { ...prev, playCount: prev.playCount - 1, playsToday: prev.playsToday - 1 } : null
+        );
+      }
+    }
   };
 
   const handleVote = () => {
     if (!userId) {
-      Alert.alert('Login Required', 'Please log in to vote');
+      Alert.alert('Login Required', 'Please log in to vote.');
       return;
     }
-    // TODO: Open VotingWizard
-    Alert.alert('Coming Soon', 'Voting will be available soon');
+    if (!song) return;
+
+    setSelectedNominee({
+      id: song.id,
+      name: song.title,
+      type: 'song',
+      jurisdiction: song.jurisdiction,
+    });
+    setShowVotingWizard(true);
   };
 
   const handleLike = async () => {
@@ -261,27 +280,39 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
       Alert.alert('Login Required', 'Please log in to like songs');
       return;
     }
+    if (!song?.id) return;
 
-    // Optimistic update
-    const newIsLiked = !isLiked;
-    setIsLiked(newIsLiked);
-    setLikeCount(prev => newIsLiked ? prev + 1 : Math.max(0, prev - 1));
-
-    // TODO: API call to toggle like
-    console.log('Toggle like:', newIsLiked);
+    try {
+      const method = isLiked ? 'delete' : 'post';
+      const res = await axiosInstance({
+        method,
+        url: `/v1/media/song/${song.id}/like?userId=${userId}`,
+      });
+      if (res.data.success) {
+        setIsLiked(!isLiked);
+        setLikeCount(prev => (isLiked ? Math.max(0, prev - 1) : prev + 1));
+      }
+    } catch (err) {
+      console.error('Like toggle failed:', err);
+      Alert.alert('Error', 'Failed to update like.');
+    }
   };
 
   const handleFollow = async () => {
-    if (!userId) {
-      Alert.alert('Login Required', 'Please log in to follow artists');
-      return;
+    if (!userId || !song?.artistId) return;
+    const prev = isFollowing;
+    setIsFollowing(!prev);
+
+    try {
+      if (!prev) {
+        await axiosInstance.post(`/v1/users/${song.artistId}/follow`);
+      } else {
+        await axiosInstance.delete(`/v1/users/${song.artistId}/follow`);
+      }
+    } catch (err) {
+      console.error('Follow toggle failed:', err);
+      setIsFollowing(prev);
     }
-
-    const newIsFollowing = !isFollowing;
-    setIsFollowing(newIsFollowing);
-
-    // TODO: API call to toggle follow
-    console.log('Toggle follow:', newIsFollowing);
   };
 
   const handleDontPlay = () => {
@@ -292,13 +323,19 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
     Alert.alert('Report', 'Report functionality coming soon');
   };
 
-  const handleShare = () => {
-    Alert.alert('Share', 'Share functionality coming soon');
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        message: `Check out "${song?.title}" by ${song?.artist} on Unis!`,
+      });
+    } catch (err) {
+      console.error('Share failed:', err);
+    }
   };
 
   const handleCopyLink = async () => {
     try {
-      await Clipboard.setStringAsync(`https://unis.app/song/${song?.id}`);
+      await ExpoClipboard.setStringAsync(`https://unis.app/song/${song?.id}`);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {
@@ -307,13 +344,15 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
   };
 
   const handleArtistClick = () => {
-    console.log('Navigate to artist:', song?.artistId);
-    // TODO: navigation.navigate('Artist', { artistId: song.artistId });
+    if (song?.artistId) {
+      navigation.navigate('Artist', { artistId: song.artistId });
+    }
   };
 
   const handleJurisdictionClick = () => {
-    console.log('Navigate to jurisdiction:', song?.jurisdiction);
-    // TODO: navigation.navigate('Jurisdiction', { name: song.jurisdiction });
+    if (song?.jurisdiction) {
+      navigation.navigate('Jurisdiction', { jurisdictionName: song.jurisdiction });
+    }
   };
 
   // ==========================================================================
@@ -342,6 +381,9 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
           style={styles.loadingContainer}
         >
           <Text style={styles.errorText}>{error || 'Song not found'}</Text>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.goBackBtn}>
+            <Text style={styles.goBackText}>Go Back</Text>
+          </TouchableOpacity>
         </LinearGradient>
       </View>
     );
@@ -409,7 +451,9 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
                 color={isLiked ? COLORS.accentWhite : COLORS.textGray}
                 fill={isLiked ? COLORS.accentWhite : 'none'}
               />
-              <Text style={[styles.likeButtonText, isLiked && styles.likeButtonTextActive]}>
+              <Text
+                style={[styles.likeButtonText, isLiked && styles.likeButtonTextActive]}
+              >
                 {isLiked ? 'Liked' : 'Like'}
               </Text>
             </TouchableOpacity>
@@ -449,7 +493,9 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
               style={[styles.actionBtn, isFollowing && styles.actionBtnActive]}
               onPress={handleFollow}
             >
-              <Text style={[styles.actionBtnText, isFollowing && styles.actionBtnTextActive]}>
+              <Text
+                style={[styles.actionBtnText, isFollowing && styles.actionBtnTextActive]}
+              >
                 {isFollowing ? 'Following' : 'Follow'}
               </Text>
             </TouchableOpacity>
@@ -474,20 +520,22 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
           </View>
 
           {/* Lyrics Section */}
-          {song.lyrics && (
+          {song.lyrics ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Lyrics</Text>
               <View style={styles.lyricsCard}>
                 <Text style={styles.lyricsText}>{song.lyrics}</Text>
               </View>
             </View>
-          )}
+          ) : null}
 
           {/* Edit Lyrics (Owner only) */}
           {isOwner && (
             <TouchableOpacity
               style={styles.editButton}
-              onPress={() => Alert.alert('Coming Soon', 'Lyrics editing coming soon')}
+              onPress={() =>
+                Alert.alert('Coming Soon', 'Lyrics editing coming soon')
+              }
             >
               <FileText size={16} color={COLORS.accentWhite} />
               <Text style={styles.editButtonText}>
@@ -526,38 +574,55 @@ const SongScreen: React.FC<SongScreenProps> = ({ route }) => {
             <Text style={styles.sectionTitle}>Comments</Text>
             <View style={styles.commentsPlaceholder}>
               <Text style={styles.placeholderText}>
-                Comments coming soon...
+                Premium comments coming soon...
               </Text>
             </View>
           </View>
-
         </Animated.View>
 
         {/* Bottom padding for Player */}
         <View style={{ height: 120 }} />
       </ScrollView>
+
+      {/* VotingWizard Modal */}
+      <VotingWizard
+        visible={showVotingWizard}
+        onClose={() => {
+          setShowVotingWizard(false);
+          setSelectedNominee(null);
+        }}
+        onVoteSuccess={() => {
+          setShowVotingWizard(false);
+          fetchSongData();
+        }}
+        nominee={selectedNominee}
+        userId={userId || ''}
+        filters={{
+          selectedGenre: song?.genre?.toLowerCase().replace('/', '-') || 'unknown',
+          selectedType: 'song',
+          selectedInterval: 'daily',
+          selectedJurisdiction:
+            song?.jurisdiction?.toLowerCase().replace(' ', '-') || 'unknown',
+        }}
+      />
     </View>
   );
 };
 
 // =============================================================================
-// STYLES
+// STYLES (preserved from your existing version)
 // =============================================================================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.bgBlack,
   },
-
-  // Background
   backgroundImage: {
     ...StyleSheet.absoluteFillObject,
   },
   backgroundOverlay: {
     ...StyleSheet.absoluteFillObject,
   },
-
-  // Loading
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -571,9 +636,19 @@ const styles = StyleSheet.create({
   errorText: {
     color: '#ff6b6b',
     fontSize: 16,
+    marginBottom: 20,
   },
-
-  // Scroll
+  goBackBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+    borderWidth: 1,
+    borderColor: COLORS.unisBlue,
+    borderRadius: 8,
+  },
+  goBackText: {
+    color: COLORS.unisBlue,
+    fontSize: 14,
+  },
   scrollView: {
     flex: 1,
   },
@@ -582,8 +657,6 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingHorizontal: 16,
   },
-
-  // Main Card
   mainCard: {
     width: '100%',
     maxWidth: 800,
@@ -598,8 +671,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: 12,
   },
-
-  // Title
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -625,8 +696,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
   },
-
-  // Artwork
   artwork: {
     width: IS_MOBILE ? SCREEN_WIDTH - 80 : 400,
     height: IS_MOBILE ? SCREEN_WIDTH - 80 : 400,
@@ -635,12 +704,12 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 20,
   },
-
-  // Primary Actions
   primaryActions: {
     flexDirection: 'row',
     gap: 15,
     marginBottom: 20,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
   playButton: {
     paddingVertical: 12,
@@ -689,8 +758,6 @@ const styles = StyleSheet.create({
   likeButtonTextActive: {
     color: COLORS.accentWhite,
   },
-
-  // Artist & Location
   artistName: {
     color: COLORS.accentWhite,
     fontSize: IS_MOBILE ? 24 : 32,
@@ -706,8 +773,6 @@ const styles = StyleSheet.create({
     fontSize: IS_MOBILE ? 14 : 18,
     marginBottom: 20,
   },
-
-  // Stats
   stats: {
     alignItems: 'center',
     marginBottom: 20,
@@ -726,8 +791,6 @@ const styles = StyleSheet.create({
     fontSize: IS_MOBILE ? 14 : 16,
     marginTop: 8,
   },
-
-  // Secondary Actions
   secondaryActions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -760,8 +823,6 @@ const styles = StyleSheet.create({
   actionBtnTextActive: {
     color: COLORS.accentWhite,
   },
-
-  // Sections
   section: {
     width: '100%',
     marginBottom: 30,
@@ -773,8 +834,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     textAlign: 'center',
   },
-
-  // Lyrics
   lyricsCard: {
     backgroundColor: 'rgba(20, 20, 20, 0.7)',
     borderRadius: 16,
@@ -789,8 +848,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontWeight: '500',
   },
-
-  // Edit Button
   editButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -806,16 +863,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-
-  // Description
   descriptionText: {
     color: COLORS.textGray,
     fontSize: IS_MOBILE ? 16 : 18,
     lineHeight: IS_MOBILE ? 24 : 28,
     textAlign: 'center',
   },
-
-  // Credits
   creditsGrid: {
     gap: 12,
   },
@@ -833,8 +886,6 @@ const styles = StyleSheet.create({
     color: COLORS.textGray,
     fontSize: IS_MOBILE ? 14 : 16,
   },
-
-  // Comments Placeholder
   commentsPlaceholder: {
     padding: 30,
     backgroundColor: 'rgba(26, 26, 26, 0.5)',
