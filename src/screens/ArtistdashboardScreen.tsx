@@ -36,14 +36,14 @@ import { useAuth } from '../context/AuthContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 
 // ── Wizards ──────────────────────────────────────────────────────────────────
-import EditProfileWizard from '../components/EditProfileWizard';
-import UploadWizard from '../components/UploadWizard';
-import ChangeDefaultSongWizard from '../components/ChangeDefaultSongWizard';
-import EditSongWizard from '../components/EditSongWizard';
+import EditProfileWizard from '../components/Editprofilewizard';
+import UploadWizard from '../components/Uploadwizard';
+import ChangeDefaultSongWizard from '../components/Changedefaultsongwizard';
+import EditSongWizard from '../components/Editsongwizard';
 import LyricsWizard from '../components/LyricsWizard';
 import DeleteAccountWizard from '../components/DeleteAccountWizard';
-import DeleteSongModal from '../components/DeleteSongModal';
-import DownloadContractButton from '../components/DownloadContractButton';
+import DeleteSongModal from '../components/Deletesongmodal';
+import DownloadContractButton from '../components/Downloadcontractbutton';
 
 // ============================================================================
 // COLORS & SIZES
