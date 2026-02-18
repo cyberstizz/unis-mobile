@@ -238,6 +238,8 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   const glowAnim = useRef(new Animated.Value(0)).current;
   const backwardInputRef = useRef<TextInput>(null);
 
+  const glowWrapperOpacity = useRef(new Animated.Value(0)).current;
+
   const selectedNominee = nominee;
 
   // Reversed name for Step 3 verification
@@ -307,37 +309,43 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   }, []);
 
   // ─── SUCCESS GLOW ANIMATION ───
-    useEffect(() => {
-        if (voteResult.status === 'success') {
+  useEffect(() => {
+    if (voteResult.status === 'success') {
       setShowConfetti(true);
-      try {
-        Animated.loop(
-          Animated.sequence([
-            Animated.timing(glowAnim, {
-              toValue: 1,
-              duration: 1500,
-              easing: Easing.inOut(Easing.sin),
-              useNativeDriver: false,
-            }),
-            Animated.timing(glowAnim, {
-              toValue: 0,
-              duration: 1500,
-              easing: Easing.inOut(Easing.sin),
-              useNativeDriver: false,
-            }),
-          ])
-        ).start();
-      } catch (e) {
       
-      }
+      // Fade in the glow wrapper
+      Animated.timing(glowWrapperOpacity, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: false,
+      }).start();
+      
+      // Pulsing glow loop
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(glowAnim, {
+            toValue: 1,
+            duration: 1500,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: false,
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0,
+            duration: 1500,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: false,
+          }),
+        ])
+      ).start();
+      
       const timer = setTimeout(() => setShowConfetti(false), 3000);
       return () => clearTimeout(timer);
     } else {
       glowAnim.setValue(0);
+      glowWrapperOpacity.setValue(0);
       setShowConfetti(false);
     }
   }, [voteResult.status]);
-
 
 
   // ─── RESET STATE ON OPEN ───
@@ -787,16 +795,26 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
                 opacity: modalOpacity,
                 transform: [{ scale: modalScale }],
               },
-              voteResult.status === 'success' && {
-                borderColor: glowBorderColor as any,
-                borderWidth: 2,
-                shadowColor: UNIS_BLUE,
-                shadowOpacity: glowShadowOpacity as any,
-                shadowRadius: 20,
-                elevation: 20,
-              },
             ]}
           >
+            {/* Glow border overlay — separate from native-driven animations */}
+            {voteResult.status === 'success' && (
+              <Animated.View
+                pointerEvents="none"
+                style={{
+                  ...StyleSheet.absoluteFillObject,
+                  borderRadius: 20,
+                  borderWidth: 2,
+                  borderColor: glowBorderColor as any,
+                  shadowColor: UNIS_BLUE,
+                  shadowOpacity: glowShadowOpacity as any,
+                  shadowRadius: 20,
+                  elevation: 20,
+                  opacity: glowWrapperOpacity,
+                }}
+              />
+            )}
+
             {/* Close Button */}
             <TouchableOpacity
               style={styles.closeButton}
