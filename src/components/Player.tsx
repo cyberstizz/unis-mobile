@@ -23,6 +23,7 @@ import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
 import UnisPlayButton from './Unisplaybutton';
 import UnisPauseButton from './Unispausebutton';
+import VotingWizard from './VotingWizard';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH <= 600;
@@ -37,14 +38,12 @@ const COLORS = {
   accentWhite: '#FFFFFF',
   unisBlue: '#163387',
   unisSilver: '#918f8f',
-  // Gradient colors
   gradientStart: '#1A1A1A',
   gradientEnd: '#000000',
   trayGradientStart: '#242424',
   trayGradientEnd: '#1A1A1A',
 };
 
-// Simple triangle components for prev/next buttons (matches web app style)
 interface TriangleProps {
   size?: number;
   color?: string;
@@ -54,16 +53,13 @@ interface TriangleProps {
 const Triangle: React.FC<TriangleProps> = ({ size = 24, color = COLORS.unisBlue, direction }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24">
     {direction === 'left' ? (
-      // Left-pointing triangle (previous)
       <Path d="M18 4 L6 12 L18 20 Z" fill={color} />
     ) : (
-      // Right-pointing triangle (next)
       <Path d="M6 4 L18 12 L6 20 Z" fill={color} />
     )}
   </Svg>
 );
 
-// Dimensions from player.scss
 const SEEKBAR_HEIGHT = 4;
 const THUMB_SIZE = 18;
 const ARTWORK_SIZE = 45;
@@ -73,6 +69,15 @@ const PLAY_BUTTON_SIZE_MOBILE = 40;
 const ACTION_BUTTON_SIZE = 42;
 const EXPANDED_ARTWORK_SIZE = Math.min(350, SCREEN_WIDTH - 40);
 const TRAY_MAX_HEIGHT = 120;
+
+// ─── Nominee shape expected by VotingWizard ───────────────────────────────────
+interface VoteNominee {
+  id: string;
+  name: string;
+  type: 'song';
+  genreKey: string;
+  jurisdiction: string;
+}
 
 const Player: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -90,27 +95,30 @@ const Player: React.FC = () => {
     toggleExpand,
   } = usePlayer();
 
-  // Local state
+  // ── Local state ─────────────────────────────────────────────────────────────
   const [isLiked, setIsLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [userId, setUserId] = useState<string | null>(null);
   const [showMobileActions, setShowMobileActions] = useState(false);
-  
-  // Animation values
+
+  // ── Voting state ─────────────────────────────────────────────────────────────
+  const [showVoteWizard, setShowVoteWizard] = useState(false);
+  const [voteNominee, setVoteNominee] = useState<VoteNominee | null>(null);
+  const [voteLoading, setVoteLoading] = useState(false);
+
+  // ── Animation ────────────────────────────────────────────────────────────────
   const mobileActionsHeight = useRef(new Animated.Value(0)).current;
-  
-  // Seekbar ref for measuring
+
+  // ── Seekbar ──────────────────────────────────────────────────────────────────
   const seekbarRef = useRef<View>(null);
   const seekbarLayout = useRef({ x: 0, y: 0, width: 0, height: 0 });
-
   const durationRef = useRef(0);
 
-// Add this useEffect to keep it synced:
-useEffect(() => {
-  durationRef.current = duration;
-}, [duration]);
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
 
-  // Extract user ID from token
+  // ── Extract userId from JWT ──────────────────────────────────────────────────
   useEffect(() => {
     const getUserId = async () => {
       try {
@@ -126,21 +134,17 @@ useEffect(() => {
     getUserId();
   }, []);
 
-  // Fetch like status when media changes
+  // ── Fetch like status when media changes ─────────────────────────────────────
   useEffect(() => {
     let isMounted = true;
-    
     const fetchLikeStatus = async () => {
       if (!currentMedia?.id || !userId) return;
-      
       const songId = currentMedia.id || currentMedia.songId;
-      
       try {
         const [likedRes, countRes] = await Promise.all([
           axiosInstance.get(`/v1/media/song/${songId}/is-liked?userId=${userId}`),
           axiosInstance.get(`/v1/media/song/${songId}/likes/count`),
         ]);
-        
         if (isMounted) {
           setIsLiked(likedRes.data.isLiked || false);
           setLikeCount(countRes.data.count || 0);
@@ -152,12 +156,11 @@ useEffect(() => {
         }
       }
     };
-    
     fetchLikeStatus();
     return () => { isMounted = false; };
   }, [currentMedia?.id, userId]);
 
-  // Toggle mobile actions tray with animation
+  // ── Toggle mobile actions tray ───────────────────────────────────────────────
   const toggleMobileActions = useCallback(() => {
     const toValue = showMobileActions ? 0 : TRAY_MAX_HEIGHT;
     Animated.timing(mobileActionsHeight, {
@@ -168,23 +171,20 @@ useEffect(() => {
     setShowMobileActions(!showMobileActions);
   }, [showMobileActions, mobileActionsHeight]);
 
-  // Handle like
+  // ── Like ─────────────────────────────────────────────────────────────────────
   const handleLike = async () => {
     if (!userId) {
       Alert.alert('Login Required', 'Please log in to like songs');
       return;
     }
-    
     const songId = currentMedia?.id || currentMedia?.songId;
     if (!songId) return;
-    
     try {
       const method = isLiked ? 'delete' : 'post';
       const res = await axiosInstance({
         method,
         url: `/v1/media/song/${songId}/like?userId=${userId}`,
       });
-      
       if (res.data.success) {
         setIsLiked(!isLiked);
         setLikeCount(prev => isLiked ? Math.max(0, prev - 1) : prev + 1);
@@ -194,28 +194,76 @@ useEffect(() => {
     }
   };
 
-  // Handle vote (placeholder)
-  const handleVote = () => {
+  // ── Vote ─────────────────────────────────────────────────────────────────────
+  // Fetches full song details to get genre + jurisdiction, then opens VotingWizard.
+  // currentMedia in PlayerContext may only carry title/artist/artwork — the full
+  // genre and jurisdiction fields live on the song detail endpoint.
+  const handleVote = async () => {
     if (!userId) {
       Alert.alert('Login Required', 'Please log in to vote');
       return;
     }
-    console.log('Vote clicked - VotingWizard not yet implemented');
-    Alert.alert('Coming Soon', 'Voting will be available soon');
+
+    const songId = currentMedia?.id || currentMedia?.songId;
+    if (!songId) return;
+
+    // If currentMedia already has genre + jurisdiction we can skip the fetch
+    const hasFullDetails =
+      (currentMedia?.genre || currentMedia?.genreKey) &&
+      currentMedia?.jurisdiction;
+
+    let genre: string;
+    let jurisdiction: string;
+
+    if (hasFullDetails) {
+      genre = (currentMedia.genre || currentMedia.genreKey || 'unknown')
+        .toLowerCase()
+        .replace('/', '-');
+      jurisdiction = (currentMedia.jurisdiction || 'unknown')
+        .toLowerCase()
+        .replace(/\s+/g, '-');
+    } else {
+      // Fetch full song detail to get genre + jurisdiction
+      setVoteLoading(true);
+      try {
+        const res = await axiosInstance.get(`/v1/media/song/${songId}`);
+        const song = res.data;
+        genre = (song.genre || song.genreKey || 'unknown')
+          .toLowerCase()
+          .replace('/', '-');
+        jurisdiction = (song.jurisdiction || 'unknown')
+          .toLowerCase()
+          .replace(/\s+/g, '-');
+      } catch (err) {
+        console.error('Failed to fetch song details for voting:', err);
+        Alert.alert('Error', 'Could not load song details. Please try again.');
+        setVoteLoading(false);
+        return;
+      } finally {
+        setVoteLoading(false);
+      }
+    }
+
+    setVoteNominee({
+      id: songId,
+      name: currentMedia?.title ?? 'Unknown',
+      type: 'song',
+      genreKey: genre,
+      jurisdiction,
+    });
+    setShowVoteWizard(true);
   };
 
-  // Handle add to playlist (placeholder)
+  // ── Placeholders ─────────────────────────────────────────────────────────────
   const handleAddToPlaylist = () => {
-    console.log('Add to playlist clicked - PlaylistWizard not yet implemented');
     Alert.alert('Coming Soon', 'Playlist management will be available soon');
   };
 
-  // Handle download (placeholder)
   const handleDownload = () => {
     Alert.alert('Coming Soon', 'Download functionality will be available soon');
   };
 
-  // Format time (ms to mm:ss)
+  // ── Helpers ──────────────────────────────────────────────────────────────────
   const formatTime = (ms: number): string => {
     if (!ms || isNaN(ms)) return '0:00';
     const totalSeconds = Math.floor(ms / 1000);
@@ -224,16 +272,13 @@ useEffect(() => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Calculate progress percentage
   const progress = duration > 0 ? (position / duration) * 100 : 0;
 
-  // Seekbar layout handler
   const handleSeekbarLayout = useCallback((event: any) => {
     const { x, y, width, height } = event.nativeEvent.layout;
     seekbarLayout.current = { x, y, width, height };
   }, []);
 
-  // PanResponder for seekbar dragging
   const seekbarPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -243,8 +288,7 @@ useEffect(() => {
           if (width > 0 && durationRef.current > 0) {
             const touchX = evt.nativeEvent.pageX - pageX;
             const percentage = Math.max(0, Math.min(1, touchX / width));
-            const newPosition = percentage * durationRef.current;
-            seekTo(newPosition);
+            seekTo(percentage * durationRef.current);
           }
         });
       },
@@ -253,21 +297,17 @@ useEffect(() => {
           if (width > 0 && durationRef.current > 0) {
             const touchX = evt.nativeEvent.pageX - pageX;
             const percentage = Math.max(0, Math.min(1, touchX / width));
-            const newPosition = percentage * durationRef.current;
-            seekTo(newPosition);
+            seekTo(percentage * durationRef.current);
           }
         });
       },
     })
   ).current;
 
-
-  // Base64 decode helper
   const atob = (input: string): string => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
     let str = input.replace(/=+$/, '');
     let output = '';
-
     for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
       buffer = chars.indexOf(buffer) as any;
       if (buffer === -1) continue;
@@ -276,310 +316,316 @@ useEffect(() => {
         output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
       }
     }
-
     return output;
   };
 
-  // Don't render if no media
-  if (!currentMedia) {
-    return null;
-  }
+  if (!currentMedia) return null;
 
-const artwork = getMediaUrl(currentMedia.artwork || currentMedia.artworkUrl) || 'https://picsum.photos/200';
+  const artwork =
+    getMediaUrl(currentMedia.artwork || currentMedia.artworkUrl) ||
+    'https://picsum.photos/200';
+
+  // ── Vote button icon — shows spinner while fetching song details ─────────────
+  const VoteIcon = () =>
+    voteLoading ? (
+      <ActivityIndicator size="small" color={COLORS.textGray} />
+    ) : (
+      <Vote size={24} color={COLORS.textGray} />
+    );
+
+  const VoteIconSmall = () =>
+    voteLoading ? (
+      <ActivityIndicator size="small" color={COLORS.textSilver} />
+    ) : (
+      <Vote size={20} color={COLORS.textSilver} />
+    );
+
+  // ── Shared VotingWizard element — rendered once, referenced in both views ────
+  const votingWizardElement = (
+    <VotingWizard
+      visible={showVoteWizard}
+      onClose={() => setShowVoteWizard(false)}
+      onVoteSuccess={() => setShowVoteWizard(false)}
+      nominee={voteNominee}
+      userId={userId}
+      filters={{
+        selectedGenre: voteNominee?.genreKey ?? 'unknown',
+        selectedType: 'song',
+        selectedInterval: 'daily',
+        selectedJurisdiction: voteNominee?.jurisdiction ?? 'unknown',
+      }}
+    />
+  );
+
   // ==================== EXPANDED VIEW ====================
   if (isExpanded) {
     return (
-      <View style={[styles.expandedContainer, { paddingTop: insets.top }]}>
-        {/* Blurred background with album art */}
-        <ImageBackground
-          source={{ uri: artwork }}
-          style={styles.expandedBackground}
-          blurRadius={20}
-        >
-          {/* Dark overlay to match filter: brightness(0.4) */}
-          <View style={styles.expandedOverlay} />
-        </ImageBackground>
-
-        <View style={styles.expandedContent}>
-          {/* Minimize button */}
-          <TouchableOpacity
-            style={styles.minimizeButton}
-            onPress={toggleExpand}
+      <>
+        <View style={[styles.expandedContainer, { paddingTop: insets.top }]}>
+          <ImageBackground
+            source={{ uri: artwork }}
+            style={styles.expandedBackground}
+            blurRadius={20}
           >
-            <Text style={styles.minimizeText}>Minimize</Text>
-          </TouchableOpacity>
+            <View style={styles.expandedOverlay} />
+          </ImageBackground>
 
-          {/* Artwork */}
-          <View style={styles.expandedArtworkContainer}>
-            <Image
-              source={{ uri: artwork }}
-              style={styles.expandedArtwork}
-            />
-          </View>
+          <View style={styles.expandedContent}>
+            <TouchableOpacity style={styles.minimizeButton} onPress={toggleExpand}>
+              <Text style={styles.minimizeText}>Minimize</Text>
+            </TouchableOpacity>
 
-          {/* Song info */}
-          <View style={styles.expandedInfo}>
-            <Text style={styles.expandedTitle} numberOfLines={1}>
-              {currentMedia.title}
-            </Text>
-            <Text style={styles.expandedArtist} numberOfLines={1}>
-              {currentMedia.artist}
-            </Text>
-          </View>
+            <View style={styles.expandedArtworkContainer}>
+              <Image source={{ uri: artwork }} style={styles.expandedArtwork} />
+            </View>
 
-          {/* Time info */}
-          <View style={styles.expandedTimeInfo}>
-            <Text style={styles.timeText}>{formatTime(position)}</Text>
-            <Text style={styles.timeText}>{formatTime(duration)}</Text>
-          </View>
+            <View style={styles.expandedInfo}>
+              <Text style={styles.expandedTitle} numberOfLines={1}>
+                {currentMedia.title}
+              </Text>
+              <Text style={styles.expandedArtist} numberOfLines={1}>
+                {currentMedia.artist}
+              </Text>
+            </View>
 
-          {/* Expanded seekbar */}
-          <View
-            style={styles.expandedSeekbarContainer}
-            onLayout={handleSeekbarLayout}
-            {...seekbarPanResponder.panHandlers}
-          >
-            <View style={styles.expandedSeekbarTrack}>
-              <View
-                style={[styles.expandedSeekbarProgress, { width: `${progress}%` }]}
-              />
-              <View
-                style={[
-                  styles.expandedSeekbarThumb,
-                  { left: `${progress}%`, marginLeft: -8 },
-                ]}
-              />
+            <View style={styles.expandedTimeInfo}>
+              <Text style={styles.timeText}>{formatTime(position)}</Text>
+              <Text style={styles.timeText}>{formatTime(duration)}</Text>
+            </View>
+
+            <View
+              style={styles.expandedSeekbarContainer}
+              onLayout={handleSeekbarLayout}
+              {...seekbarPanResponder.panHandlers}
+            >
+              <View style={styles.expandedSeekbarTrack}>
+                <View style={[styles.expandedSeekbarProgress, { width: `${progress}%` }]} />
+                <View style={[styles.expandedSeekbarThumb, { left: `${progress}%`, marginLeft: -8 }]} />
+              </View>
+            </View>
+
+            <View style={styles.expandedControls}>
+              <TouchableOpacity onPress={prev} style={styles.expandedControlButton}>
+                <Triangle size={35} color={COLORS.accentWhite} direction="left" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={togglePlayPause} style={styles.expandedPlayButton}>
+                {isBuffering ? (
+                  <ActivityIndicator size="large" color={COLORS.unisBlue} />
+                ) : isPlaying ? (
+                  <UnisPauseButton size={60} />
+                ) : (
+                  <UnisPlayButton size={60} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={next} style={styles.expandedControlButton}>
+                <Triangle size={35} color={COLORS.accentWhite} direction="right" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.expandedActions}>
+              <TouchableOpacity
+                onPress={handleLike}
+                style={[styles.expandedActionButton, isLiked && styles.likedButton]}
+              >
+                <Heart
+                  size={24}
+                  color={isLiked ? COLORS.unisBlue : COLORS.textGray}
+                  fill={isLiked ? COLORS.unisBlue : 'none'}
+                />
+              </TouchableOpacity>
+
+              {/* ── VOTE BUTTON (expanded) ── */}
+              <TouchableOpacity
+                onPress={handleVote}
+                style={styles.expandedActionButton}
+                disabled={voteLoading}
+              >
+                <VoteIcon />
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={handleDownload} style={styles.expandedActionButton}>
+                <Download size={24} color={COLORS.textGray} />
+              </TouchableOpacity>
             </View>
           </View>
-
-          {/* Controls */}
-          <View style={styles.expandedControls}>
-            <TouchableOpacity onPress={prev} style={styles.expandedControlButton}>
-              <Triangle size={35} color={COLORS.accentWhite} direction="left" />
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              onPress={togglePlayPause}
-              style={styles.expandedPlayButton}
-            >
-              {isBuffering ? (
-                <ActivityIndicator size="large" color={COLORS.unisBlue} />
-              ) : isPlaying ? (
-                <UnisPauseButton size={60} />
-              ) : (
-                <UnisPlayButton size={60} />
-              )}
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={next} style={styles.expandedControlButton}>
-              <Triangle size={35} color={COLORS.accentWhite} direction="right" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Action buttons */}
-          <View style={styles.expandedActions}>
-            <TouchableOpacity
-              onPress={handleLike}
-              style={[styles.expandedActionButton, isLiked && styles.likedButton]}
-            >
-              <Heart
-                size={24}
-                color={isLiked ? COLORS.unisBlue : COLORS.textGray}
-                fill={isLiked ? COLORS.unisBlue : 'none'}
-              />
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={handleVote} style={styles.expandedActionButton}>
-              <Vote size={24} color={COLORS.textGray} />
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={handleDownload} style={styles.expandedActionButton}>
-              <Download size={24} color={COLORS.textGray} />
-            </TouchableOpacity>
-          </View>
         </View>
-      </View>
+
+        {/* VotingWizard outside expanded container so it layers above everything */}
+        {votingWizardElement}
+      </>
     );
   }
 
   // ==================== MINI PLAYER VIEW ====================
   return (
-    <View style={styles.container}>
-      {/* Mobile actions tray - slides up from bottom */}
-      {/* Uses LinearGradient: linear-gradient(to top, #1A1A1A, #242424) */}
-      <Animated.View 
-        style={[
-          styles.mobileActionsTray, 
-          { height: mobileActionsHeight }
-        ]}
-      >
-        <LinearGradient
-          colors={[COLORS.trayGradientStart, COLORS.trayGradientEnd]}
-          start={{ x: 0, y: 1 }}
-          end={{ x: 0, y: 0 }}
-          style={styles.trayGradient}
-        >
-          <View style={styles.trayContent}>
-            <TouchableOpacity onPress={handleVote} style={styles.trayAction}>
-              <Vote size={20} color={COLORS.textSilver} />
-              <Text style={styles.trayLabel}>Vote</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={handleAddToPlaylist} style={styles.trayAction}>
-              <Plus size={20} color={COLORS.textSilver} />
-              <Text style={styles.trayLabel}>Add</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              onPress={handleLike}
-              style={[styles.trayAction, isLiked && styles.trayActionLiked]}
-            >
-              <Heart
-                size={20}
-                color={isLiked ? COLORS.unisBlue : COLORS.textSilver}
-                fill={isLiked ? COLORS.unisBlue : 'none'}
-              />
-              <Text style={[styles.trayLabel, isLiked && styles.trayLabelLiked]}>
-                {isLiked ? 'Liked' : 'Like'}
-              </Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={handleDownload} style={styles.trayAction}>
-              <Download size={20} color={COLORS.textSilver} />
-              <Text style={styles.trayLabel}>Download</Text>
-            </TouchableOpacity>
-          </View>
-        </LinearGradient>
-      </Animated.View>
-
-      {/* Main player gradient background */}
-      {/* Uses LinearGradient: linear-gradient(to bottom, #1A1A1A, #000000) */}
-      {/* paddingBottom creates space for safe area, gradient extends to bottom */}
-      <LinearGradient
-        colors={[COLORS.gradientStart, COLORS.gradientEnd]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.playerGradient, { paddingBottom: insets.bottom }]}
-      >
-        {/* Seekbar - positioned at top of player */}
-        <View
-          ref={seekbarRef}
-          style={styles.seekbar}
-          onLayout={handleSeekbarLayout}
-          {...seekbarPanResponder.panHandlers}
-        >
-          <View style={styles.seekbarTrack}>
-            <View style={[styles.seekbarProgress, { width: `${progress}%` }]} />
-            <View
-              style={[
-                styles.seekbarThumb,
-                { left: `${progress}%`, marginLeft: -THUMB_SIZE / 2 },
-              ]}
-            />
-          </View>
-        </View>
-
-        {/* Mini player bar */}
-        <View style={styles.miniPlayer}>
-          {/* Song info - tappable to expand */}
-          <TouchableOpacity style={styles.songInfo} onPress={toggleExpand}>
-            <Image
-              source={{ uri: artwork }}
-              style={styles.miniArtwork}
-            />
-            <View style={styles.miniInfo}>
-              <Text style={styles.miniTitle} numberOfLines={1}>
-                {currentMedia.title}
-              </Text>
-              <Text style={styles.miniArtist} numberOfLines={1}>
-                {currentMedia.artist}
-              </Text>
-            </View>
-          </TouchableOpacity>
-
-          {/* Playback controls - centered */}
-          <View style={styles.miniControls}>
-            <TouchableOpacity onPress={prev} style={styles.trackToggle}>
-              <Triangle size={24} color={COLORS.unisBlue} direction="left" />
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={togglePlayPause} style={styles.playPauseButton}>
-              {isBuffering ? (
-                <ActivityIndicator size="small" color={COLORS.unisBlue} />
-              ) : isPlaying ? (
-                <UnisPauseButton size={PLAY_BUTTON_SIZE_MOBILE} />
-              ) : (
-                <UnisPlayButton size={PLAY_BUTTON_SIZE_MOBILE} />
-              )}
-            </TouchableOpacity>
-            
-            <TouchableOpacity onPress={next} style={styles.trackToggle}>
-              <Triangle size={24} color={COLORS.unisBlue} direction="right" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Desktop actions - visible on larger screens */}
-          {!IS_MOBILE && (
-            <View style={styles.desktopActions}>
-              <TouchableOpacity onPress={handleVote} style={styles.actionButton}>
-                <Vote size={18} color={COLORS.textGray} />
+    <>
+      <View style={styles.container}>
+        {/* Mobile actions tray */}
+        <Animated.View style={[styles.mobileActionsTray, { height: mobileActionsHeight }]}>
+          <LinearGradient
+            colors={[COLORS.trayGradientStart, COLORS.trayGradientEnd]}
+            start={{ x: 0, y: 1 }}
+            end={{ x: 0, y: 0 }}
+            style={styles.trayGradient}
+          >
+            <View style={styles.trayContent}>
+              {/* ── VOTE BUTTON (tray) ── */}
+              <TouchableOpacity
+                onPress={handleVote}
+                style={styles.trayAction}
+                disabled={voteLoading}
+              >
+                <VoteIconSmall />
+                <Text style={styles.trayLabel}>Vote</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity onPress={handleAddToPlaylist} style={styles.actionButton}>
-                <Plus size={18} color={COLORS.textGray} />
+
+              <TouchableOpacity onPress={handleAddToPlaylist} style={styles.trayAction}>
+                <Plus size={20} color={COLORS.textSilver} />
+                <Text style={styles.trayLabel}>Add</Text>
               </TouchableOpacity>
-              
+
               <TouchableOpacity
                 onPress={handleLike}
-                style={[styles.actionButton, isLiked && styles.actionButtonLiked]}
+                style={[styles.trayAction, isLiked && styles.trayActionLiked]}
               >
                 <Heart
-                  size={18}
-                  color={isLiked ? COLORS.unisBlue : COLORS.textGray}
+                  size={20}
+                  color={isLiked ? COLORS.unisBlue : COLORS.textSilver}
                   fill={isLiked ? COLORS.unisBlue : 'none'}
                 />
+                <Text style={[styles.trayLabel, isLiked && styles.trayLabelLiked]}>
+                  {isLiked ? 'Liked' : 'Like'}
+                </Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity onPress={handleDownload} style={styles.actionButton}>
-                <Download size={18} color={COLORS.textGray} />
+
+              <TouchableOpacity onPress={handleDownload} style={styles.trayAction}>
+                <Download size={20} color={COLORS.textSilver} />
+                <Text style={styles.trayLabel}>Download</Text>
               </TouchableOpacity>
             </View>
-          )}
+          </LinearGradient>
+        </Animated.View>
 
-          {/* Mobile actions toggle - visible on mobile only */}
-          {IS_MOBILE && (
-            <TouchableOpacity
-              style={styles.mobileActionsToggle}
-              onPress={toggleMobileActions}
-            >
-              {showMobileActions ? (
-                <ChevronDown size={20} color={COLORS.unisBlue} />
-              ) : (
-                <ChevronUp size={20} color={COLORS.unisBlue} />
-              )}
+        {/* Main player */}
+        <LinearGradient
+          colors={[COLORS.gradientStart, COLORS.gradientEnd]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={[styles.playerGradient, { paddingBottom: insets.bottom }]}
+        >
+          <View
+            ref={seekbarRef}
+            style={styles.seekbar}
+            onLayout={handleSeekbarLayout}
+            {...seekbarPanResponder.panHandlers}
+          >
+            <View style={styles.seekbarTrack}>
+              <View style={[styles.seekbarProgress, { width: `${progress}%` }]} />
+              <View
+                style={[
+                  styles.seekbarThumb,
+                  { left: `${progress}%`, marginLeft: -THUMB_SIZE / 2 },
+                ]}
+              />
+            </View>
+          </View>
+
+          <View style={styles.miniPlayer}>
+            <TouchableOpacity style={styles.songInfo} onPress={toggleExpand}>
+              <Image source={{ uri: artwork }} style={styles.miniArtwork} />
+              <View style={styles.miniInfo}>
+                <Text style={styles.miniTitle} numberOfLines={1}>
+                  {currentMedia.title}
+                </Text>
+                <Text style={styles.miniArtist} numberOfLines={1}>
+                  {currentMedia.artist}
+                </Text>
+              </View>
             </TouchableOpacity>
-          )}
-        </View>
-      </LinearGradient>
-    </View>
+
+            <View style={styles.miniControls}>
+              <TouchableOpacity onPress={prev} style={styles.trackToggle}>
+                <Triangle size={24} color={COLORS.unisBlue} direction="left" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={togglePlayPause} style={styles.playPauseButton}>
+                {isBuffering ? (
+                  <ActivityIndicator size="small" color={COLORS.unisBlue} />
+                ) : isPlaying ? (
+                  <UnisPauseButton size={PLAY_BUTTON_SIZE_MOBILE} />
+                ) : (
+                  <UnisPlayButton size={PLAY_BUTTON_SIZE_MOBILE} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={next} style={styles.trackToggle}>
+                <Triangle size={24} color={COLORS.unisBlue} direction="right" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Desktop actions */}
+            {!IS_MOBILE && (
+              <View style={styles.desktopActions}>
+                {/* ── VOTE BUTTON (desktop bar) ── */}
+                <TouchableOpacity
+                  onPress={handleVote}
+                  style={styles.actionButton}
+                  disabled={voteLoading}
+                >
+                  {voteLoading ? (
+                    <ActivityIndicator size="small" color={COLORS.textGray} />
+                  ) : (
+                    <Vote size={18} color={COLORS.textGray} />
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={handleAddToPlaylist} style={styles.actionButton}>
+                  <Plus size={18} color={COLORS.textGray} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleLike}
+                  style={[styles.actionButton, isLiked && styles.actionButtonLiked]}
+                >
+                  <Heart
+                    size={18}
+                    color={isLiked ? COLORS.unisBlue : COLORS.textGray}
+                    fill={isLiked ? COLORS.unisBlue : 'none'}
+                  />
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={handleDownload} style={styles.actionButton}>
+                  <Download size={18} color={COLORS.textGray} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {IS_MOBILE && (
+              <TouchableOpacity style={styles.mobileActionsToggle} onPress={toggleMobileActions}>
+                {showMobileActions ? (
+                  <ChevronDown size={20} color={COLORS.unisBlue} />
+                ) : (
+                  <ChevronUp size={20} color={COLORS.unisBlue} />
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
+        </LinearGradient>
+      </View>
+
+      {/* VotingWizard outside player container so it renders above everything */}
+      {votingWizardElement}
+    </>
   );
 };
 
 const styles = StyleSheet.create({
-  // ==================== MINI PLAYER STYLES ====================
-  
-  // Main container - fixed at bottom with black background extending to screen edge
   container: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
     zIndex: 1000,
-    backgroundColor: COLORS.bgBlack, // Fills safe area with black
+    backgroundColor: COLORS.bgBlack,
   },
-  
-  // Black fill for the bottom safe area (behind navigation gestures)
-  // Kept as backup style if needed
   bottomSafeAreaFill: {
     position: 'absolute',
     bottom: 0,
@@ -587,24 +633,19 @@ const styles = StyleSheet.create({
     right: 0,
     backgroundColor: COLORS.bgBlack,
   },
-  
-  // Gradient background for mini player
-  // Matches: linear-gradient(to bottom, #1A1A1A, $bg-black)
   playerGradient: {
     borderTopWidth: 1,
-    borderTopColor: 'rgba(22, 51, 135, 0.3)', // rgba($unis-blue, 0.3)
+    borderTopColor: 'rgba(22, 51, 135, 0.3)',
   },
-  
-  // Seekbar container - at top of player
   seekbar: {
     width: '100%',
-    height: SEEKBAR_HEIGHT + 20, // Extra padding for touch area
+    height: SEEKBAR_HEIGHT + 20,
     paddingTop: 10,
     justifyContent: 'flex-start',
   },
   seekbarTrack: {
     height: SEEKBAR_HEIGHT,
-    backgroundColor: 'rgba(22, 51, 135, 0.3)', // rgba($unis-blue, 0.3)
+    backgroundColor: 'rgba(22, 51, 135, 0.3)',
     position: 'relative',
   },
   seekbarProgress: {
@@ -618,16 +659,12 @@ const styles = StyleSheet.create({
     height: THUMB_SIZE,
     borderRadius: THUMB_SIZE / 2,
     backgroundColor: COLORS.unisBlue,
-    // Shadow to match: box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3)
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 4,
   },
-  
-  // Mobile actions tray
-  // Matches: .mobile-actions-tray with linear-gradient(to top, #1A1A1A, #242424)
   mobileActionsTray: {
     position: 'absolute',
     bottom: '100%',
@@ -650,9 +687,9 @@ const styles = StyleSheet.create({
   trayAction: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(22, 51, 135, 0.1)', // rgba($unis-blue, 0.1)
+    backgroundColor: 'rgba(22, 51, 135, 0.1)',
     borderWidth: 1,
-    borderColor: 'rgba(22, 51, 135, 0.3)', // rgba($unis-blue, 0.3)
+    borderColor: 'rgba(22, 51, 135, 0.3)',
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
@@ -671,8 +708,6 @@ const styles = StyleSheet.create({
   trayLabelLiked: {
     color: COLORS.unisBlue,
   },
-  
-  // Mini player bar
   miniPlayer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -680,8 +715,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: IS_MOBILE ? 10 : 20,
     paddingBottom: 10,
   },
-  
-  // Song info section
   songInfo: {
     flex: IS_MOBILE ? 0 : 1,
     flexDirection: 'row',
@@ -693,7 +726,6 @@ const styles = StyleSheet.create({
     width: IS_MOBILE ? ARTWORK_SIZE_MOBILE : ARTWORK_SIZE,
     height: IS_MOBILE ? ARTWORK_SIZE_MOBILE : ARTWORK_SIZE,
     borderRadius: 6,
-    // Shadow to match: box-shadow: 0 2px 5px rgba(0,0,0,0.5)
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.5,
@@ -703,7 +735,7 @@ const styles = StyleSheet.create({
   miniInfo: {
     flex: 1,
     justifyContent: 'center',
-    minWidth: 0, // Allows text truncation
+    minWidth: 0,
   },
   miniTitle: {
     color: COLORS.accentWhite,
@@ -714,8 +746,6 @@ const styles = StyleSheet.create({
     color: COLORS.textSilver,
     fontSize: IS_MOBILE ? 10 : 12,
   },
-  
-  // Playback controls - centered
   miniControls: {
     flex: 1,
     flexDirection: 'row',
@@ -740,8 +770,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginHorizontal: IS_MOBILE ? 13 : 0,
   },
-  
-  // Desktop actions
   desktopActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -761,15 +789,10 @@ const styles = StyleSheet.create({
   actionButtonLiked: {
     backgroundColor: 'rgba(22, 51, 135, 0.15)',
   },
-  
-  // Mobile actions toggle
   mobileActionsToggle: {
     padding: 5,
     marginLeft: 10,
   },
-  
-  // ==================== EXPANDED PLAYER STYLES ====================
-  
   expandedContainer: {
     position: 'absolute',
     top: 0,
@@ -782,7 +805,6 @@ const styles = StyleSheet.create({
   expandedBackground: {
     ...StyleSheet.absoluteFillObject,
   },
-  // Overlay to match: filter: blur(20px) brightness(0.4)
   expandedOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
@@ -793,8 +815,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 20,
   },
-  
-  // Minimize button
   minimizeButton: {
     position: 'absolute',
     top: 20,
@@ -806,11 +826,8 @@ const styles = StyleSheet.create({
     color: COLORS.accentWhite,
     fontSize: 24,
   },
-  
-  // Expanded artwork
   expandedArtworkContainer: {
     marginBottom: 40,
-    // Shadow to match: box-shadow: 0 10px 30px rgba(0,0,0,0.5)
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.5,
@@ -822,8 +839,6 @@ const styles = StyleSheet.create({
     height: EXPANDED_ARTWORK_SIZE,
     borderRadius: 12,
   },
-  
-  // Expanded info
   expandedInfo: {
     alignItems: 'center',
     marginBottom: 30,
@@ -842,8 +857,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     textAlign: 'center',
   },
-  
-  // Time info
   expandedTimeInfo: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -855,8 +868,6 @@ const styles = StyleSheet.create({
     color: COLORS.textSilver,
     fontSize: 14,
   },
-  
-  // Expanded seekbar
   expandedSeekbarContainer: {
     width: '100%',
     maxWidth: 500,
@@ -884,15 +895,12 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.unisBlue,
     borderWidth: 2,
     borderColor: COLORS.accentWhite,
-    // Shadow to match: box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4)
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4,
     shadowRadius: 6,
     elevation: 4,
   },
-  
-  // Expanded controls
   expandedControls: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -913,8 +921,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  
-  // Expanded actions
   expandedActions: {
     flexDirection: 'row',
     gap: 20,
@@ -922,9 +928,7 @@ const styles = StyleSheet.create({
   expandedActionButton: {
     padding: 10,
   },
-  likedButton: {
-    // Additional styling for liked state
-  },
+  likedButton: {},
 });
 
 export default Player;
