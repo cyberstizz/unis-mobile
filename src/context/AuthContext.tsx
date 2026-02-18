@@ -101,7 +101,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           if (userId) {
             try {
               const res = await axiosInstance.get(`/v1/users/profile/${userId}`);
-              setUser(res.data);
+              setUser({ ...res.data, isArtist: !!res.data.genre });
             } catch (err: any) {
               if (err.response?.status === 401 || err.response?.status === 404) {
                 await SecureStore.deleteItemAsync('token');
@@ -131,7 +131,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       
       if (userId) {
         const profileRes = await axiosInstance.get(`/v1/users/profile/${userId}`);
-        setUser(profileRes.data);
+        setUser({ ...profileRes.data, isArtist: !!profileRes.data.genre });
         return { success: true };
       } else {
         throw new Error('Invalid token');
@@ -165,7 +165,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const userId = decodeToken(token);
         if (userId) {
           const res = await axiosInstance.get(`/v1/users/profile/${userId}`);
-          setUser(res.data);
+          setUser({ ...res.data, isArtist: !!res.data.genre });
         }
       }
     } catch (error) {

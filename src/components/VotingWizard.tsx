@@ -307,26 +307,29 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   }, []);
 
   // ─── SUCCESS GLOW ANIMATION ───
-  useEffect(() => {
-    if (voteResult.status === 'success') {
+    useEffect(() => {
+        if (voteResult.status === 'success') {
       setShowConfetti(true);
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(glowAnim, {
-            toValue: 1,
-            duration: 1500,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-          Animated.timing(glowAnim, {
-            toValue: 0,
-            duration: 1500,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-        ])
-      ).start();
-      // Stop confetti after 3 seconds
+      try {
+        Animated.loop(
+          Animated.sequence([
+            Animated.timing(glowAnim, {
+              toValue: 1,
+              duration: 1500,
+              easing: Easing.inOut(Easing.sin),
+              useNativeDriver: false,
+            }),
+            Animated.timing(glowAnim, {
+              toValue: 0,
+              duration: 1500,
+              easing: Easing.inOut(Easing.sin),
+              useNativeDriver: false,
+            }),
+          ])
+        ).start();
+      } catch (e) {
+      
+      }
       const timer = setTimeout(() => setShowConfetti(false), 3000);
       return () => clearTimeout(timer);
     } else {
@@ -334,6 +337,8 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
       setShowConfetti(false);
     }
   }, [voteResult.status]);
+
+
 
   // ─── RESET STATE ON OPEN ───
   useEffect(() => {
@@ -861,6 +866,9 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 500,
     maxHeight: SCREEN_HEIGHT * 0.85,
+    flex: 1,                          
+    justifyContent: 'center',         
+
   },
 
   // -- Wizard Card --
@@ -878,7 +886,8 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 30,
     elevation: 15,
-    maxHeight: SCREEN_HEIGHT * 0.82,
+    maxHeight: SCREEN_HEIGHT * 0.88,
+    minHeight: SCREEN_HEIGHT * 0.79,  
   },
 
   // -- Close Button --

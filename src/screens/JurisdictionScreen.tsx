@@ -100,8 +100,7 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   const { playMedia } = usePlayer();
 
   // Get jurisdiction from route params or props
-  const jurName = (route.params as any)?.jurisdiction || jurisdiction;
-
+  const jurName = (route.params as any)?.jurisdictionName || (route.params as any)?.jurisdiction || jurisdiction;
   // State
   const [data, setData] = useState<JurisdictionData | null>(null);
   const [loading, setLoading] = useState(true);

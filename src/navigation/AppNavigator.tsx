@@ -159,9 +159,15 @@ const MainAppNavigator = () => {
   const navigationRef = useRef<NavigationContainerRef<DrawerParamList>>(null);
   const { user } = useAuth();
 
+
+
   const openDrawer = useCallback(() => {
     navigationRef.current?.dispatch(DrawerActions.openDrawer());
   }, []);
+
+
+console.log('USER OBJECT:', JSON.stringify(user, null, 2));
+
 
   // Conditionally pick Settings screen based on user role
   // Artists see ArtistDashboardScreen, listeners see ProfileScreen
