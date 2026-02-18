@@ -35,6 +35,16 @@ import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 
+// ── Wizards ──────────────────────────────────────────────────────────────────
+import EditProfileWizard from '../components/EditProfileWizard';
+import UploadWizard from '../components/UploadWizard';
+import ChangeDefaultSongWizard from '../components/ChangeDefaultSongWizard';
+import EditSongWizard from '../components/EditSongWizard';
+import LyricsWizard from '../components/LyricsWizard';
+import DeleteAccountWizard from '../components/DeleteAccountWizard';
+import DeleteSongModal from '../components/DeleteSongModal';
+import DownloadContractButton from '../components/DownloadContractButton';
+
 // ============================================================================
 // COLORS & SIZES
 // ============================================================================
@@ -59,17 +69,13 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
 // ============================================================================
-// HELPER FUNCTIONS
+// HELPERS
 // ============================================================================
 const formatAwardDate = (dateString: string): string => {
   if (!dateString) return '';
   const [year, month, day] = dateString.split('-');
   const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-  return date.toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 };
 
 const getAwardEmoji = (determinationMethod: string): string => {
@@ -100,6 +106,9 @@ interface Song {
   playCount?: number;
   plays?: number;
   lyrics?: string;
+  artworkUrl?: string;
+  description?: string;
+  duration?: number;
 }
 
 interface Award {
@@ -125,7 +134,7 @@ interface SupportedArtist {
 const ArtistDashboardScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { playMedia } = usePlayer();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
 
   // Profile state
   const [userProfile, setUserProfile] = useState<any>(null);
@@ -141,6 +150,7 @@ const ArtistDashboardScreen: React.FC = () => {
   const [songs, setSongs] = useState<Song[]>([]);
   const [defaultSong, setDefaultSong] = useState<Song | null>(null);
   const [deletingSongId, setDeletingSongId] = useState<string | null>(null);
+  const [songToDelete, setSongToDelete] = useState<Song | null>(null);
 
   // Supported artist
   const [supportedArtist, setSupportedArtist] = useState<SupportedArtist | null>(null);
@@ -154,29 +164,65 @@ const ArtistDashboardScreen: React.FC = () => {
   // Vote history
   const [voteHistory, setVoteHistory] = useState<any[]>([]);
 
-  // Modals
+  // UI modals
   const [showWelcomePopup, setShowWelcomePopup] = useState(true);
   const [showVoteHistory, setShowVoteHistory] = useState(false);
+
+  // ── Wizard visibility ──────────────────────────────────────────────────────
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [showDefaultSong, setShowDefaultSong] = useState(false);
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [editingSong, setEditingSong] = useState<Song | null>(null);
+  const [lyricsSong, setLyricsSong] = useState<Song | null>(null);
 
   // Social media editing
   const [instagramUrl, setInstagramUrl] = useState('');
   const [twitterUrl, setTwitterUrl] = useState('');
   const [tiktokUrl, setTiktokUrl] = useState('');
 
-  // Fallback image
   const fallbackImage = require('../../assets/randomrapper.jpeg');
 
   // ============================================================================
-  // FETCH ALL DATA — MATCHES WEB VERSION'S PARALLEL FETCHES
+  // DATA FETCHING
   // ============================================================================
+  const fetchSongs = async () => {
+    if (!user?.userId) return;
+    try {
+      const res = await axiosInstance.get(`/v1/media/songs/artist/${user.userId}`);
+      setSongs(res.data || []);
+    } catch (err) {
+      console.error('Failed to fetch songs:', err);
+    }
+  };
+
+  const refetchDefaultSong = async () => {
+    if (!user?.userId) return;
+    try {
+      const res = await axiosInstance.get(`/v1/users/${user.userId}/default-song`);
+      setDefaultSong(res.data);
+    } catch {
+      setDefaultSong(null);
+    }
+  };
+
+  const refreshProfile = async () => {
+    if (!user?.userId) return;
+    try {
+      const res = await axiosInstance.get(`/v1/users/profile/${user.userId}`);
+      setUserProfile(res.data);
+    } catch (err) {
+      console.error('Failed to refresh profile:', err);
+    }
+  };
+
   useEffect(() => {
     if (!user?.userId) return;
 
     const fetchAllData = async () => {
       setLoading(true);
-
       try {
-        // 1. Full profile & Supported Artist
+        // 1. Profile
         axiosInstance.get(`/v1/users/profile/${user.userId}`)
           .then(res => {
             setUserProfile(res.data);
@@ -185,8 +231,6 @@ const ArtistDashboardScreen: React.FC = () => {
             setInstagramUrl(res.data.instagramUrl || '');
             setTwitterUrl(res.data.twitterUrl || '');
             setTiktokUrl(res.data.tiktokUrl || '');
-
-            // Fetch supported artist if exists
             if (res.data.supportedArtistId) {
               axiosInstance.get(`/v1/users/profile/${res.data.supportedArtistId}`)
                 .then(artistRes => setSupportedArtist(artistRes.data))
@@ -195,17 +239,17 @@ const ArtistDashboardScreen: React.FC = () => {
           })
           .catch(err => console.error('Failed to fetch profile:', err));
 
-        // 2. Songs list
+        // 2. Songs
         axiosInstance.get(`/v1/media/songs/artist/${user.userId}`)
           .then(res => setSongs(res.data || []))
           .catch(err => console.error('Failed to fetch songs:', err));
 
-        // 3. Supporters count
+        // 3. Supporters
         axiosInstance.get(`/v1/users/${user.userId}/supporters/count`)
           .then(res => setSupporters(res.data.count || 0))
           .catch(err => console.error('Failed to fetch supporters:', err));
 
-        // 4. Followers count
+        // 4. Followers
         axiosInstance.get(`/v1/users/${user.userId}/followers/count`)
           .then(res => setFollowers(res.data.count || 0))
           .catch(() => setFollowers(0));
@@ -220,22 +264,18 @@ const ArtistDashboardScreen: React.FC = () => {
           .then(res => setDefaultSong(res.data))
           .catch(() => setDefaultSong(null));
 
-        // 7. Artist awards (paginated)
+        // 7. Awards
         axiosInstance.get(`/v1/awards/artist/${user.userId}?limit=10&offset=0`)
           .then(res => {
             const awardsData = res.data || [];
             setAwards(awardsData);
             setHasMoreAwards(awardsData.length === 10);
           })
-          .catch(err => {
-            console.error('Failed to fetch awards:', err);
-            setAwards([]);
-          });
+          .catch(err => { console.error('Failed to fetch awards:', err); setAwards([]); });
 
       } catch (err) {
         console.error('Failed to fetch dashboard data:', err);
       } finally {
-        // Give parallel fetches a moment to resolve
         setTimeout(() => setLoading(false), 600);
       }
     };
@@ -244,54 +284,30 @@ const ArtistDashboardScreen: React.FC = () => {
   }, [user?.userId]);
 
   // ============================================================================
-  // HANDLERS — ALL WIRED TO REAL API
+  // HANDLERS
   // ============================================================================
-  const handleEditProfile = () => {
-    Alert.alert('Edit Profile', 'EditProfileWizard would open here');
-  };
 
-  const handleUpload = () => {
-    Alert.alert('Upload', 'UploadWizard would open here');
-  };
-
-  const handleChangeDefaultSong = () => {
-    Alert.alert('Change Featured', 'ChangeDefaultSongWizard would open here');
-  };
-
-  const handleEditSong = (song: Song) => {
-    Alert.alert('Edit Song', `EditSongWizard would open for "${song.title}"`);
-  };
-
-  const handleEditLyrics = (song: Song) => {
-    Alert.alert('Edit Lyrics', `LyricsWizard would open for "${song.title}"`);
-  };
-
+  // ── Delete song ──────────────────────────────────────────────────────────────
   const handleDeleteSong = (song: Song) => {
     if (songs.length <= 1) {
-      Alert.alert('Cannot Delete', 'You must have at least one song. Upload another song before deleting this one.');
+      Alert.alert('Cannot Delete', 'You must have at least one song. Upload another before deleting this one.');
       return;
     }
     if (defaultSong?.songId === song.songId) {
-      Alert.alert('Cannot Delete', 'This is your featured song. Please change your featured song before deleting it.');
+      Alert.alert('Cannot Delete', 'This is your featured song. Change your featured song before deleting it.');
+      setShowDefaultSong(true);
       return;
     }
-    Alert.alert(
-      'Delete Song',
-      `Are you sure you want to delete "${song.title}"?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => confirmDeleteSong(song) },
-      ]
-    );
+    setSongToDelete(song);
   };
 
-  const confirmDeleteSong = async (song: Song) => {
-    setDeletingSongId(song.songId);
+  const confirmDeleteSong = async () => {
+    if (!songToDelete) return;
+    setDeletingSongId(songToDelete.songId);
     try {
-      await axiosInstance.delete(`/v1/media/song/${song.songId}`);
-      // Refresh songs list
-      const res = await axiosInstance.get(`/v1/media/songs/artist/${user!.userId}`);
-      setSongs(res.data || []);
+      await axiosInstance.delete(`/v1/media/song/${songToDelete.songId}`);
+      setSongToDelete(null);
+      await fetchSongs();
     } catch (err) {
       console.error('Failed to delete song:', err);
       Alert.alert('Error', 'Failed to delete song. Please try again.');
@@ -300,86 +316,46 @@ const ArtistDashboardScreen: React.FC = () => {
     }
   };
 
-  const handleDownloadContract = () => {
-    Alert.alert(
-      'Download Contract',
-      'PDF generation requires additional native modules. This feature will be available in a future update.'
-    );
-  };
-
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      'Delete Account',
-      'Are you sure you want to delete your account? This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => Alert.alert('Account Deleted', 'Your account has been deleted.'),
-        },
-      ]
-    );
-  };
-
+  // ── Social media ─────────────────────────────────────────────────────────────
   const handleSaveSocialMedia = async (platform: string, url: string) => {
     try {
-      const field = `${platform}Url`;
       await axiosInstance.put(`/v1/users/profile/${user!.userId}`, {
-        [field]: url,
+        [`${platform}Url`]: url,
       });
-      // Refresh profile
-      const res = await axiosInstance.get(`/v1/users/profile/${user!.userId}`);
-      setUserProfile(res.data);
-      Alert.alert('Saved', `${platform} link updated successfully!`);
+      await refreshProfile();
     } catch (err) {
       console.error('Failed to update social media:', err);
       Alert.alert('Error', 'Failed to update link');
     }
   };
 
+  // ── Play supported artist ────────────────────────────────────────────────────
   const handlePlaySupportedArtist = async () => {
     if (!supportedArtist?.defaultSong) {
       Alert.alert('No Song', 'This artist has not set a featured song yet.');
       return;
     }
-
     const song = supportedArtist.defaultSong;
     const songId = (song as any).songId || (song as any).id;
     const songUrl = getMediaUrl(song.fileUrl);
     const artworkUrl = getMediaUrl(song.artworkUrl) || getMediaUrl(supportedArtist.photoUrl);
-
     if (!songUrl) return;
-
-    playMedia(
-      {
-        type: 'song',
-        url: songUrl,
-        title: song.title,
-        artist: supportedArtist.username,
-        artwork: artworkUrl,
-      } as any,
-      []
-    );
-
-    // Track the play
+    playMedia({ type: 'song', url: songUrl, title: song.title, artist: supportedArtist.username, artwork: artworkUrl } as any, []);
     if (songId && user?.userId) {
       try {
         await axiosInstance.post(`/v1/media/song/${songId}/play?userId=${user.userId}`);
-        console.log('Supported artist play tracked');
       } catch (err) {
         console.error('Failed to track play:', err);
       }
     }
   };
 
+  // ── Load more awards ─────────────────────────────────────────────────────────
   const loadMoreAwards = async () => {
     setLoadingAwards(true);
     try {
       const nextPage = awardsPage + 1;
-      const res = await axiosInstance.get(
-        `/v1/awards/artist/${user!.userId}?limit=10&offset=${nextPage * 10}`
-      );
+      const res = await axiosInstance.get(`/v1/awards/artist/${user!.userId}?limit=10&offset=${nextPage * 10}`);
       const newAwards = res.data || [];
       setAwards(prev => [...prev, ...newAwards]);
       setAwardsPage(nextPage);
@@ -392,7 +368,7 @@ const ArtistDashboardScreen: React.FC = () => {
   };
 
   // ============================================================================
-  // LOADING STATE
+  // LOADING / GUARD
   // ============================================================================
   if (loading) {
     return (
@@ -420,7 +396,7 @@ const ArtistDashboardScreen: React.FC = () => {
     : fallbackImage;
 
   // ============================================================================
-  // MAIN RENDER
+  // RENDER
   // ============================================================================
   return (
     <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
@@ -430,7 +406,8 @@ const ArtistDashboardScreen: React.FC = () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Welcome Popup */}
+
+          {/* ── Welcome Popup ── */}
           <Modal visible={showWelcomePopup} transparent animationType="fade">
             <Pressable style={styles.popupOverlay} onPress={() => setShowWelcomePopup(false)}>
               <View style={styles.welcomePopup}>
@@ -453,7 +430,7 @@ const ArtistDashboardScreen: React.FC = () => {
             </Pressable>
           </Modal>
 
-          {/* Profile Section */}
+          {/* ── Profile Section ── */}
           <View style={styles.card}>
             <View style={styles.profileContent}>
               <Image source={displayPhoto} style={styles.profileImage} />
@@ -462,97 +439,47 @@ const ArtistDashboardScreen: React.FC = () => {
                 <Text style={styles.artistBio}>
                   {userProfile.bio || 'No bio yet. Click Edit to add one.'}
                 </Text>
-                <TouchableOpacity style={styles.btnPrimary} onPress={handleEditProfile}>
+                <TouchableOpacity
+                  style={styles.btnPrimary}
+                  onPress={() => setShowEditProfile(true)}
+                >
                   <Text style={styles.btnPrimaryText}>Edit Profile</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.btnSecondary} onPress={handleDownloadContract}>
-                  <Download size={16} color={COLORS.textWhite} />
-                  <Text style={styles.btnSecondaryText}>Download Ownership Contract</Text>
-                </TouchableOpacity>
+                <DownloadContractButton
+                  artistName={userProfile.username || 'Artist'}
+                  style={styles.downloadContractBtn}
+                />
               </View>
             </View>
           </View>
 
-          {/* Stats Grid */}
+          {/* ── Stats Grid ── */}
           <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Score</Text>
-                  <Text style={styles.statValue}>{(userProfile.score || 0).toLocaleString()}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconBlue]}>
-                  <Eye size={24} color={COLORS.primaryBlue} />
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Supporters</Text>
-                  <Text style={styles.statValue}>{supporters.toLocaleString()}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconPurple]}>
-                  <Users size={24} color={COLORS.purple500} />
+            {[
+              { label: 'Score', value: (userProfile.score || 0).toLocaleString(), icon: <Eye size={24} color={COLORS.primaryBlue} />, bg: styles.statIconBlue },
+              { label: 'Supporters', value: supporters.toLocaleString(), icon: <Users size={24} color={COLORS.purple500} />, bg: styles.statIconPurple },
+              { label: 'Followers', value: followers.toLocaleString(), icon: <Heart size={24} color={COLORS.green500} />, bg: styles.statIconGreen },
+              { label: 'Plays', value: totalPlays.toLocaleString(), icon: <Play size={24} color={COLORS.red500} />, bg: styles.statIconRed },
+              { label: 'Songs', value: songs.length.toString(), icon: <Music size={24} color={COLORS.orange500} />, bg: styles.statIconOrange },
+              { label: 'Votes', value: totalVotes.toLocaleString(), icon: <Vote size={24} color={COLORS.bgBlack} />, bg: styles.statIconGray },
+            ].map(({ label, value, icon, bg }) => (
+              <View key={label} style={styles.statCard}>
+                <View style={styles.statContent}>
+                  <View style={styles.statInfo}>
+                    <Text style={styles.statLabel}>{label}</Text>
+                    <Text style={styles.statValue}>{value}</Text>
+                  </View>
+                  <View style={[styles.statIcon, bg]}>{icon}</View>
                 </View>
               </View>
-            </View>
-
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Followers</Text>
-                  <Text style={styles.statValue}>{followers.toLocaleString()}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconGreen]}>
-                  <Heart size={24} color={COLORS.green500} />
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Plays</Text>
-                  <Text style={styles.statValue}>{totalPlays.toLocaleString()}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconRed]}>
-                  <Play size={24} color={COLORS.red500} />
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Songs</Text>
-                  <Text style={styles.statValue}>{songs.length}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconOrange]}>
-                  <Music size={24} color={COLORS.orange500} />
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.statCard}>
-              <View style={styles.statContent}>
-                <View style={styles.statInfo}>
-                  <Text style={styles.statLabel}>Votes</Text>
-                  <Text style={styles.statValue}>{totalVotes.toLocaleString()}</Text>
-                </View>
-                <View style={[styles.statIcon, styles.statIconGray]}>
-                  <Vote size={24} color={COLORS.bgBlack} />
-                </View>
-              </View>
-            </View>
+            ))}
           </View>
 
-          {/* Featured Song Section */}
+          {/* ── Featured Song ── */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Featured Song</Text>
-              <TouchableOpacity onPress={handleChangeDefaultSong}>
+              <TouchableOpacity onPress={() => setShowDefaultSong(true)}>
                 <Text style={styles.linkButton}>Change Featured</Text>
               </TouchableOpacity>
             </View>
@@ -565,23 +492,21 @@ const ArtistDashboardScreen: React.FC = () => {
                 {defaultSong && (
                   <View style={styles.songStats}>
                     <Eye size={14} color={COLORS.textGray400} />
-                    <Text style={styles.songStatsText}>
-                      {defaultSong.playCount || 0} plays
-                    </Text>
+                    <Text style={styles.songStatsText}>{(defaultSong as any).playCount || 0} plays</Text>
                   </View>
                 )}
               </View>
             </View>
           </View>
 
-          {/* Songs Section */}
+          {/* ── Songs Section ── */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleRow}>
                 <Play size={20} color={COLORS.primaryBlue} />
                 <Text style={styles.sectionTitleBlue}>Songs</Text>
               </View>
-              <TouchableOpacity style={styles.btnPrimarySmall} onPress={handleUpload}>
+              <TouchableOpacity style={styles.btnPrimarySmall} onPress={() => setShowUpload(true)}>
                 <Upload size={16} color={COLORS.textWhite} />
                 <Text style={styles.btnPrimarySmallText}>Upload</Text>
               </TouchableOpacity>
@@ -593,10 +518,16 @@ const ArtistDashboardScreen: React.FC = () => {
                     <View style={styles.itemHeader}>
                       <Text style={styles.itemTitle}>{song.title}</Text>
                       <View style={styles.itemActions}>
-                        <TouchableOpacity style={styles.actionButton} onPress={() => handleEditSong(song)}>
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={() => setEditingSong(song)}
+                        >
                           <Edit3 size={16} color={COLORS.textGray400} />
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.actionButton} onPress={() => handleEditLyrics(song)}>
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={() => setLyricsSong(song)}
+                        >
                           <FileText size={16} color={COLORS.textGray400} />
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -604,15 +535,16 @@ const ArtistDashboardScreen: React.FC = () => {
                           onPress={() => handleDeleteSong(song)}
                           disabled={deletingSongId === song.songId}
                         >
-                          <Trash2 size={16} color={COLORS.textGray400} />
+                          {deletingSongId === song.songId
+                            ? <ActivityIndicator size="small" color={COLORS.textGray400} />
+                            : <Trash2 size={16} color={COLORS.textGray400} />
+                          }
                         </TouchableOpacity>
                       </View>
                     </View>
                     <View style={styles.itemStats}>
                       <Play size={12} color={COLORS.textGray400} />
-                      <Text style={styles.itemStatsText}>
-                        {song.playCount || song.plays || 0} plays
-                      </Text>
+                      <Text style={styles.itemStatsText}>{song.playCount || song.plays || 0} plays</Text>
                     </View>
                   </View>
                 ))
@@ -622,49 +554,33 @@ const ArtistDashboardScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Social Media Section */}
+          {/* ── Social Media ── */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Social Media Links</Text>
             </View>
             <View style={styles.socialLinksEdit}>
-              <View style={styles.socialLinkItem}>
-                <Text style={styles.socialLabel}>📷 Instagram</Text>
-                <TextInput
-                  style={styles.socialInput}
-                  placeholder="https://instagram.com/yourprofile"
-                  placeholderTextColor={COLORS.textGray400}
-                  value={instagramUrl}
-                  onChangeText={setInstagramUrl}
-                  onBlur={() => handleSaveSocialMedia('instagram', instagramUrl)}
-                />
-              </View>
-              <View style={styles.socialLinkItem}>
-                <Text style={styles.socialLabel}>𝕏 Twitter / X</Text>
-                <TextInput
-                  style={styles.socialInput}
-                  placeholder="https://twitter.com/yourprofile"
-                  placeholderTextColor={COLORS.textGray400}
-                  value={twitterUrl}
-                  onChangeText={setTwitterUrl}
-                  onBlur={() => handleSaveSocialMedia('twitter', twitterUrl)}
-                />
-              </View>
-              <View style={styles.socialLinkItem}>
-                <Text style={styles.socialLabel}>🎵 TikTok</Text>
-                <TextInput
-                  style={styles.socialInput}
-                  placeholder="https://tiktok.com/@yourprofile"
-                  placeholderTextColor={COLORS.textGray400}
-                  value={tiktokUrl}
-                  onChangeText={setTiktokUrl}
-                  onBlur={() => handleSaveSocialMedia('tiktok', tiktokUrl)}
-                />
-              </View>
+              {[
+                { label: '📷 Instagram', value: instagramUrl, setter: setInstagramUrl, platform: 'instagram', placeholder: 'https://instagram.com/yourprofile' },
+                { label: '𝕏 Twitter / X', value: twitterUrl, setter: setTwitterUrl, platform: 'twitter', placeholder: 'https://twitter.com/yourprofile' },
+                { label: '🎵 TikTok', value: tiktokUrl, setter: setTiktokUrl, platform: 'tiktok', placeholder: 'https://tiktok.com/@yourprofile' },
+              ].map(({ label, value, setter, platform, placeholder }) => (
+                <View key={platform} style={styles.socialLinkItem}>
+                  <Text style={styles.socialLabel}>{label}</Text>
+                  <TextInput
+                    style={styles.socialInput}
+                    placeholder={placeholder}
+                    placeholderTextColor={COLORS.textGray400}
+                    value={value}
+                    onChangeText={setter}
+                    onBlur={() => handleSaveSocialMedia(platform, value)}
+                  />
+                </View>
+              ))}
             </View>
           </View>
 
-          {/* Supported Artist Section */}
+          {/* ── Supported Artist ── */}
           {supportedArtist && (
             <View style={styles.card}>
               <View style={styles.sectionHeader}>
@@ -675,11 +591,7 @@ const ArtistDashboardScreen: React.FC = () => {
               </View>
               <View style={styles.supportedArtistCard}>
                 <Image
-                  source={
-                    supportedArtist.photoUrl
-                      ? { uri: getMediaUrl(supportedArtist.photoUrl) }
-                      : fallbackImage
-                  }
+                  source={supportedArtist.photoUrl ? { uri: getMediaUrl(supportedArtist.photoUrl) } : fallbackImage}
                   style={styles.supportedArtistPhoto}
                 />
                 <View style={styles.supportedArtistInfo}>
@@ -687,13 +599,8 @@ const ArtistDashboardScreen: React.FC = () => {
                   {supportedArtist.defaultSong ? (
                     <View style={styles.supportedSongRow}>
                       <Music size={12} color={COLORS.textGray400} />
-                      <Text style={styles.supportedSongTitle}>
-                        {supportedArtist.defaultSong.title}
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.playSmallButton}
-                        onPress={handlePlaySupportedArtist}
-                      >
+                      <Text style={styles.supportedSongTitle}>{supportedArtist.defaultSong.title}</Text>
+                      <TouchableOpacity style={styles.playSmallButton} onPress={handlePlaySupportedArtist}>
                         <Play size={14} color={COLORS.textWhite} fill={COLORS.textWhite} />
                       </TouchableOpacity>
                     </View>
@@ -705,17 +612,14 @@ const ArtistDashboardScreen: React.FC = () => {
             </View>
           )}
 
-          {/* Vote History Section */}
+          {/* ── Vote History ── */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleRow}>
                 <History size={20} color={COLORS.primaryBlue} />
                 <Text style={styles.sectionTitleBlue}>Vote History</Text>
               </View>
-              <TouchableOpacity
-                style={styles.btnSecondarySmall}
-                onPress={() => setShowVoteHistory(true)}
-              >
+              <TouchableOpacity style={styles.btnSecondarySmall} onPress={() => setShowVoteHistory(true)}>
                 <Text style={styles.btnSecondarySmallText}>View Full History</Text>
               </TouchableOpacity>
             </View>
@@ -730,7 +634,7 @@ const ArtistDashboardScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Awards Section */}
+          {/* ── Awards ── */}
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>🏆 Awards Won</Text>
@@ -742,40 +646,25 @@ const ArtistDashboardScreen: React.FC = () => {
                     <View key={index} style={styles.awardItem}>
                       <View style={styles.awardHeader}>
                         <View style={styles.awardTitleRow}>
-                          <Text style={styles.awardEmoji}>
-                            {getAwardEmoji(award.determinationMethod)}
-                          </Text>
+                          <Text style={styles.awardEmoji}>{getAwardEmoji(award.determinationMethod)}</Text>
                           <View>
-                            <Text style={styles.awardTitle}>
-                              {award.interval?.name || 'Award'} Winner
-                            </Text>
+                            <Text style={styles.awardTitle}>{award.interval?.name || 'Award'} Winner</Text>
                             <Text style={styles.awardSubtitle}>
                               {award.jurisdiction?.name || 'Location'}
                               {award.genre?.name && ` • ${award.genre.name}`}
                             </Text>
                           </View>
                         </View>
-                        <Text style={styles.awardDate}>
-                          {formatAwardDate(award.awardDate)}
-                        </Text>
+                        <Text style={styles.awardDate}>{formatAwardDate(award.awardDate)}</Text>
                       </View>
                       <View style={styles.awardStats}>
-                        <Text style={styles.awardVotes}>
-                          {award.votesCount || 0} votes
-                        </Text>
+                        <Text style={styles.awardVotes}>{award.votesCount || 0} votes</Text>
                         <Text style={styles.awardDot}>•</Text>
-                        <Text style={styles.awardScore}>
-                          {award.engagementScore || 0} score
-                        </Text>
+                        <Text style={styles.awardScore}>{award.engagementScore || 0} score</Text>
                         {award.determinationMethod && (
                           <>
                             <Text style={styles.awardDot}>•</Text>
-                            <Text
-                              style={[
-                                styles.awardMethod,
-                                { color: getMethodColor(award.determinationMethod) },
-                              ]}
-                            >
+                            <Text style={[styles.awardMethod, { color: getMethodColor(award.determinationMethod) }]}>
                               Won by {award.determinationMethod.toLowerCase()}
                             </Text>
                           </>
@@ -784,11 +673,7 @@ const ArtistDashboardScreen: React.FC = () => {
                     </View>
                   ))}
                   {hasMoreAwards && (
-                    <TouchableOpacity
-                      style={styles.loadMoreButton}
-                      onPress={loadMoreAwards}
-                      disabled={loadingAwards}
-                    >
+                    <TouchableOpacity style={styles.loadMoreButton} onPress={loadMoreAwards} disabled={loadingAwards}>
                       <Text style={styles.loadMoreButtonText}>
                         {loadingAwards ? 'Loading...' : 'Load More'}
                       </Text>
@@ -807,22 +692,22 @@ const ArtistDashboardScreen: React.FC = () => {
             </View>
           </View>
 
-          {/* Danger Zone */}
+          {/* ── Danger Zone ── */}
           <View style={styles.dangerZone}>
             <Text style={styles.dangerTitle}>Danger Zone</Text>
-            <Text style={styles.dangerText}>
-              Once you delete your account, there is no going back.
-            </Text>
-            <TouchableOpacity style={styles.deleteAccountButton} onPress={handleDeleteAccount}>
+            <Text style={styles.dangerText}>Once you delete your account, there is no going back.</Text>
+            <TouchableOpacity
+              style={styles.deleteAccountButton}
+              onPress={() => setShowDeleteAccount(true)}
+            >
               <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Bottom spacing */}
           <View style={{ height: 120 }} />
         </ScrollView>
 
-        {/* Vote History Modal */}
+        {/* ── Vote History Modal ── */}
         <Modal visible={showVoteHistory} transparent animationType="slide">
           <Pressable style={styles.modalOverlay} onPress={() => setShowVoteHistory(false)}>
             <View style={styles.modalContent}>
@@ -844,22 +729,100 @@ const ArtistDashboardScreen: React.FC = () => {
                   <Text style={styles.emptyText}>No votes yet</Text>
                 )}
               </ScrollView>
-              <TouchableOpacity
-                style={styles.modalCloseButton}
-                onPress={() => setShowVoteHistory(false)}
-              >
+              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setShowVoteHistory(false)}>
                 <Text style={styles.modalCloseButtonText}>Close</Text>
               </TouchableOpacity>
             </View>
           </Pressable>
         </Modal>
+
+        {/* ── EditProfileWizard ── */}
+        <EditProfileWizard
+          visible={showEditProfile}
+          onClose={() => setShowEditProfile(false)}
+          onSuccess={() => {
+            refreshProfile();
+            setShowEditProfile(false);
+          }}
+          user={{
+            userId: user!.userId,
+            username: userProfile.username,
+            bio: userProfile.bio,
+            photoUrl: userProfile.photoUrl,
+          }}
+          isArtist
+        />
+
+        {/* ── UploadWizard ── */}
+        <UploadWizard
+          visible={showUpload}
+          onClose={() => setShowUpload(false)}
+          onSuccess={() => {
+            fetchSongs();
+            setShowUpload(false);
+          }}
+          userId={user!.userId}
+          defaultGenreId={userProfile.genreId}
+          defaultJurisdictionId={userProfile.jurisdiction?.jurisdictionId}
+        />
+
+        {/* ── ChangeDefaultSongWizard ── */}
+        <ChangeDefaultSongWizard
+          visible={showDefaultSong}
+          onClose={() => setShowDefaultSong(false)}
+          onSuccess={() => {
+            refetchDefaultSong();
+            setShowDefaultSong(false);
+          }}
+          userId={user!.userId}
+          songs={songs}
+          currentDefaultSongId={defaultSong?.songId}
+        />
+
+        {/* ── EditSongWizard ── */}
+        <EditSongWizard
+          visible={!!editingSong}
+          onClose={() => setEditingSong(null)}
+          onSuccess={() => {
+            fetchSongs();
+            setEditingSong(null);
+          }}
+          song={editingSong}
+        />
+
+        {/* ── LyricsWizard ── */}
+        <LyricsWizard
+          visible={!!lyricsSong}
+          onClose={() => setLyricsSong(null)}
+          onSuccess={() => {
+            fetchSongs();
+            setLyricsSong(null);
+          }}
+          song={lyricsSong}
+        />
+
+        {/* ── DeleteAccountWizard ── */}
+        <DeleteAccountWizard
+          visible={showDeleteAccount}
+          onClose={() => setShowDeleteAccount(false)}
+        />
+
+        {/* ── DeleteSongModal ── */}
+        <DeleteSongModal
+          visible={!!songToDelete}
+          songTitle={songToDelete?.title}
+          onConfirm={confirmDeleteSong}
+          onCancel={() => setSongToDelete(null)}
+          isDeleting={!!deletingSongId}
+        />
+
       </LinearGradient>
     </ImageBackground>
   );
 };
 
 // ============================================================================
-// STYLES
+// STYLES — identical to original, one addition for DownloadContractButton
 // ============================================================================
 const styles = StyleSheet.create({
   backgroundImage: { flex: 1, width: '100%', height: '100%' },
@@ -874,6 +837,7 @@ const styles = StyleSheet.create({
   profileInfo: { flex: 1, alignItems: IS_MOBILE ? 'center' : 'flex-start' },
   artistName: { fontSize: IS_MOBILE ? 20 : 24, fontWeight: '700', color: COLORS.textWhite, marginBottom: 8 },
   artistBio: { color: COLORS.textGray400, fontSize: 14, marginBottom: 16, textAlign: IS_MOBILE ? 'center' : 'left' },
+  downloadContractBtn: { marginTop: 8, alignSelf: IS_MOBILE ? 'center' : 'flex-start' },
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 20 },
   statCard: { backgroundColor: COLORS.bgGray900, borderWidth: 1, borderColor: COLORS.borderGray, borderRadius: 8, padding: 16, width: IS_MOBILE ? '48%' : '31%' },
   statContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
