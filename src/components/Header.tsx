@@ -62,7 +62,7 @@ const SIZES = {
 const QUICK_OPTIONS = [
   { label: 'Vote', route: 'Vote' },
   { label: 'Awards', route: 'Milestones' },
-  { label: 'Popular', route: 'Artist' },
+  { label: 'Find', route: 'Find' },
   { label: 'Earnings', route: 'Earnings' },
 ];
 

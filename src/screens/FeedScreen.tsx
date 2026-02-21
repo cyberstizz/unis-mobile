@@ -304,6 +304,7 @@ const FeedScreen: React.FC = () => {
             username: media.artist.username,
             photoUrl: getMediaUrl(media.artist.photoUrl), // ← THIS was the fix
             jurisdictionId: media.artist.jurisdiction?.jurisdictionId,
+            jurisdictionName: media.artist.jurisdiction?.name,
             score: media.artist.score || 0,
           });
         }
@@ -467,10 +468,11 @@ const FeedScreen: React.FC = () => {
               { userId: '1', username: 'Tony Fadd', photoUrl: 'https://picsum.photos/200?random=a1', score: 100 },
               { userId: '2', username: 'SD Boomin', photoUrl: 'https://picsum.photos/200?random=a2', score: 80 },
               { userId: '3', username: 'Artist Three', photoUrl: 'https://picsum.photos/200?random=a3', score: 60 },
-            ]).map((artist) => (
+            ]).map((artist, index) => (
               <ArtistCard
                 key={artist.userId}
                 artist={artist}
+                index={index}
                 onPress={() => handleArtistNav(artist.userId)}
                 onViewPress={() => handleArtistNav(artist.userId)}
               />

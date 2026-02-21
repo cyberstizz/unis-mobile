@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
+import { usePlayer } from '../context/PlayerContext';
 import { View, StyleSheet, Dimensions, ActivityIndicator, Text } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -92,10 +93,12 @@ const MainStack = () => {
 
 // Layout wrapper that includes Header
 const LayoutWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { currentMedia } = usePlayer();
+  
   return (
     <View style={styles.layout}>
       <Header />
-      <View style={styles.content}>
+      <View style={[styles.content, currentMedia && { paddingBottom: 90 }]}>
         {children}
       </View>
     </View>
