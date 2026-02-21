@@ -254,6 +254,8 @@ const FeedScreen: React.FC = () => {
       explicit: item.explicit || false,
       playsToday: item.playsToday || 0,
       playCount: item.playCount || 0,
+      genre: item.genre?.name || item.genre || null,
+      jurisdiction: item.jurisdiction?.name || item.jurisdiction || null,
     }));
   };
 

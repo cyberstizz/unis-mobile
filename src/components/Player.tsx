@@ -1,5 +1,5 @@
 import { getMediaUrl } from '../services/axiosInstance';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -195,9 +195,10 @@ const Player: React.FC = () => {
   };
 
   // ── Vote ─────────────────────────────────────────────────────────────────────
-  // Fetches full song details to get genre + jurisdiction, then opens VotingWizard.
-  // currentMedia in PlayerContext may only carry title/artist/artwork — the full
-  // genre and jurisdiction fields live on the song detail endpoint.
+  // Modeled after the web frontend's handleVoteClick:
+  // 1. Always fetches fresh song details for accurate genre + jurisdiction
+  // 2. Extracts jurisdiction name from object or string
+  // 3. Builds nominee + filters, then opens VotingWizard
   const handleVote = async () => {
     if (!userId) {
       Alert.alert('Login Required', 'Please log in to vote');
@@ -208,32 +209,38 @@ const Player: React.FC = () => {
     if (!songId) return;
 
     // If currentMedia already has genre + jurisdiction we can skip the fetch
-    const hasFullDetails =
-      (currentMedia?.genre || currentMedia?.genreKey) &&
-      currentMedia?.jurisdiction;
+    const hasFullDetails = currentMedia?.genre && currentMedia?.jurisdiction;
 
     let genre: string;
     let jurisdiction: string;
 
     if (hasFullDetails) {
-      genre = (currentMedia.genre || currentMedia.genreKey || 'unknown')
-        .toLowerCase()
-        .replace('/', '-');
-      jurisdiction = (currentMedia.jurisdiction || 'unknown')
-        .toLowerCase()
-        .replace(/\s+/g, '-');
+      genre = currentMedia.genre!.toLowerCase().replace('/', '-');
+      jurisdiction = currentMedia.jurisdiction!.toLowerCase().replace(/\s+/g, '-');
     } else {
       // Fetch full song detail to get genre + jurisdiction
       setVoteLoading(true);
       try {
         const res = await axiosInstance.get(`/v1/media/song/${songId}`);
         const song = res.data;
-        genre = (song.genre || song.genreKey || 'unknown')
-          .toLowerCase()
-          .replace('/', '-');
-        jurisdiction = (song.jurisdiction || 'unknown')
-          .toLowerCase()
-          .replace(/\s+/g, '-');
+
+        // Extract genre — may be object { name: "Rap/HipHop" } or string
+        genre = (
+          (typeof song.genre === 'object' ? song.genre?.name : song.genre) ||
+          song.genreKey ||
+          'unknown'
+        ).toLowerCase().replace('/', '-');
+
+        // Extract jurisdiction — may be object { name: "Uptown Harlem" } or string
+        let jurisdictionName = 'harlem';
+        if (song.jurisdiction) {
+          if (typeof song.jurisdiction === 'string') {
+            jurisdictionName = song.jurisdiction;
+          } else if (song.jurisdiction.name) {
+            jurisdictionName = song.jurisdiction.name;
+          }
+        }
+        jurisdiction = jurisdictionName.toLowerCase().replace(/\s+/g, '-');
       } catch (err) {
         console.error('Failed to fetch song details for voting:', err);
         Alert.alert('Error', 'Could not load song details. Please try again.');
@@ -253,6 +260,22 @@ const Player: React.FC = () => {
     });
     setShowVoteWizard(true);
   };
+
+  // ── Memoized filters for VotingWizard ────────────────────────────────────────
+  // CRITICAL: This must be memoized so that VotingWizard's useEffect deps don't
+  // see a new object reference on every Player re-render (which happens every
+  // ~250ms due to playback position updates). Without memoization, the wizard's
+  // reset effect fires continuously, resetting step back to 1 and overwriting
+  // jurisdiction selections.
+  const votingFilters = useMemo(() => {
+    if (!voteNominee) return undefined;
+    return {
+      selectedGenre: voteNominee.genreKey ?? 'unknown',
+      selectedType: 'song' as const,
+      selectedInterval: 'daily' as const,
+      selectedJurisdiction: voteNominee.jurisdiction ?? 'unknown',
+    };
+  }, [voteNominee]);
 
   // ── Placeholders ─────────────────────────────────────────────────────────────
   const handleAddToPlaylist = () => {
@@ -348,12 +371,7 @@ const Player: React.FC = () => {
       onVoteSuccess={() => setShowVoteWizard(false)}
       nominee={voteNominee}
       userId={userId}
-      filters={{
-        selectedGenre: voteNominee?.genreKey ?? 'unknown',
-        selectedType: 'song',
-        selectedInterval: 'daily',
-        selectedJurisdiction: voteNominee?.jurisdiction ?? 'unknown',
-      }}
+      filters={votingFilters}
     />
   );
 

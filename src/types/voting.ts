@@ -46,6 +46,6 @@ export interface VotingWizardProps {
   onClose: () => void;
   onVoteSuccess: (nomineeId: string) => void;
   nominee: Nominee | null;
-  userId: string;
+  userId: string | null;
   filters?: Partial<VoteFilters>;
 }

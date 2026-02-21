@@ -75,7 +75,7 @@ const Header: React.FC = () => {
   const { user, logout } = useAuth();
 
   const handleHome = () => {
-    navigation.navigate('Home' as never);
+  (navigation as any).navigate('Home', { screen: 'Feed' });
   };
 
   const handleLogout = async () => {

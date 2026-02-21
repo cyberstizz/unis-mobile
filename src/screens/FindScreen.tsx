@@ -627,12 +627,12 @@ const FindScreen: React.FC = () => {
   };
 
   const handleView = (item: TopResult, type: 'artist' | 'song') => {
-    if (type === 'artist') {
-      navigation.navigate('Artist', { artistId: item.id });
-    } else {
-      navigation.navigate('Song', { songId: item.id, type: 'song' });
-    }
-  };
+  if (type === 'artist') {
+    navigation.navigate('Home', { screen: 'Artist', params: { artistId: item.id } });
+  } else {
+    navigation.navigate('Home', { screen: 'Song', params: { songId: item.id, type: 'song' } });
+  }
+};
 
   // ════════════════════════════════════════════
   // MAP PRESS HANDLERS
@@ -976,7 +976,9 @@ const FindScreen: React.FC = () => {
                       navigation.navigate('Jurisdiction', { jurisdictionName: name });
                     }}
                   >
-                    <Text style={styles.resultsTitle}>Top Songs in {displayTerritory}</Text>
+                    <Text style={styles.resultsTitle}>
+                      Top Songs in <Text style={{ color: COLORS.unisBlue }}>{displayTerritory}</Text>
+                    </Text>
                   </TouchableOpacity>
                   <View style={styles.resultsList}>
                     {topSongs.length > 0 ? (
@@ -995,7 +997,9 @@ const FindScreen: React.FC = () => {
                       navigation.navigate('Jurisdiction', { jurisdictionName: name });
                     }}
                   >
-                    <Text style={styles.resultsTitle}>Top Artists in {displayTerritory}</Text>
+                    <Text style={styles.resultsTitle}>
+                      Top Artists in <Text style={{ color: COLORS.unisBlue }}>{displayTerritory}</Text>
+                    </Text>                  
                   </TouchableOpacity>
                   <View style={styles.resultsList}>
                     {topArtists.length > 0 ? (

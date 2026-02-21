@@ -347,8 +347,11 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
     }
   }, [voteResult.status]);
 
-
   // ─── RESET STATE ON OPEN ───
+  // CRITICAL FIX: Split into two effects.
+  // Effect 1: Full reset ONLY when the modal opens (visible changes to true).
+  // This prevents the wizard from resetting step/inputs when Player re-renders
+  // (which happens every ~250ms due to playback position updates).
   useEffect(() => {
     if (visible) {
       setStep(1);
@@ -357,9 +360,18 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
       setArtistNameBackward('');
       setSubmitting(false);
       setEligibleJurisdictionIds([]);
-      const homeKey = getKeyFromId(nominee?.jurisdiction && typeof nominee.jurisdiction === 'object'
-        ? nominee.jurisdiction.jurisdictionId
-        : undefined
+    }
+  }, [visible]);
+
+  // Effect 2: Update filters when nominee changes, but do NOT reset step.
+  // Uses nominee?.id as dep instead of the full nominee object to avoid
+  // firing on every re-render when Player passes a new object reference.
+  useEffect(() => {
+    if (visible && nominee) {
+      const homeKey = getKeyFromId(
+        nominee?.jurisdiction && typeof nominee.jurisdiction === 'object'
+          ? (nominee.jurisdiction as any).jurisdictionId
+          : undefined
       );
       setCurrentFilters(prev => ({
         ...prev,
@@ -368,7 +380,7 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
         selectedJurisdiction: homeKey || filters?.selectedJurisdiction || 'harlem',
       }));
     }
-  }, [visible, nominee, filters]);
+  }, [visible, nominee?.id]);
 
   // ─── FETCH ELIGIBLE JURISDICTIONS (BREADCRUMB) ───
   useEffect(() => {
@@ -381,8 +393,8 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
       let nomineeJurisdictionId: string | null = null;
 
       if (nominee.jurisdiction) {
-        if (typeof nominee.jurisdiction === 'object' && nominee.jurisdiction.jurisdictionId) {
-          nomineeJurisdictionId = nominee.jurisdiction.jurisdictionId;
+        if (typeof nominee.jurisdiction === 'object' && (nominee.jurisdiction as any).jurisdictionId) {
+          nomineeJurisdictionId = (nominee.jurisdiction as any).jurisdictionId;
         } else if (typeof nominee.jurisdiction === 'string') {
           const jurisdictionName = nominee.jurisdiction.toLowerCase().replace(/\s+/g, '-');
           nomineeJurisdictionId = JURISDICTION_IDS[jurisdictionName] || null;
@@ -447,7 +459,7 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
     };
 
     fetchEligibleJurisdictions();
-  }, [visible, nominee]);
+  }, [visible, nominee?.id]);
 
   // ─── HANDLERS ───
   const handleNext = () => {
@@ -884,9 +896,8 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 500,
     maxHeight: SCREEN_HEIGHT * 0.85,
-    flex: 1,                          
-    justifyContent: 'center',         
-
+    flex: 1,
+    justifyContent: 'center',
   },
 
   // -- Wizard Card --
@@ -905,7 +916,7 @@ const styles = StyleSheet.create({
     shadowRadius: 30,
     elevation: 15,
     maxHeight: SCREEN_HEIGHT * 0.88,
-    minHeight: SCREEN_HEIGHT * 0.79,  
+    minHeight: SCREEN_HEIGHT * 0.79,
   },
 
   // -- Close Button --
@@ -992,8 +1003,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginVertical: 8,
     textAlign: 'center',
-    // If you have Bitcount Grid Double loaded via expo-font, uncomment:
-    // fontFamily: 'BitcountGridDouble',
   },
   wizardIntro: {
     color: GRAY,
@@ -1141,8 +1150,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 6,
     marginBottom: 20,
-    // If Bitcount Grid Double is loaded:
-    // fontFamily: 'BitcountGridDouble',
   },
   iconContainer: {
     width: 72,

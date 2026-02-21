@@ -1,6 +1,7 @@
 // src/context/PlayerContext.tsx
 // Ported from web - uses expo-av instead of HTML5 <audio>
 // Added: clearPlayer() to reset state on logout
+// Updated: genre field added to NormalizedTrack + MediaItem for voting flow
 
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
 import { Audio, AVPlaybackStatus } from 'expo-av';
@@ -22,6 +23,7 @@ export interface MediaItem {
   duration?: number;
   jurisdiction?: string;
   playlistItemId?: string;
+  genre?: string;
 }
 
 // Normalized track type (consistent field names)
@@ -35,6 +37,7 @@ interface NormalizedTrack {
   url: string;
   duration?: number;
   jurisdiction?: string;
+  genre?: string;
 }
 
 // Transform playlist from backend format to normalized format
@@ -55,7 +58,8 @@ const normalizeTrack = (track: Track | MediaItem): NormalizedTrack => ({
   artwork: getMediaUrl((track as any).artworkUrl || (track as any).artwork) || '',
   url: getMediaUrl((track as any).fileUrl || (track as any).url) || '',
   duration: track.duration,
-  jurisdiction: track.jurisdiction
+  jurisdiction: (track as any).jurisdiction?.name || (track as any).jurisdiction,
+  genre: (track as any).genre?.name || (track as any).genre,
 });
 
 interface TransformedPlaylist {
