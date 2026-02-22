@@ -17,8 +17,9 @@ import { Music, Play, Heart, Eye } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import HarlemGif from '../../assets/downtownHarlem.gif';
+import { Video, ResizeMode } from 'expo-av';
 
+const HarlemVideo = require('../../assets/downtownHarlem.mp4');
 // ============================================================================
 // COLORS & SIZES
 // ============================================================================
@@ -459,9 +460,15 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
 
           {/* Hero GIF/Image Section */}
           <View style={styles.heroSection}>
-            <Image source={fallbackImage} style={styles.heroImage} />
+            <Video
+              source={HarlemVideo}
+              style={styles.heroImage}
+              resizeMode={ResizeMode.COVER}
+              shouldPlay
+              isLooping
+              isMuted
+            />
           </View>
-
           {/* Highlights Grid */}
           <View style={styles.highlightsGrid}>
             {/* Top Artist Card */}
