@@ -17,9 +17,8 @@ import { Music, Play, Heart, Eye } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import { Video, ResizeMode } from 'expo-av';
+import UnisLogo from '../../assets/unisLogoThree.svg';
 
-const HarlemVideo = require('../../assets/downtownHarlem.mp4');
 // ============================================================================
 // COLORS & SIZES
 // ============================================================================
@@ -100,16 +99,12 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   const navigation = useNavigation<any>();
   const { playMedia } = usePlayer();
 
-  // Get jurisdiction from route params or props
   const jurName = (route.params as any)?.jurisdictionName || (route.params as any)?.jurisdiction || jurisdiction;
-  // State
+
   const [data, setData] = useState<JurisdictionData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
-
-  // Fallback image
-  const fallbackImage = HarlemGif;
 
   // ============================================================================
   // GET USER ID FROM TOKEN
@@ -144,7 +139,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
         setLoading(true);
         setError(null);
 
-        // Step 1: Get jurisdiction ID by name
         const jurResponse = await axiosInstance.get(
           `/v1/jurisdictions/byName/${encodeURIComponent(jurName)}`
         );
@@ -154,11 +148,9 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
         const jurDetails = firstResult;
         if (!jurId) throw new Error('Jurisdiction not found');
 
-        // Step 2: Get tops
         const topsResponse = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
         const rawData = { ...topsResponse.data, jurisdiction: jurDetails };
 
-        // Normalize — matches web version's mapping exactly
         const topArtist = rawData.topArtist || (rawData.topArtists || [])[0];
         const topSong = rawData.topSong || (rawData.topSongs || [])[0];
 
@@ -168,7 +160,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
             : null,
           description: rawData.jurisdiction.bio || `Explore ${jurName}`,
 
-          // Only set if exists — no dummy fallbacks
           artistOfMonth: topArtist
             ? {
                 id: topArtist.userId,
@@ -193,7 +184,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
               }
             : null,
 
-          // Only real artists
           topArtists: (rawData.topArtists || []).map((artist: any, i: number) => ({
             id: artist.userId,
             rank: i + 1,
@@ -203,7 +193,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
             thumbnail: getMediaUrl(artist.photoUrl) || null,
           })),
 
-          // Only real songs
           topSongs: (rawData.topSongs || []).map((song: any, i: number) => ({
             id: song.songId,
             rank: i + 1,
@@ -231,10 +220,8 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   }, [jurName]);
 
   // ============================================================================
-  // PLAY HANDLERS — ALL WIRED TO REAL BACKEND
+  // PLAY HANDLERS
   // ============================================================================
-
-  // Play top artist's default song
   const handlePlayTopArtist = async () => {
     if (!data?.artistOfMonth) return;
 
@@ -258,13 +245,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
           []
         );
 
-        // Track the play
         if (defaultSong.songId && userId) {
           try {
             await axiosInstance.post(
               `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
             );
-            console.log('Top artist play tracked');
           } catch (err) {
             console.error('Failed to track play:', err);
           }
@@ -278,7 +263,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
     }
   };
 
-  // Play top song
   const handlePlayTopSong = async () => {
     if (!data?.songOfWeek?.fileUrl) {
       Alert.alert('Unavailable', 'Song not available');
@@ -296,20 +280,17 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
       []
     );
 
-    // Track the play
     if (data.songOfWeek.id && userId) {
       try {
         await axiosInstance.post(
           `/v1/media/song/${data.songOfWeek.id}/play?userId=${userId}`
         );
-        console.log('Top song play tracked');
       } catch (err) {
         console.error('Failed to track play:', err);
       }
     }
   };
 
-  // Play artist from list — fetches their default song
   const handlePlayArtist = async (artist: Artist) => {
     try {
       const response = await axiosInstance.get(
@@ -331,13 +312,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
           []
         );
 
-        // Track the play
         if (defaultSong.songId && userId) {
           try {
             await axiosInstance.post(
               `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
             );
-            console.log('Artist play tracked');
           } catch (err) {
             console.error('Failed to track play:', err);
           }
@@ -351,7 +330,6 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
     }
   };
 
-  // Play song from list
   const handlePlaySong = async (song: Song) => {
     if (!song.fileUrl) {
       Alert.alert('Unavailable', 'Song not available');
@@ -369,13 +347,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
       []
     );
 
-    // Track the play
     if (song.id && userId) {
       try {
         await axiosInstance.post(
           `/v1/media/song/${song.id}/play?userId=${userId}`
         );
-        console.log(`Song play tracked for ${song.id}`);
       } catch (err) {
         console.error('Failed to track play:', err);
       }
@@ -386,11 +362,11 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   // NAVIGATION HANDLERS
   // ============================================================================
   const handleViewArtist = (artistId: string) => {
-    navigation.navigate('Artist', { artistId });
+    (navigation as any).navigate('Home', { screen: 'Artist', params: { artistId } });
   };
 
   const handleViewSong = (songId: string) => {
-    navigation.navigate('Song', { songId });
+    (navigation as any).navigate('Home', { screen: 'Song', params: { songId } });
   };
 
   // ============================================================================
@@ -398,17 +374,12 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   // ============================================================================
   if (loading) {
     return (
-      <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-        <LinearGradient
-          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)', COLORS.bgBlack]}
-          style={styles.gradientOverlay}
-        >
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={COLORS.unisBlue} />
-            <Text style={styles.loadingText}>Loading {jurName}...</Text>
-          </View>
-        </LinearGradient>
-      </ImageBackground>
+      <View style={styles.loadingBackground}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.unisBlue} />
+          <Text style={styles.loadingText}>Loading {jurName}...</Text>
+        </View>
+      </View>
     );
   }
 
@@ -417,19 +388,14 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   // ============================================================================
   if (!data) {
     return (
-      <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-        <LinearGradient
-          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)', COLORS.bgBlack]}
-          style={styles.gradientOverlay}
-        >
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorText}>{error || `No data available for ${jurName}`}</Text>
-            <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-              <Text style={styles.backButtonText}>Go Back</Text>
-            </TouchableOpacity>
-          </View>
-        </LinearGradient>
-      </ImageBackground>
+      <View style={styles.loadingBackground}>
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error || `No data available for ${jurName}`}</Text>
+          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+            <Text style={styles.backButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   }
 
@@ -437,293 +403,282 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
   // MAIN RENDER
   // ============================================================================
   return (
-    <ImageBackground
-      source={
-        data.artistOfMonth?.image ? { uri: data.artistOfMonth.image } : fallbackImage
-      }
-      style={styles.backgroundImage}
-      blurRadius={25}
-    >
-      <LinearGradient
-        colors={['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.85)', COLORS.bgBlack]}
-        style={styles.gradientOverlay}
+    <View style={styles.screenContainer}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
       >
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <Text style={styles.headerTitle}>{jurName}</Text>
-          </View>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>{jurName}</Text>
+        </View>
 
-          {/* Hero GIF/Image Section */}
-          <View style={styles.heroSection}>
-            <Video
-              source={HarlemVideo}
-              style={styles.heroImage}
-              resizeMode={ResizeMode.COVER}
-              shouldPlay
-              isLooping
-              isMuted
-            />
-          </View>
-          {/* Highlights Grid */}
-          <View style={styles.highlightsGrid}>
-            {/* Top Artist Card */}
-            {data.artistOfMonth && (
-              <View style={styles.highlightCard}>
-                <LinearGradient
-                  colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
-                  style={styles.highlightOverlay}
-                >
-                  <View style={styles.sectionHeaderContainer}>
-                    <Text style={styles.highlightSectionTitle}>
-                      #1 Artist in {jurName}
-                    </Text>
-                  </View>
+        {/* Hero Section — SVG Logo */}
+        <View style={styles.heroSection}>
+          <LinearGradient
+            colors={['rgba(22, 51, 135, 0.15)', 'rgba(0, 0, 0, 0.3)']}
+            style={styles.heroBg}
+          >
+            <UnisLogo width={IS_MOBILE ? 120 : 160} height={IS_MOBILE ? 120 : 160} />
+            <Text style={styles.heroSubtitle}>{data.description}</Text>
+          </LinearGradient>
+        </View>
 
-                  <View style={styles.highlightContent}>
+        {/* Highlights Grid */}
+        <View style={styles.highlightsGrid}>
+          {/* Top Artist Card */}
+          {data.artistOfMonth && (
+            <View style={styles.highlightCard}>
+              <LinearGradient
+                colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
+                style={styles.highlightOverlay}
+              >
+                <View style={styles.sectionHeaderContainer}>
+                  <Text style={styles.highlightSectionTitle}>
+                    #1 Artist in {jurName}
+                  </Text>
+                </View>
+
+                <View style={styles.highlightContent}>
+                  <TouchableOpacity
+                    onPress={() => handleViewArtist(data.artistOfMonth!.id)}
+                  >
+                    <Image
+                      source={
+                        data.artistOfMonth.image
+                          ? { uri: data.artistOfMonth.image }
+                          : require('../../assets/randomrapper.jpeg')
+                      }
+                      style={styles.profileImage}
+                    />
+                  </TouchableOpacity>
+
+                  <View style={styles.highlightInfo}>
                     <TouchableOpacity
                       onPress={() => handleViewArtist(data.artistOfMonth!.id)}
                     >
-                      <Image
-                        source={
-                          data.artistOfMonth.image
-                            ? { uri: data.artistOfMonth.image }
-                            : fallbackImage
-                        }
-                        style={styles.profileImage}
-                      />
+                      <Text style={styles.highlightName}>
+                        {data.artistOfMonth.name}
+                      </Text>
                     </TouchableOpacity>
 
-                    <View style={styles.highlightInfo}>
-                      <TouchableOpacity
-                        onPress={() => handleViewArtist(data.artistOfMonth!.id)}
-                      >
-                        <Text style={styles.highlightName}>
-                          {data.artistOfMonth.name}
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.listenButton}
-                        onPress={handlePlayTopArtist}
-                      >
-                        <Text style={styles.listenButtonText}>Listen Now</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <TouchableOpacity
+                      style={styles.listenButton}
+                      onPress={handlePlayTopArtist}
+                    >
+                      <Text style={styles.listenButtonText}>Listen Now</Text>
+                    </TouchableOpacity>
                   </View>
-                </LinearGradient>
-              </View>
-            )}
-
-            {/* Top Song Card */}
-            {data.songOfWeek && (
-              <ImageBackground
-                source={
-                  data.songOfWeek.image
-                    ? { uri: data.songOfWeek.image }
-                    : fallbackImage
-                }
-                style={styles.highlightCard}
-                imageStyle={styles.highlightCardImage}
-              >
-                <LinearGradient
-                  colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
-                  style={styles.highlightOverlay}
-                >
-                  <View style={styles.sectionHeaderContainer}>
-                    <Text style={styles.highlightSectionTitle}>
-                      #1 Song in {jurName}
-                    </Text>
-                  </View>
-
-                  <View style={styles.highlightContent}>
-                    <View style={styles.songIcon}>
-                      <Play
-                        size={28}
-                        color={COLORS.accentWhite}
-                        fill={COLORS.accentWhite}
-                      />
-                    </View>
-
-                    <View style={styles.highlightInfo}>
-                      <TouchableOpacity
-                        onPress={() => handleViewSong(data.songOfWeek!.id)}
-                      >
-                        <Text style={styles.highlightName}>
-                          {data.songOfWeek.title}
-                        </Text>
-                      </TouchableOpacity>
-                      <Text style={styles.highlightArtist}>
-                        by {data.songOfWeek.artist}
-                      </Text>
-
-                      <TouchableOpacity
-                        style={styles.listenButton}
-                        onPress={handlePlayTopSong}
-                      >
-                        <Text style={styles.listenButtonText}>Play</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </LinearGradient>
-              </ImageBackground>
-            )}
-          </View>
-
-          {/* Content Grid - Top Artists & Top Songs */}
-          <View style={styles.contentGrid}>
-            {/* Top Artists Section */}
-            <View style={styles.contentSection}>
-              <View style={styles.contentSectionHeader}>
-                <Music size={20} color={COLORS.unisBlue} />
-                <Text style={styles.contentSectionTitle}>
-                  Top {data.topArtists.length} Artists in {jurName}
-                </Text>
-              </View>
-
-              <View style={styles.contentList}>
-                {data.topArtists.length > 0 ? (
-                  data.topArtists.map((artist) => (
-                    <View key={artist.id} style={styles.contentItem}>
-                      <Text style={styles.rankBadge}>{artist.rank}</Text>
-
-                      <TouchableOpacity onPress={() => handleViewArtist(artist.id)}>
-                        <Image
-                          source={
-                            artist.thumbnail
-                              ? { uri: artist.thumbnail }
-                              : fallbackImage
-                          }
-                          style={styles.topThumbnail}
-                        />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.itemHeader}
-                        onPress={() => handleViewArtist(artist.id)}
-                      >
-                        <Text style={styles.itemName} numberOfLines={1}>
-                          {artist.name}
-                        </Text>
-                      </TouchableOpacity>
-
-                      {!IS_MOBILE && (
-                        <View style={styles.itemStats}>
-                          <View style={styles.statItem}>
-                            <Heart size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>
-                              {artist.supporters.toLocaleString()}
-                            </Text>
-                          </View>
-                          <View style={styles.statItem}>
-                            <Eye size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>
-                              {artist.plays.toLocaleString()}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
-
-                      <TouchableOpacity
-                        style={styles.playButton}
-                        onPress={() => handlePlayArtist(artist)}
-                      >
-                        <Text style={styles.playButtonText}>Play</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.emptyText}>No artists yet in {jurName}</Text>
-                )}
-              </View>
-            </View>
-
-            {/* Top Songs Section */}
-            <View style={styles.contentSection}>
-              <View style={styles.contentSectionHeader}>
-                <Play size={20} color={COLORS.unisBlue} />
-                <Text style={styles.contentSectionTitle}>
-                  Top {data.topSongs.length} Songs in {jurName}
-                </Text>
-              </View>
-
-              <View style={styles.contentList}>
-                {data.topSongs.length > 0 ? (
-                  data.topSongs.map((song) => (
-                    <View key={song.id} style={styles.contentItem}>
-                      <Text style={styles.rankBadge}>{song.rank}</Text>
-
-                      <TouchableOpacity onPress={() => handleViewSong(song.id)}>
-                        <Image
-                          source={
-                            song.thumbnail
-                              ? { uri: song.thumbnail }
-                              : fallbackImage
-                          }
-                          style={styles.topThumbnail}
-                        />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.itemHeader}
-                        onPress={() => handleViewSong(song.id)}
-                      >
-                        <Text style={styles.itemName} numberOfLines={1}>
-                          {song.title}
-                        </Text>
-                        <Text style={styles.itemSubtext} numberOfLines={1}>
-                          {song.artist}
-                        </Text>
-                      </TouchableOpacity>
-
-                      {!IS_MOBILE && (
-                        <View style={styles.itemStats}>
-                          <View style={styles.statItem}>
-                            <Eye size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>
-                              {song.plays.toLocaleString()}
-                            </Text>
-                          </View>
-                          <View style={styles.statItem}>
-                            <Heart size={12} color={COLORS.textGray} />
-                            <Text style={styles.statText}>
-                              {song.likes.toLocaleString()}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
-
-                      <TouchableOpacity
-                        style={styles.playButton}
-                        onPress={() => handlePlaySong(song)}
-                      >
-                        <Text style={styles.playButtonText}>Play</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.emptyText}>No songs yet in {jurName}</Text>
-                )}
-              </View>
-            </View>
-          </View>
-
-          {/* Error Banner */}
-          {error && (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerText}>{error}</Text>
+                </View>
+              </LinearGradient>
             </View>
           )}
 
-          {/* Bottom spacing for player */}
-          <View style={{ height: 120 }} />
-        </ScrollView>
-      </LinearGradient>
-    </ImageBackground>
+          {/* Top Song Card */}
+          {data.songOfWeek && (
+            <ImageBackground
+              source={
+                data.songOfWeek.image
+                  ? { uri: data.songOfWeek.image }
+                  : require('../../assets/randomrapper.jpeg')
+              }
+              style={styles.highlightCard}
+              imageStyle={styles.highlightCardImage}
+            >
+              <LinearGradient
+                colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
+                style={styles.highlightOverlay}
+              >
+                <View style={styles.sectionHeaderContainer}>
+                  <Text style={styles.highlightSectionTitle}>
+                    #1 Song in {jurName}
+                  </Text>
+                </View>
+
+                <View style={styles.highlightContent}>
+                  <View style={styles.songIcon}>
+                    <Play
+                      size={28}
+                      color={COLORS.accentWhite}
+                      fill={COLORS.accentWhite}
+                    />
+                  </View>
+
+                  <View style={styles.highlightInfo}>
+                    <TouchableOpacity
+                      onPress={() => handleViewSong(data.songOfWeek!.id)}
+                    >
+                      <Text style={styles.highlightName}>
+                        {data.songOfWeek.title}
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={styles.highlightArtist}>
+                      by {data.songOfWeek.artist}
+                    </Text>
+
+                    <TouchableOpacity
+                      style={styles.listenButton}
+                      onPress={handlePlayTopSong}
+                    >
+                      <Text style={styles.listenButtonText}>Play</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </LinearGradient>
+            </ImageBackground>
+          )}
+        </View>
+
+        {/* Content Grid - Top Artists & Top Songs */}
+        <View style={styles.contentGrid}>
+          {/* Top Artists Section */}
+          <View style={styles.contentSection}>
+            <View style={styles.contentSectionHeader}>
+              <Music size={20} color={COLORS.unisBlue} />
+              <Text style={styles.contentSectionTitle}>
+                Top {data.topArtists.length} Artists in {jurName}
+              </Text>
+            </View>
+
+            <View style={styles.contentList}>
+              {data.topArtists.length > 0 ? (
+                data.topArtists.map((artist) => (
+                  <View key={artist.id} style={styles.contentItem}>
+                    <Text style={styles.rankBadge}>{artist.rank}</Text>
+
+                    <TouchableOpacity onPress={() => handleViewArtist(artist.id)}>
+                      <Image
+                        source={
+                          artist.thumbnail
+                            ? { uri: artist.thumbnail }
+                            : require('../../assets/randomrapper.jpeg')
+                        }
+                        style={styles.topThumbnail}
+                      />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.itemHeader}
+                      onPress={() => handleViewArtist(artist.id)}
+                    >
+                      <Text style={styles.itemName} numberOfLines={1}>
+                        {artist.name}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {!IS_MOBILE && (
+                      <View style={styles.itemStats}>
+                        <View style={styles.statItem}>
+                          <Heart size={12} color={COLORS.textGray} />
+                          <Text style={styles.statText}>
+                            {artist.supporters.toLocaleString()}
+                          </Text>
+                        </View>
+                        <View style={styles.statItem}>
+                          <Eye size={12} color={COLORS.textGray} />
+                          <Text style={styles.statText}>
+                            {artist.plays.toLocaleString()}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
+                    <TouchableOpacity
+                      style={styles.playButton}
+                      onPress={() => handlePlayArtist(artist)}
+                    >
+                      <Text style={styles.playButtonText}>Play</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.emptyText}>No artists yet in {jurName}</Text>
+              )}
+            </View>
+          </View>
+
+          {/* Top Songs Section */}
+          <View style={styles.contentSection}>
+            <View style={styles.contentSectionHeader}>
+              <Play size={20} color={COLORS.unisBlue} />
+              <Text style={styles.contentSectionTitle}>
+                Top {data.topSongs.length} Songs in {jurName}
+              </Text>
+            </View>
+
+            <View style={styles.contentList}>
+              {data.topSongs.length > 0 ? (
+                data.topSongs.map((song) => (
+                  <View key={song.id} style={styles.contentItem}>
+                    <Text style={styles.rankBadge}>{song.rank}</Text>
+
+                    <TouchableOpacity onPress={() => handleViewSong(song.id)}>
+                      <Image
+                        source={
+                          song.thumbnail
+                            ? { uri: song.thumbnail }
+                            : require('../../assets/randomrapper.jpeg')
+                        }
+                        style={styles.topThumbnail}
+                      />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.itemHeader}
+                      onPress={() => handleViewSong(song.id)}
+                    >
+                      <Text style={styles.itemName} numberOfLines={1}>
+                        {song.title}
+                      </Text>
+                      <Text style={styles.itemSubtext} numberOfLines={1}>
+                        {song.artist}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {!IS_MOBILE && (
+                      <View style={styles.itemStats}>
+                        <View style={styles.statItem}>
+                          <Eye size={12} color={COLORS.textGray} />
+                          <Text style={styles.statText}>
+                            {song.plays.toLocaleString()}
+                          </Text>
+                        </View>
+                        <View style={styles.statItem}>
+                          <Heart size={12} color={COLORS.textGray} />
+                          <Text style={styles.statText}>
+                            {song.likes.toLocaleString()}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
+                    <TouchableOpacity
+                      style={styles.playButton}
+                      onPress={() => handlePlaySong(song)}
+                    >
+                      <Text style={styles.playButtonText}>Play</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.emptyText}>No songs yet in {jurName}</Text>
+              )}
+            </View>
+          </View>
+        </View>
+
+        {/* Error Banner */}
+        {error && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorBannerText}>{error}</Text>
+          </View>
+        )}
+
+        {/* Bottom spacing for player */}
+        <View style={{ height: 120 }} />
+      </ScrollView>
+    </View>
   );
 };
 
@@ -731,14 +686,13 @@ const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 
 // STYLES
 // ============================================================================
 const styles = StyleSheet.create({
-  // Background & Layout
-  backgroundImage: {
+  screenContainer: {
     flex: 1,
-    width: '100%',
-    height: '100%',
+    backgroundColor: COLORS.bgBlack,
   },
-  gradientOverlay: {
+  loadingBackground: {
     flex: 1,
+    backgroundColor: COLORS.bgBlack,
   },
   scrollView: {
     flex: 1,
@@ -795,18 +749,27 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Hero Section
+  // Hero Section — SVG logo with gradient background
   heroSection: {
     width: '100%',
     height: IS_MOBILE ? 180 : 270,
     borderRadius: 12,
     overflow: 'hidden',
     marginBottom: IS_MOBILE ? 16 : 24,
+    borderWidth: 1,
+    borderColor: 'rgba(22, 51, 135, 0.3)',
   },
-  heroImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
+  heroBg: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  heroSubtitle: {
+    color: COLORS.textGray,
+    fontSize: IS_MOBILE ? 14 : 16,
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
 
   // Highlights Grid
