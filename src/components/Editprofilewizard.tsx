@@ -29,7 +29,7 @@ interface EditProfileWizardProps {
     userId: string;
     username: string;
     bio?: string;
-    photoUrl?: string;
+    photoUrl: string | null; // aligned with ProfileScreen's type
   };
   isArtist: boolean;
 }
@@ -63,7 +63,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],  // Updated from deprecated MediaTypeOptions.Images
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.85,
@@ -102,7 +102,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
 
   // ── Save photo ──────────────────────────────────────────────────────────────
 
-  const handleSavePhoto = async () => {
+const handleSavePhoto = async () => {
     if (!photoUri) {
       onClose();
       return;
@@ -111,16 +111,28 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
     setLoading(true);
     try {
       const formData = new FormData();
-      // React Native requires this object shape for FormData file entries
       formData.append('photo', {
         uri: photoUri,
         name: 'profile.jpg',
         type: 'image/jpeg',
       } as any);
 
-      await axiosInstance.patch('/v1/users/profile', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      // Use fetch (like CreateAccountWizard) — axios + FormData 
+      // in React Native has known issues with instanceof checks
+      const SecureStore = require('expo-secure-store');
+      const token = await SecureStore.getItemAsync('token');
+
+      const response = await fetch('http://192.168.1.154:8080/api/v1/users/profile', {
+        method: 'PATCH',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: formData,
       });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed with status ${response.status}`);
+      }
 
       onSuccess();
       onClose();
@@ -131,7 +143,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
       setLoading(false);
     }
   };
-
+  
   // ── Save bio ────────────────────────────────────────────────────────────────
 
   const handleSaveBio = async () => {

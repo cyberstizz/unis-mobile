@@ -139,31 +139,38 @@ const ProfileScreen: React.FC = () => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        // 1. Profile
-        axiosInstance.get(`/v1/users/profile/${user.userId}`)
-          .then(res => {
-            setUserProfile(res.data);
-            setInstagramUrl(res.data.instagramUrl || '');
-            setTwitterUrl(res.data.twitterUrl || '');
-            setTiktokUrl(res.data.tiktokUrl || '');
-            // 2. Supported artist (chained)
-            if (res.data.supportedArtistId) {
-              axiosInstance.get(`/v1/users/profile/${res.data.supportedArtistId}`)
-                .then(artistRes => setSupportedArtist(artistRes.data))
-                .catch(err => console.error('Failed to fetch supported artist:', err));
-            }
-          })
-          .catch(err => console.error('Failed to fetch profile:', err));
+        // FIX: Use Promise.all so setLoading(false) only fires after ALL requests resolve.
+        // Previously, .then() chains were fired off without being awaited, so the finally
+        // block ran immediately — causing a race condition where the screen could flash
+        // "Please log in" or render with stale/empty data.
+        const [profileRes, voteRes] = await Promise.all([
+          axiosInstance.get(`/v1/users/profile/${user.userId}`),
+          axiosInstance.get('/v1/vote/history?limit=50'),
+        ]);
 
-        // 3. Vote history
-        axiosInstance.get('/v1/vote/history?limit=50')
-          .then(res => setVoteHistory(res.data || []))
-          .catch(err => console.error('Failed to fetch vote history:', err));
+        // Set profile data
+        const profileData = profileRes.data;
+        setUserProfile(profileData);
+        setInstagramUrl(profileData.instagramUrl || '');
+        setTwitterUrl(profileData.twitterUrl || '');
+        setTiktokUrl(profileData.tiktokUrl || '');
 
+        // Set vote history
+        setVoteHistory(voteRes.data || []);
+
+        // Fetch supported artist if present (sequential since it depends on profile data)
+        if (profileData.supportedArtistId) {
+          try {
+            const artistRes = await axiosInstance.get(`/v1/users/profile/${profileData.supportedArtistId}`);
+            setSupportedArtist(artistRes.data);
+          } catch (err) {
+            console.error('Failed to fetch supported artist:', err);
+          }
+        }
       } catch (err) {
         console.error('Failed to load profile data:', err);
       } finally {
-        setTimeout(() => setLoading(false), 600);
+        setLoading(false);
       }
     };
 

@@ -34,8 +34,22 @@ const API_BASE_URL = 'http://192.168.1.154:8080/api';
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 15000,  // Increased default timeout (was 10000)
 });
+
+// ── Helper: Detect FormData reliably in React Native ──────────────────────────
+// In React Native, FormData is a polyfill and `instanceof FormData` can fail
+// depending on the JS engine / bundler. We check multiple signals to be safe.
+const isFormData = (data: any): boolean => {
+  if (!data) return false;
+  // Standard check (works in browsers, may fail in RN)
+  if (typeof FormData !== 'undefined' && data instanceof FormData) return true;
+  // Duck-type check: RN's FormData polyfill has _parts array
+  if (data._parts && Array.isArray(data._parts)) return true;
+  // Constructor name check as fallback
+  if (data.constructor && data.constructor.name === 'FormData') return true;
+  return false;
+};
 
 // Request interceptor: Attach token
 axiosInstance.interceptors.request.use(
@@ -47,9 +61,18 @@ axiosInstance.interceptors.request.use(
         config.headers.Authorization = `Bearer ${token}`;
       }
 
-      // Let axios set Content-Type for FormData (file uploads)
-      if (config.data instanceof FormData) {
+      // Let React Native / browser set Content-Type for FormData (file uploads)
+      // This is CRITICAL: manually setting 'multipart/form-data' omits the
+      // boundary string, which corrupts the request so the server never
+      // receives it (shows as "Network Error" in Axios).
+      if (isFormData(config.data)) {
+        // Delete any Content-Type so the runtime auto-sets it WITH boundary
         delete config.headers['Content-Type'];
+        
+        // Log for debugging in dev
+        if (__DEV__) {
+          console.log('[API Request] FormData detected — Content-Type will be set automatically');
+        }
       } else {
         config.headers['Content-Type'] = 'application/json';
       }
@@ -98,7 +121,6 @@ axiosInstance.interceptors.response.use(
 export const getApiBaseUrl = (): string => API_BASE_URL;
 
 // function to call the local server
-
 export const getMediaUrl = (path: string | null | undefined): string | undefined => {
   if (!path) return undefined;
   if (path.startsWith('http')) return path; 
