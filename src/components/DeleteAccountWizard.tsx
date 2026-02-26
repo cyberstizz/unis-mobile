@@ -11,10 +11,13 @@ import {
   Platform,
   Dimensions,
 } from 'react-native';
-import axiosInstance from '../services/axiosInstance';
+import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+// Use the same base URL as axiosInstance
+const API_BASE_URL = 'http://192.168.1.154:8080/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +36,7 @@ const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onCl
   const [typedNameBackwards, setTypedNameBackwards] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const username = user?.username || '';
   const expectedBackwards = username.split('').reverse().join('');
@@ -48,6 +52,7 @@ const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onCl
     setTypedNameBackwards('');
     setConfirmed(false);
     setLoading(false);
+    setError('');
     onClose();
   };
 
@@ -55,13 +60,29 @@ const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onCl
   const handleDelete = async () => {
     if (!canDelete) return;
     setLoading(true);
+    setError('');
     try {
-      await axiosInstance.delete('/v1/users/me');
+      // FIX: Use fetch instead of axiosInstance for DELETE request
+      // to match the working pattern across all other wizards.
+      const token = await SecureStore.getItemAsync('token');
+
+      const response = await fetch(`${API_BASE_URL}/v1/users/me`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Delete failed with status ${response.status}`);
+      }
+
       await logout();
       // logout() should navigate to login screen via AuthContext / AppNavigator
-    } catch (err) {
+    } catch (err: any) {
       console.error('Delete account error:', err);
-      // Show error inline rather than Alert so it stays in the modal context
+      setError('Failed to delete account. Please try again.');
       setLoading(false);
     }
   };
@@ -183,6 +204,11 @@ const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onCl
                   </Text>
                 </TouchableOpacity>
 
+                {/* Error */}
+                {!!error && (
+                  <Text style={styles.errorText}>{error}</Text>
+                )}
+
                 {/* Buttons */}
                 <View style={styles.buttonRow}>
                   <TouchableOpacity style={styles.cancelBtn} onPress={handleClose} disabled={loading}>
@@ -223,7 +249,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.9,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 48,
     position: 'relative',
   },
   handleBar: {
@@ -375,6 +401,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flex: 1,
     lineHeight: 20,
+  },
+
+  // Error
+  errorText: {
+    color: '#dc3545',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 12,
   },
 
   // Button row

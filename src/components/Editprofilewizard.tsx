@@ -102,7 +102,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
 
   // ── Save photo ──────────────────────────────────────────────────────────────
 
-const handleSavePhoto = async () => {
+  const handleSavePhoto = async () => {
     if (!photoUri) {
       onClose();
       return;
@@ -110,40 +110,57 @@ const handleSavePhoto = async () => {
 
     setLoading(true);
     try {
+      // Determine the file extension and MIME type from the URI
+      const uriParts = photoUri.split('.');
+      const ext = uriParts[uriParts.length - 1]?.toLowerCase() || 'jpg';
+      const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+      const fileName = `profile_${Date.now()}.${ext}`;
+
       const formData = new FormData();
+      // React Native requires this object shape for FormData file entries.
+      // On Android, keep the file:// prefix; on iOS, strip it.
       formData.append('photo', {
-        uri: photoUri,
-        name: 'profile.jpg',
-        type: 'image/jpeg',
+        uri: Platform.OS === 'android' ? photoUri : photoUri.replace('file://', ''),
+        name: fileName,
+        type: mimeType,
       } as any);
 
-      // Use fetch (like CreateAccountWizard) — axios + FormData 
-      // in React Native has known issues with instanceof checks
-      const SecureStore = require('expo-secure-store');
-      const token = await SecureStore.getItemAsync('token');
-
-      const response = await fetch('http://192.168.1.154:8080/api/v1/users/profile', {
-        method: 'PATCH',
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed with status ${response.status}`);
+      if (__DEV__) {
+        console.log('[EditProfile] Uploading photo:', {
+          uri: photoUri,
+          name: fileName,
+          type: mimeType,
+          platform: Platform.OS,
+          formDataParts: (formData as any)._parts?.length ?? 'unknown',
+        });
       }
+
+      // Do NOT set Content-Type header — axiosInstance interceptor handles this
+      // by deleting Content-Type for FormData, letting RN auto-set it with boundary.
+      // Extended timeout for photo uploads over local network.
+      await axiosInstance.patch('/v1/users/profile', formData, {
+        timeout: 30000,
+      });
 
       onSuccess();
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Save photo error:', err);
+      // Enhanced error logging for debugging
+      if (__DEV__) {
+        console.error('[EditProfile] Upload failure details:', {
+          message: err.message,
+          status: err.response?.status,
+          data: err.response?.data,
+          code: err.code,
+        });
+      }
       Alert.alert('Error', 'Failed to update photo. Please try again.');
     } finally {
       setLoading(false);
     }
   };
-  
+
   // ── Save bio ────────────────────────────────────────────────────────────────
 
   const handleSaveBio = async () => {
@@ -347,7 +364,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.88,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 48,
   },
 
   // Handle

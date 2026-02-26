@@ -10,10 +10,15 @@ import {
   Platform,
   Dimensions,
   KeyboardAvoidingView,
+  Alert,
 } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
 import axiosInstance from '../services/axiosInstance';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+// Use the same base URL as axiosInstance
+const API_BASE_URL = 'http://192.168.1.154:8080/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -59,17 +64,32 @@ const LyricsWizard: React.FC<LyricsWizardProps> = ({
     setSaving(true);
     try {
       const songId = song.songId || song.id;
+
+      // FIX: Use fetch with FormData (same pattern as working photo upload).
+      // axios + FormData in React Native has instanceof issues that cause
+      // Content-Type to be set incorrectly, resulting in Network Errors.
+      const token = await SecureStore.getItemAsync('token');
+
       const formData = new FormData();
       formData.append('lyrics', lyrics.trim());
 
-      await axiosInstance.patch(`/v1/media/song/${songId}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      const response = await fetch(`${API_BASE_URL}/v1/media/song/${songId}`, {
+        method: 'PATCH',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: formData,
       });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save lyrics: ${response.status}`);
+      }
 
       onSuccess();
       handleClose();
     } catch (err) {
       console.error('Failed to save lyrics:', err);
+      Alert.alert('Error', 'Failed to save lyrics. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -175,7 +195,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.92,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 48,
     borderTopWidth: 1,
     borderTopColor: '#333',
   },

@@ -222,61 +222,77 @@ const ArtistDashboardScreen: React.FC = () => {
     const fetchAllData = async () => {
       setLoading(true);
       try {
+        // FIX: Use Promise.all so setLoading(false) only fires after ALL requests resolve.
+        // Previously, .then() chains were fired off without being awaited, causing the
+        // finally block to run immediately — a race condition where the screen could
+        // flash empty or render with stale data.
+        const [profileRes, songsRes, supportersRes, followersRes, voteRes, defaultSongRes, awardsRes] = await Promise.allSettled([
+          axiosInstance.get(`/v1/users/profile/${user.userId}`),
+          axiosInstance.get(`/v1/media/songs/artist/${user.userId}`),
+          axiosInstance.get(`/v1/users/${user.userId}/supporters/count`),
+          axiosInstance.get(`/v1/users/${user.userId}/followers/count`),
+          axiosInstance.get('/v1/vote/history?limit=50'),
+          axiosInstance.get(`/v1/users/${user.userId}/default-song`),
+          axiosInstance.get(`/v1/awards/artist/${user.userId}?limit=10&offset=0`),
+        ]);
+
         // 1. Profile
-        axiosInstance.get(`/v1/users/profile/${user.userId}`)
-          .then(res => {
-            setUserProfile(res.data);
-            setTotalPlays(res.data.totalPlays || 0);
-            setTotalVotes(res.data.totalVotes || 0);
-            setInstagramUrl(res.data.instagramUrl || '');
-            setTwitterUrl(res.data.twitterUrl || '');
-            setTiktokUrl(res.data.tiktokUrl || '');
-            if (res.data.supportedArtistId) {
-              axiosInstance.get(`/v1/users/profile/${res.data.supportedArtistId}`)
-                .then(artistRes => setSupportedArtist(artistRes.data))
-                .catch(err => console.error('Failed to fetch supported artist:', err));
+        if (profileRes.status === 'fulfilled') {
+          const profileData = profileRes.value.data;
+          setUserProfile(profileData);
+          setTotalPlays(profileData.totalPlays || 0);
+          setTotalVotes(profileData.totalVotes || 0);
+          setInstagramUrl(profileData.instagramUrl || '');
+          setTwitterUrl(profileData.twitterUrl || '');
+          setTiktokUrl(profileData.tiktokUrl || '');
+
+          // Fetch supported artist (depends on profile data)
+          if (profileData.supportedArtistId) {
+            try {
+              const artistRes = await axiosInstance.get(`/v1/users/profile/${profileData.supportedArtistId}`);
+              setSupportedArtist(artistRes.data);
+            } catch (err) {
+              console.error('Failed to fetch supported artist:', err);
             }
-          })
-          .catch(err => console.error('Failed to fetch profile:', err));
+          }
+        }
 
         // 2. Songs
-        axiosInstance.get(`/v1/media/songs/artist/${user.userId}`)
-          .then(res => setSongs(res.data || []))
-          .catch(err => console.error('Failed to fetch songs:', err));
+        if (songsRes.status === 'fulfilled') {
+          setSongs(songsRes.value.data || []);
+        }
 
         // 3. Supporters
-        axiosInstance.get(`/v1/users/${user.userId}/supporters/count`)
-          .then(res => setSupporters(res.data.count || 0))
-          .catch(err => console.error('Failed to fetch supporters:', err));
+        if (supportersRes.status === 'fulfilled') {
+          setSupporters(supportersRes.value.data.count || 0);
+        }
 
         // 4. Followers
-        axiosInstance.get(`/v1/users/${user.userId}/followers/count`)
-          .then(res => setFollowers(res.data.count || 0))
-          .catch(() => setFollowers(0));
+        if (followersRes.status === 'fulfilled') {
+          setFollowers(followersRes.value.data.count || 0);
+        }
 
         // 5. Vote history
-        axiosInstance.get('/v1/vote/history?limit=50')
-          .then(res => setVoteHistory(res.data || []))
-          .catch(err => console.error('Failed to fetch vote history:', err));
+        if (voteRes.status === 'fulfilled') {
+          setVoteHistory(voteRes.value.data || []);
+        }
 
         // 6. Default song
-        axiosInstance.get(`/v1/users/${user.userId}/default-song`)
-          .then(res => setDefaultSong(res.data))
-          .catch(() => setDefaultSong(null));
+        if (defaultSongRes.status === 'fulfilled') {
+          setDefaultSong(defaultSongRes.value.data);
+        }
 
         // 7. Awards
-        axiosInstance.get(`/v1/awards/artist/${user.userId}?limit=10&offset=0`)
-          .then(res => {
-            const awardsData = res.data || [];
-            setAwards(awardsData);
-            setHasMoreAwards(awardsData.length === 10);
-          })
-          .catch(err => { console.error('Failed to fetch awards:', err); setAwards([]); });
+        if (awardsRes.status === 'fulfilled') {
+          const awardsData = awardsRes.value.data || [];
+          setAwards(awardsData);
+          setHasMoreAwards(awardsData.length === 10);
+        }
 
       } catch (err) {
         console.error('Failed to fetch dashboard data:', err);
       } finally {
-        setTimeout(() => setLoading(false), 600);
+        setLoading(false);
       }
     };
 

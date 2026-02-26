@@ -10,10 +10,15 @@ import {
   ActivityIndicator,
   Platform,
   Dimensions,
+  Alert,
 } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
+
+// Use the same base URL as axiosInstance
+const API_BASE_URL = 'http://192.168.1.154:8080/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,14 +72,29 @@ const ChangeDefaultSongWizard: React.FC<ChangeDefaultSongWizardProps> = ({
 
     setLoading(true);
     try {
-      await axiosInstance.patch('/v1/users/default-song', {
-        defaultSongId: selectedSongId,
+      // FIX: Use fetch instead of axios for PATCH requests.
+      // axios PATCH in React Native (especially in Expo Go) has known issues
+      // with request handling that can cause silent Network Errors.
+      const token = await SecureStore.getItemAsync('token');
+
+      const response = await fetch(`${API_BASE_URL}/v1/users/default-song`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ defaultSongId: selectedSongId }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Failed to set featured song: ${response.status}`);
+      }
+
       onSuccess();
       onClose();
     } catch (err) {
       console.error('Change default song error:', err);
-      // Keep wizard open so user can retry
+      Alert.alert('Error', 'Failed to set featured song. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -230,7 +250,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.88,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 48,
   },
   handleBar: {
     width: 40, height: 4, backgroundColor: '#333',

@@ -16,14 +16,16 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import axiosInstance from '../services/axiosInstance';
+import * as SecureStore from 'expo-secure-store';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 const MAX_AUDIO_MB = 50;
 const MAX_ARTWORK_MB = 1;
 
+// Use the same base URL as axiosInstance
+const API_BASE_URL = 'http://192.168.1.154:8080/api';
+
 // ─── Genre options (mirrors web genreId defaults) ─────────────────────────────
-// Adjust UUIDs to match your backend seed data
 const GENRES = [
   { label: 'Hip-Hop / Rap', value: '00000000-0000-0000-0000-000000000101' },
   { label: 'R&B / Soul', value: '00000000-0000-0000-0000-000000000102' },
@@ -52,11 +54,9 @@ interface ArtworkAsset {
 interface UploadWizardProps {
   visible: boolean;
   onClose: () => void;
-  onSuccess: () => void; // caller refreshes songs list
+  onSuccess: () => void;
   userId: string;
-  /** User's default genreId — pre-selects the genre picker */
   defaultGenreId?: string;
-  /** User's home jurisdictionId — sent with upload */
   defaultJurisdictionId?: string;
 }
 
@@ -215,7 +215,7 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.85,
@@ -224,7 +224,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
     if (result.canceled) return;
 
     const asset = result.assets[0];
-    // Rough size check via fileSize if available
     if (asset.fileSize && asset.fileSize / 1024 / 1024 > MAX_ARTWORK_MB) {
       setError(`Artwork too large — max ${MAX_ARTWORK_MB}MB.`);
       return;
@@ -277,15 +276,31 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
         } as any);
       }
 
-      await axiosInstance.post(`/v1/media/${mediaType}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      // FIX: Use fetch instead of axios for FormData uploads.
+      // axios + FormData in React Native (Expo Go) has instanceof issues that
+      // cause Content-Type to be set incorrectly, resulting in Network Errors.
+      // fetch() handles FormData boundary correctly natively.
+      const token = await SecureStore.getItemAsync('token');
+
+      const response = await fetch(`${API_BASE_URL}/v1/media/${mediaType}`, {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          // Do NOT set Content-Type — fetch auto-sets it with boundary for FormData
+        },
+        body: formData,
       });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(errorData?.message || `Upload failed with status ${response.status}`);
+      }
 
       onSuccess();
       handleClose();
     } catch (err: any) {
       console.error('Upload error:', err);
-      setError(err.response?.data?.message || 'Upload failed. Please try again.');
+      setError(err.message || 'Upload failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -299,7 +314,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
 
   const renderStep = () => {
     switch (step) {
-      // ── Step 1: Media type ─────────────────────────────────────────────────
       case 1:
         return (
           <View style={styles.stepContent}>
@@ -323,7 +337,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
           </View>
         );
 
-      // ── Step 2: Details + file ─────────────────────────────────────────────
       case 2:
         return (
           <View style={styles.stepContent}>
@@ -375,7 +388,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
           </View>
         );
 
-      // ── Step 3: Artwork ────────────────────────────────────────────────────
       case 3:
         return (
           <View style={styles.stepContent}>
@@ -399,7 +411,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
           </View>
         );
 
-      // ── Step 4: Confirm ────────────────────────────────────────────────────
       case 4:
         return (
           <View style={styles.stepContent}>
@@ -540,7 +551,6 @@ const UploadWizard: React.FC<UploadWizardProps> = ({
         </View>
       </Modal>
 
-      {/* Genre picker lives outside main modal to avoid nesting issues */}
       {renderGenrePicker()}
     </>
   );
@@ -571,7 +581,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: SCREEN_HEIGHT * 0.9,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 48,
   },
   handleBar: {
     width: 40, height: 4, backgroundColor: '#333',
