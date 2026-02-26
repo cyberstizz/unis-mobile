@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import UnisLogo from '../../assets/unisLogoThree.svg';
 import {
   View,
   Text,
@@ -14,6 +15,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  Animated, 
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
@@ -259,6 +261,31 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
 
   // Scroll ref
   const scrollViewRef = useRef<ScrollView>(null);
+
+
+  // Blinking animation for active step
+  const blinkAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.timing(blinkAnim, {
+          toValue: 0.3,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(blinkAnim, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    blink.start();
+    return () => blink.stop();
+  }, []);
+
+
 
   // ============================================================================
   // STEP CONFIGURATION
@@ -538,19 +565,51 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
     }
 
     try {
-      // TODO: Get actual song URL from API
-      // For now, just set playing state (no actual audio)
+      // Fetch the song details on demand since /artists/active
+      // doesn't include the defaultSong object
+      let songUrl: string | undefined;
+
+      if (artist.defaultSong?.fileUrl) {
+        songUrl = getMediaUrl(artist.defaultSong.fileUrl);
+      } else {
+        // Fetch song data from the user's default-song endpoint
+        const songRes = await axiosInstance.get(`/v1/users/${artist.userId}/default-song`);
+        const songData = songRes.data;
+        if (songData?.fileUrl) {
+          songUrl = getMediaUrl(songData.fileUrl);
+        }
+      }
+
+      if (!songUrl) {
+        Alert.alert('Unavailable', 'No preview available for this artist.');
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+      });
+
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        { uri: songUrl },
+        { shouldPlay: true }
+      );
+
+      setSound(newSound);
       setPlayingArtistId(artist.userId);
 
-      // In production:
-      // const { sound: newSound } = await Audio.Sound.createAsync(
-      //   { uri: `${API_BASE_URL}${artist.defaultSong?.fileUrl}` },
-      //   { shouldPlay: true }
-      // );
-      // setSound(newSound);
+      newSound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          newSound.unloadAsync();
+          setSound(null);
+          setPlayingArtistId(null);
+        }
+      });
     } catch (err) {
       console.error('Could not play preview:', err);
-      Alert.alert('Error', 'Could not play audio preview');
+      setPlayingArtistId(null);
+      Alert.alert('Error', 'Could not play audio preview.');
     }
   };
 
@@ -876,8 +935,11 @@ const handleSubmit = async () => {
         return (
           <View>
             <View style={styles.stepHeader}>
-              <Text style={styles.stepTitle}>Welcome to Unis</Text>
-              <Text style={styles.stepSubtitle}>Enter your referral code to join the community.</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+              <Text style={styles.stepTitle}>Welcome to </Text>
+              <UnisLogo width={90} height={82} />
+            </View>             
+            <Text style={styles.stepSubtitle}>Enter your referral code to join the community.</Text>
             </View>
 
             <View style={styles.formGroup}>
@@ -1847,18 +1909,34 @@ const handleSubmit = async () => {
 
             {/* Progress Bar */}
             <View style={styles.progressBar}>
-              {steps.map((step, index) => (
-                <View
-                  key={step.id}
-                  style={[
-                    styles.progressStep,
-                    index + 1 < currentStep && styles.progressStepCompleted,
-                    index + 1 === currentStep && styles.progressStepActive,
-                  ]}
-                />
-              ))}
-            </View>
+              {steps.map((step, index) => {
+                const isActive = index + 1 === currentStep;
+                const isCompleted = index + 1 < currentStep;
 
+                if (isActive) {
+                  return (
+                    <Animated.View
+                      key={step.id}
+                      style={[
+                        styles.progressStep,
+                        styles.progressStepActive,
+                        { opacity: blinkAnim },
+                      ]}
+                    />
+                  );
+                }
+
+                return (
+                  <View
+                    key={step.id}
+                    style={[
+                      styles.progressStep,
+                      isCompleted && styles.progressStepCompleted,
+                    ]}
+                  />
+                );
+              })}
+            </View>
             {/* Content */}
             <ScrollView
               ref={scrollViewRef}
