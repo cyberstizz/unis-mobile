@@ -30,7 +30,7 @@ const getBaseUrl = (): string => {
   return 'https://your-production-api.com/api';
 };
 
-const API_BASE_URL = 'http://192.168.1.154:8080/api'; 
+const API_BASE_URL = 'https://unismvp-production.up.railway.app/api'; 
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -124,7 +124,7 @@ export const getApiBaseUrl = (): string => API_BASE_URL;
 export const getMediaUrl = (path: string | null | undefined): string | undefined => {
   if (!path) return undefined;
   if (path.startsWith('http')) return path; 
-  return `http://192.168.1.154:8080${path}`;
+  return `https://unismvp-production.up.railway.app${path}`;
 };
 
 // Logout helper

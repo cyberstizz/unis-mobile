@@ -18,7 +18,7 @@ import axiosInstance from '../services/axiosInstance';
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 // Use the same base URL as axiosInstance
-const API_BASE_URL = 'http://192.168.1.154:8080/api';
+const API_BASE_URL = 'https://unismvp-production.up.railway.app/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

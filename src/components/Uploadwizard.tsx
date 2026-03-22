@@ -23,7 +23,7 @@ const MAX_AUDIO_MB = 50;
 const MAX_ARTWORK_MB = 1;
 
 // Use the same base URL as axiosInstance
-const API_BASE_URL = 'http://192.168.1.154:8080/api';
+const API_BASE_URL = 'https://unismvp-production.up.railway.app/api';
 
 // ─── Genre options (mirrors web genreId defaults) ─────────────────────────────
 const GENRES = [
