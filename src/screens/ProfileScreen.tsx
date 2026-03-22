@@ -32,6 +32,7 @@ import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 // ── Wizards (exact filenames from repo) ──────────────────────────────────────
 import Editprofilewizard from '../components/Editprofilewizard';
 import DeleteAccountWizard from '../components/DeleteAccountWizard';
+import ChangePasswordWizard from '../components/Changepasswordwizard';
 
 // ============================================================================
 // COLORS & SIZES
@@ -96,6 +97,8 @@ const ProfileScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const { playMedia } = usePlayer();
   const { user } = useAuth();
+
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // State
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -407,6 +410,12 @@ const ProfileScreen: React.FC = () => {
               <Text style={styles.dangerTitle}>Danger Zone</Text>
               <Text style={styles.dangerText}>This cannot be undone.</Text>
               <TouchableOpacity
+                style={styles.changePasswordButton}
+                onPress={() => setShowChangePassword(true)}
+              >
+                <Text style={styles.changePasswordButtonText}>Change Password</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
                 style={styles.deleteButton}
                 onPress={() => setShowDeleteAccount(true)}
               >
@@ -472,6 +481,11 @@ const ProfileScreen: React.FC = () => {
         <DeleteAccountWizard
           visible={showDeleteAccount}
           onClose={() => setShowDeleteAccount(false)}
+        />
+
+        <ChangePasswordWizard
+          visible={showChangePassword}
+          onClose={() => setShowChangePassword(false)}
         />
 
       </LinearGradient>
@@ -554,6 +568,21 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 14, color: COLORS.textMuted, fontStyle: 'italic', textAlign: 'center', padding: 24 },
   modalCloseButton: { backgroundColor: COLORS.unisBlue, paddingVertical: 14, borderRadius: 10, marginTop: 16, alignItems: 'center' },
   modalCloseButtonText: { color: COLORS.textWhite, fontWeight: '600', fontSize: 16 },
+  changePasswordButton: {
+  backgroundColor: 'rgba(255,255,255,0.05)',
+  borderWidth: 1,
+  borderColor: 'rgba(255,255,255,0.15)',
+  paddingVertical: 12,
+  paddingHorizontal: 24,
+  borderRadius: 10,
+  marginBottom: 12,
+},
+changePasswordButtonText: {
+  color: COLORS.textWhite,
+  fontWeight: '600',
+  textAlign: 'center',
+  fontSize: 14,
+},
 });
 
 export default ProfileScreen;

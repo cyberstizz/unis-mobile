@@ -15,6 +15,7 @@ import {
 // import { Video, ResizeMode } from 'expo-av';
 import { useAuth } from '../context/AuthContext';
 import CreateAccountWizard from '../components/Createaccountwizard';
+import ForgotPasswordWizard from '../components/ForgotPasswordWizard';
 
 // ============================================================================
 // COLORS
@@ -47,6 +48,8 @@ const LoginScreen: React.FC = () => {
 
   // Create account wizard state
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  // and the forgot password state
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   // ============================================================================
   // HANDLERS
@@ -149,6 +152,12 @@ const LoginScreen: React.FC = () => {
               )}
             </TouchableOpacity>
 
+            <TouchableOpacity onPress={() => setShowForgotPassword(true)}>
+              <Text style={{ color: '#9ca3af', fontSize: 14, textAlign: 'center', marginTop: 16 }}>
+                Forgot Password?
+              </Text>
+            </TouchableOpacity>
+
             {/* Create Account Button */}
             <TouchableOpacity
               style={[styles.createAccountButton, loading && styles.buttonDisabled]}
@@ -172,6 +181,11 @@ const LoginScreen: React.FC = () => {
           setShowCreateAccount(false);
           // TODO: handle successful account creation
         }}
+      />
+
+      <ForgotPasswordWizard
+        visible={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
       />
     </View>
   );

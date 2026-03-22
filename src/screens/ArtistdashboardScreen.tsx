@@ -15,6 +15,7 @@ import {
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import ChangePasswordWizard from '../components/Changepasswordwizard';
 import { useNavigation } from '@react-navigation/native';
 import {
   Upload,
@@ -109,6 +110,7 @@ interface Song {
   artworkUrl?: string;
   description?: string;
   duration?: number;
+  isrc?: string;
 }
 
 interface Award {
@@ -139,6 +141,8 @@ const ArtistDashboardScreen: React.FC = () => {
   // Profile state
   const [userProfile, setUserProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // Stats
   const [supporters, setSupporters] = useState(0);
@@ -562,6 +566,17 @@ const ArtistDashboardScreen: React.FC = () => {
                       <Play size={12} color={COLORS.textGray400} />
                       <Text style={styles.itemStatsText}>{song.playCount || song.plays || 0} plays</Text>
                     </View>
+                    {song.isrc ? (
+                    <Text style={{ color: '#A9A9A9', fontSize: 12, marginTop: 4 }}>
+                      ISRC: {song.isrc.length === 12
+                        ? `${song.isrc.slice(0,2)}-${song.isrc.slice(2,5)}-${song.isrc.slice(5,7)}-${song.isrc.slice(7)}`
+                        : song.isrc}
+                    </Text>
+                  ) : (
+                    <Text style={{ color: '#f59e0b', fontSize: 11, marginTop: 4 }}>
+                      No ISRC
+                    </Text>
+                  )}
                   </View>
                 ))
               ) : (
@@ -713,6 +728,12 @@ const ArtistDashboardScreen: React.FC = () => {
             <Text style={styles.dangerTitle}>Danger Zone</Text>
             <Text style={styles.dangerText}>Once you delete your account, there is no going back.</Text>
             <TouchableOpacity
+              style={styles.changePasswordButton}
+              onPress={() => setShowChangePassword(true)}
+            >
+              <Text style={styles.changePasswordButtonText}>Change Password</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               style={styles.deleteAccountButton}
               onPress={() => setShowDeleteAccount(true)}
             >
@@ -830,6 +851,12 @@ const ArtistDashboardScreen: React.FC = () => {
           onConfirm={confirmDeleteSong}
           onCancel={() => setSongToDelete(null)}
           isDeleting={!!deletingSongId}
+        />
+
+        {/* ── ChangePasswordWizard ── */}
+        <ChangePasswordWizard
+          visible={showChangePassword}
+          onClose={() => setShowChangePassword(false)}
         />
 
       </LinearGradient>
@@ -953,6 +980,20 @@ const styles = StyleSheet.create({
   voteHistoryItem: { flexDirection: 'row', justifyContent: 'space-between', padding: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderGray },
   voteHistoryName: { color: COLORS.textWhite, fontSize: 15 },
   voteHistoryType: { color: COLORS.textGray400, fontSize: 13, textTransform: 'capitalize' },
+  changePasswordButton: {
+  backgroundColor: COLORS.bgGray800,
+  borderWidth: 1,
+  borderColor: COLORS.borderGray,
+  paddingVertical: 12,
+  paddingHorizontal: 24,
+  borderRadius: 8,
+  marginBottom: 12,
+},
+changePasswordButtonText: {
+  color: COLORS.textWhite,
+  fontWeight: '600',
+  textAlign: 'center',
+},
 });
 
 export default ArtistDashboardScreen;
