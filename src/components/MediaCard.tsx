@@ -1,10 +1,16 @@
+// src/components/MediaCard.tsx
+// Song/video card for horizontal carousels in FeedScreen
+// Matches web feed.scss card design: duration badge, explicit badge,
+// play button with white icon on Unis blue circle
+
 import React from 'react';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Dimensions } from 'react-native';
+import Svg, { Polygon } from 'react-native-svg';
 import { getMediaUrl } from '../services/axiosInstance';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CARD_WIDTH = SCREEN_WIDTH > 768 ? 180 : 140;
-const CARD_HEIGHT = SCREEN_WIDTH > 768 ? 180 : 140;
+const CARD_WIDTH = SCREEN_WIDTH > 768 ? 185 : 150;
+const CARD_HEIGHT = CARD_WIDTH; // Square cards like web
 
 export interface MediaItem {
   id: string;
@@ -14,6 +20,9 @@ export interface MediaItem {
   artistData?: {
     userId: string;
     username: string;
+    photoUrl?: string;
+    jurisdiction?: any;
+    score?: number;
   };
   artworkUrl?: string;
   artwork?: string;
@@ -27,6 +36,9 @@ export interface MediaItem {
   playsToday?: number;
   playCount?: number;
   score?: number;
+  artistId?: string;
+  genre?: string;
+  jurisdiction?: string;
 }
 
 interface MediaCardProps {
@@ -35,7 +47,6 @@ interface MediaCardProps {
   onPlayPress: () => void;
 }
 
-// Format milliseconds to mm:ss
 const formatDuration = (ms?: number): string => {
   if (!ms) return '';
   const totalSec = Math.floor(ms / 1000);
@@ -44,10 +55,8 @@ const formatDuration = (ms?: number): string => {
   return `${min}:${sec}`;
 };
 
-// Format time ago
 const formatTimeAgo = (dateString?: string): string => {
   if (!dateString) return '';
-  
   const now = new Date();
   const past = new Date(dateString);
   const diffMs = now.getTime() - past.getTime();
@@ -68,22 +77,27 @@ const formatTimeAgo = (dateString?: string): string => {
   return `${diffYears}y ago`;
 };
 
+// Inline SVG play icon — guaranteed white fill, same approach as web Player
+const PlayIcon: React.FC = () => (
+  <Svg width={16} height={16} viewBox="0 0 24 24">
+    <Polygon points="5,3 19,12 5,21" fill="#FFFFFF" />
+  </Svg>
+);
+
 const MediaCard: React.FC<MediaCardProps> = ({ item, onPress, onPlayPress }) => {
-const artworkSource = getMediaUrl(item.artworkUrl || item.artwork);
-  if (artworkSource) console.log('[MediaCard] artworkUrl:', artworkSource);
+  const artworkSource = getMediaUrl(item.artworkUrl || item.artwork);
   const artistName = item.artistData?.username || item.artistName || item.artist || 'Unknown';
-  
+
   return (
     <View style={styles.container}>
-      {/* Card Image */}
-      <TouchableOpacity 
-        style={styles.imageContainer} 
+      <TouchableOpacity
+        style={styles.imageContainer}
         onPress={onPress}
         activeOpacity={0.9}
       >
         {artworkSource ? (
-          <Image 
-            source={{ uri: artworkSource }} 
+          <Image
+            source={{ uri: artworkSource }}
             style={styles.artwork}
             resizeMode="cover"
           />
@@ -92,47 +106,41 @@ const artworkSource = getMediaUrl(item.artworkUrl || item.artwork);
             <Text style={styles.placeholderText}>♪</Text>
           </View>
         )}
-        
-        {/* Duration Badge - Bottom Left */}
-        {item.duration && (
+
+        {/* Duration badge — bottom left */}
+        {item.duration ? (
           <View style={styles.durationBadge}>
             <Text style={styles.durationText}>{formatDuration(item.duration)}</Text>
           </View>
-        )}
-        
-        {/* Explicit Badge - Top Right */}
-        {item.explicit && (
+        ) : null}
+
+        {/* Explicit badge — top right */}
+        {item.explicit ? (
           <View style={styles.explicitBadge}>
             <Text style={styles.explicitText}>E</Text>
           </View>
-        )}
-        
-        {/* Play Button */}
-        <TouchableOpacity 
+        ) : null}
+
+        {/* Play button — bottom right */}
+        <TouchableOpacity
           style={styles.playButton}
           onPress={onPlayPress}
           activeOpacity={0.8}
         >
-          <Text style={styles.playIcon}>▶</Text>
+          <View style={styles.playIconWrap}>
+            <PlayIcon />
+          </View>
         </TouchableOpacity>
       </TouchableOpacity>
-      
-      {/* Title */}
-      <TouchableOpacity onPress={onPress}>
-        <Text style={styles.title} numberOfLines={1}>
-          {item.title}
-        </Text>
+
+      {/* Song info below artwork */}
+      <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
+        <Text style={styles.title} numberOfLines={1}>{item.title}</Text>
       </TouchableOpacity>
-      
-      {/* Artist Name */}
-      <Text style={styles.artist} numberOfLines={1}>
-        {artistName}
-      </Text>
-      
-      {/* Time Ago */}
-      <Text style={styles.timeAgo}>
-        {formatTimeAgo(item.createdAt)}
-      </Text>
+      <Text style={styles.artist} numberOfLines={1}>{artistName}</Text>
+      {item.createdAt ? (
+        <Text style={styles.timeAgo}>{formatTimeAgo(item.createdAt)}</Text>
+      ) : null}
     </View>
   );
 };
@@ -145,89 +153,94 @@ const styles = StyleSheet.create({
   imageContainer: {
     width: CARD_WIDTH,
     height: CARD_HEIGHT,
-    borderRadius: 12,
+    borderRadius: 10,
     overflow: 'hidden',
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: '#163387', 
     position: 'relative',
+    backgroundColor: '#18181c',
+    // Subtle shadow like web's $shadow-card
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   artwork: {
     width: '100%',
     height: '100%',
   },
   placeholderArtwork: {
-    backgroundColor: '#2a2a2a',
+    backgroundColor: '#18181c',
     justifyContent: 'center',
     alignItems: 'center',
   },
   placeholderText: {
     fontSize: 48,
-    color: '#666',
+    color: '#333',
   },
   durationBadge: {
     position: 'absolute',
     bottom: 8,
     left: 8,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 4,
   },
   durationText: {
-    color: '#fff',
+    color: 'rgba(255,255,255,0.9)',
     fontSize: 11,
     fontWeight: '600',
+    letterSpacing: 0.3,
   },
   explicitBadge: {
     position: 'absolute',
     top: 8,
     right: 8,
-    backgroundColor: 'rgba(255, 0, 0, 0.85)',
+    backgroundColor: 'rgba(232, 69, 95, 0.9)',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 3,
+    borderRadius: 4,
   },
   explicitText: {
     color: '#fff',
     fontSize: 10,
-    fontWeight: 'bold',
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   playButton: {
     position: 'absolute',
-    bottom: 10,
-    right: 10,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#163387', // Unis blue
+    bottom: 8,
+    right: 8,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#163387',
     justifyContent: 'center',
     alignItems: 'center',
-    // On mobile, always show play button (no hover)
-    opacity: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  playIcon: {
-    color: '#918f8f', // Unis silver
-    fontSize: 14,
-    marginLeft: 2, // Optical centering for play icon
+  playIconWrap: {
+    marginLeft: 2, // optical centering for the triangle
   },
   title: {
-    marginTop: 10,
+    marginTop: 8,
     fontSize: 14,
-    color: '#fff',
+    color: '#f0f0f2',
     fontWeight: '600',
-    paddingLeft: 4,
+    letterSpacing: -0.1,
   },
   artist: {
-    fontSize: 13,
-    color: '#aaa',
-    paddingLeft: 4,
+    fontSize: 12.5,
+    color: 'rgba(255,255,255,0.55)',
     marginTop: 2,
   },
   timeAgo: {
     fontSize: 11,
-    color: '#888',
-    paddingLeft: 4,
+    color: 'rgba(255,255,255,0.35)',
     marginTop: 2,
   },
 });

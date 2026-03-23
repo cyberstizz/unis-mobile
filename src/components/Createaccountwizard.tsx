@@ -937,7 +937,9 @@ const handleSubmit = async () => {
             <View style={styles.stepHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
               <Text style={styles.stepTitle}>Welcome to </Text>
-              <UnisLogo width={90} height={82} />
+            <View style={{ marginTop: 12, paddingTop: 11, }}>
+              <UnisLogo width={80} height={82} />
+            </View>
             </View>             
             <Text style={styles.stepSubtitle}>Enter your referral code to join the community.</Text>
             </View>
