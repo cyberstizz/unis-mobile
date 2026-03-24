@@ -706,27 +706,6 @@ const FeedScreen: React.FC = () => {
           </View>
         </AnimatedSection>
 
-        {/* ═══════ AWARDS ═══════ */}
-        <AnimatedSection delay={400}>
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Awards</Text>
-            </View>
-            <View style={styles.awardsGrid}>
-              {awardsList.map((award, index) => (
-                <View key={award.id || index} style={styles.awardCard}>
-                  <Text style={styles.awardName} numberOfLines={1}>
-                    {award.name || award.targetType || 'Award'}
-                  </Text>
-                  <Text style={styles.awardWinner} numberOfLines={1}>
-                    {award.winner?.username || award.artistName || award.songTitle || '—'}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </View>
-        </AnimatedSection>
-
         {/* ═══════ POPULAR ARTISTS ═══════ */}
         <AnimatedSection delay={500}>
           <View style={styles.section}>
