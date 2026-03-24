@@ -1,961 +1,338 @@
+// src/screens/JurisdictionScreen.tsx
+// Full port of web jurisdictionPage.jsx redesign
+// Hero with serif name, search bar, top artists list, local anthems, editorial
+
 import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  Image,
   TouchableOpacity,
-  Dimensions,
-  ActivityIndicator,
+  Image,
   ImageBackground,
+  ActivityIndicator,
+  Dimensions,
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
-import { Music, Play, Heart, Eye } from 'lucide-react-native';
 import * as SecureStore from 'expo-secure-store';
+import Svg, { Path, Circle, Line } from 'react-native-svg';
+
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import UnisLogo from '../../assets/unisLogoThree.svg';
-
-// ============================================================================
-// COLORS & SIZES
-// ============================================================================
-const COLORS = {
-  bgBlack: '#000000',
-  subtleBlack: '#1a1a1a',
-  textSilver: '#C0C0C0',
-  textGray: '#A9A9A9',
-  accentWhite: '#FFFFFF',
-  unisBlue: '#163387',
-  cardBg: 'rgba(255, 255, 255, 0.05)',
-  cardBgHover: 'rgba(255, 255, 255, 0.1)',
-};
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 768;
+const IS_MOBILE = SCREEN_WIDTH < 600;
 
-// Base64 decode for token parsing
+// ─── Design tokens (matching web jurisdictionPage.scss) ──────
+const C = {
+  bgBase: '#0a0a0c',
+  bgSurface: 'rgba(255,255,255,0.03)',
+  bgElevated: 'rgba(255,255,255,0.05)',
+  bgHover: 'rgba(255,255,255,0.08)',
+  borderDim: 'rgba(255,255,255,0.06)',
+  borderHover: 'rgba(255,255,255,0.12)',
+  unisBlue: '#163387',
+  unisBlueLight: '#2e5aac',
+  unisBlueGlow: 'rgba(22,51,135,0.3)',
+  textPrimary: '#f0f0f2',
+  textSecondary: 'rgba(255,255,255,0.55)',
+  textTertiary: 'rgba(255,255,255,0.3)',
+  textMuted: 'rgba(255,255,255,0.18)',
+};
+
+// ─── SVGs ────────────────────────────────────────────────────
+const SearchIcon = () => (
+  <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth={2}>
+    <Circle cx={11} cy={11} r={7} />
+    <Line x1={16.5} y1={16.5} x2={21} y2={21} strokeLinecap="round" />
+  </Svg>
+);
+
+const ChevronRightIcon = () => (
+  <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth={2}>
+    <Path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const PlayIconSvg = ({ size = 12 }: { size?: number }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24">
+    <Path d="M8 5v14l11-7z" fill="#FFFFFF" />
+  </Svg>
+);
+
+const EyeIcon = () => (
+  <Svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth={2}>
+    <Path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <Circle cx={12} cy={12} r={3} />
+  </Svg>
+);
+
+// ─── Interfaces ──────────────────────────────────────────────
+interface Artist { id: string; rank: number; name: string; genre?: string; supporters: number; plays: number; thumbnail: string | null; }
+interface Song { id: string; rank: number; title: string; artist: string; artistId?: string; plays: number; likes: number; thumbnail: string | null; fileUrl: string | null; }
+interface TopItem { id: string; name?: string; title?: string; artist?: string; image: string | null; fileUrl?: string | null; }
+
 const atob = (input: string): string => {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  let str = input.replace(/=+$/, '');
-  let output = '';
-  if (str.length % 4 === 1) throw new Error('Invalid base64 string');
+  let str = input.replace(/=+$/, ''); let output = '';
   for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-    buffer = chars.indexOf(buffer);
-    if (buffer === -1) continue;
-    bs = bc % 4 ? bs * 64 + buffer : buffer;
+    buffer = chars.indexOf(buffer) as any; if ((buffer as number) === -1) continue;
+    bs = bc % 4 ? bs * 64 + (buffer as number) : (buffer as number);
     if (bc++ % 4) output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
   }
   return output;
 };
 
-// ============================================================================
-// INTERFACES
-// ============================================================================
-interface Artist {
-  id: string;
-  rank?: number;
-  name: string;
-  supporters: number;
-  plays: number;
-  thumbnail: string | null;
-  image?: string | null;
-  bio?: string;
-}
-
-interface Song {
-  id: string;
-  rank?: number;
-  title: string;
-  artist: string;
-  artistId?: string;
-  plays: number;
-  likes: number;
-  thumbnail: string | null;
-  image?: string | null;
-  fileUrl: string | null;
-}
-
-interface JurisdictionData {
-  symbolImage: string | null;
-  description: string;
-  artistOfMonth: Artist | null;
-  songOfWeek: Song | null;
-  topArtists: Artist[];
-  topSongs: Song[];
-}
-
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
-interface JurisdictionScreenProps {
-  jurisdiction?: string;
-}
-
-const JurisdictionScreen: React.FC<JurisdictionScreenProps> = ({ jurisdiction = 'Harlem' }) => {
+// ═════════════════════════════════════════════════════════════
+const JurisdictionScreen: React.FC<{ jurisdiction?: string }> = ({ jurisdiction = 'Harlem' }) => {
   const route = useRoute();
   const navigation = useNavigation<any>();
   const { playMedia } = usePlayer();
 
   const jurName = (route.params as any)?.jurisdictionName || (route.params as any)?.jurisdiction || jurisdiction;
 
-  const [data, setData] = useState<JurisdictionData | null>(null);
+  const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
-  // ============================================================================
-  // GET USER ID FROM TOKEN
-  // ============================================================================
   useEffect(() => {
     const getUserId = async () => {
       try {
         const token = await SecureStore.getItemAsync('token');
-        if (token) {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          setUserId(payload.userId);
-        }
-      } catch (err) {
-        console.error('Failed to get userId from token:', err);
-      }
+        if (token) setUserId(JSON.parse(atob(token.split('.')[1])).userId);
+      } catch {}
     };
     getUserId();
   }, []);
 
-  // ============================================================================
-  // FETCH JURISDICTION DATA — REAL API
-  // ============================================================================
   useEffect(() => {
     const fetchData = async () => {
-      if (!jurName) {
-        setError('No jurisdiction specified.');
-        setLoading(false);
-        return;
-      }
-
+      if (!jurName) { setError('No jurisdiction specified.'); setLoading(false); return; }
       try {
-        setLoading(true);
-        setError(null);
+        setLoading(true); setError(null);
+        const jurRes = await axiosInstance.get(`/v1/jurisdictions/byName/${encodeURIComponent(jurName)}`);
+        const first = jurRes.data?.[0];
+        if (!first) throw new Error('Jurisdiction not found');
+        const topsRes = await axiosInstance.get(`/v1/jurisdictions/${first.jurisdictionId}/tops`);
+        const raw = { ...topsRes.data, jurisdiction: first };
+        const topArtist = raw.topArtist || (raw.topArtists || [])[0];
+        const topSong = raw.topSong || (raw.topSongs || [])[0];
 
-        const jurResponse = await axiosInstance.get(
-          `/v1/jurisdictions/byName/${encodeURIComponent(jurName)}`
-        );
-        const firstResult = jurResponse.data?.[0];
-        if (!firstResult) throw new Error('Jurisdiction not found');
-        const jurId = firstResult.jurisdictionId;
-        const jurDetails = firstResult;
-        if (!jurId) throw new Error('Jurisdiction not found');
-
-        const topsResponse = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
-        const rawData = { ...topsResponse.data, jurisdiction: jurDetails };
-
-        const topArtist = rawData.topArtist || (rawData.topArtists || [])[0];
-        const topSong = rawData.topSong || (rawData.topSongs || [])[0];
-
-        const normalized: JurisdictionData = {
-          symbolImage: rawData.jurisdiction.symbolUrl
-            ? getMediaUrl(rawData.jurisdiction.symbolUrl) || null
-            : null,
-          description: rawData.jurisdiction.bio || `Explore ${jurName}`,
-
-          artistOfMonth: topArtist
-            ? {
-                id: topArtist.userId,
-                name: topArtist.username,
-                image: getMediaUrl(topArtist.photoUrl) || null,
-                bio: topArtist.bio || 'Rising star in the community.',
-                supporters: topArtist.score || 0,
-                plays: topArtist.score || 0,
-              }
-            : null,
-
-          songOfWeek: topSong
-            ? {
-                id: topSong.songId,
-                title: topSong.title,
-                artist: topSong.artist?.username || 'Unknown',
-                artistId: topSong.artist?.userId,
-                plays: topSong.plays || topSong.score || 0,
-                likes: topSong.likes || 0,
-                image: getMediaUrl(topSong.artworkUrl) || null,
-                fileUrl: getMediaUrl(topSong.fileUrl) || null,
-              }
-            : null,
-
-          topArtists: (rawData.topArtists || []).map((artist: any, i: number) => ({
-            id: artist.userId,
-            rank: i + 1,
-            name: artist.username,
-            supporters: artist.score || 0,
-            plays: artist.score || 0,
-            thumbnail: getMediaUrl(artist.photoUrl) || null,
-          })),
-
-          topSongs: (rawData.topSongs || []).map((song: any, i: number) => ({
-            id: song.songId,
-            rank: i + 1,
-            title: song.title,
-            artist: song.artist?.username || 'Unknown',
-            artistId: song.artist?.userId,
-            plays: song.plays || song.score || 0,
-            likes: song.likes || 0,
-            thumbnail: getMediaUrl(song.artworkUrl) || null,
-            fileUrl: getMediaUrl(song.fileUrl) || null,
-          })),
-        };
-
-        setData(normalized);
-      } catch (err: any) {
-        console.error('Jurisdiction fetch error:', err);
-        setError(`Failed to load data for ${jurName}.`);
-        setData(null);
-      } finally {
-        setLoading(false);
-      }
+        setData({
+          description: raw.jurisdiction.bio || `The heartbeat of ${jurName}. Where local artists define the sound of the streets.`,
+          artistOfMonth: topArtist ? { id: topArtist.userId, name: topArtist.username, image: getMediaUrl(topArtist.photoUrl) } : null,
+          songOfWeek: topSong ? { id: topSong.songId, title: topSong.title, artist: topSong.artist?.username || 'Unknown', artistId: topSong.artist?.userId, plays: topSong.plays || topSong.score || 0, image: getMediaUrl(topSong.artworkUrl), fileUrl: getMediaUrl(topSong.fileUrl) } : null,
+          topArtists: (raw.topArtists || []).map((a: any, i: number) => ({ id: a.userId, rank: i + 1, name: a.username, genre: a.genre?.name || '', supporters: a.score || 0, plays: a.score || 0, thumbnail: getMediaUrl(a.photoUrl) })),
+          topSongs: (raw.topSongs || []).map((s: any, i: number) => ({ id: s.songId, rank: i + 1, title: s.title, artist: s.artist?.username || 'Unknown', artistId: s.artist?.userId, plays: s.plays || s.score || 0, likes: s.likes || 0, thumbnail: getMediaUrl(s.artworkUrl), fileUrl: getMediaUrl(s.fileUrl) })),
+        });
+      } catch { setError(`Failed to load data for ${jurName}.`); setData(null); }
+      finally { setLoading(false); }
     };
-
     fetchData();
   }, [jurName]);
 
-  // ============================================================================
-  // PLAY HANDLERS
-  // ============================================================================
-  const handlePlayTopArtist = async () => {
-    if (!data?.artistOfMonth) return;
-
-    try {
-      const response = await axiosInstance.get(
-        `/v1/users/${data.artistOfMonth.id}/default-song`
-      );
-      const defaultSong = response.data;
-
-      if (defaultSong && defaultSong.fileUrl) {
-        const fullUrl = getMediaUrl(defaultSong.fileUrl);
-
-        playMedia(
-          {
-            type: 'song',
-            url: fullUrl,
-            title: defaultSong.title,
-            artist: data.artistOfMonth.name,
-            artwork: getMediaUrl(defaultSong.artworkUrl) || data.artistOfMonth.image,
-          } as any,
-          []
-        );
-
-        if (defaultSong.songId && userId) {
-          try {
-            await axiosInstance.post(
-              `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
-            );
-          } catch (err) {
-            console.error('Failed to track play:', err);
-          }
-        }
-      } else {
-        Alert.alert('Unavailable', 'No default song available for this artist');
-      }
-    } catch (err) {
-      console.error('Failed to fetch default song:', err);
-      Alert.alert('Error', "Could not load artist's song");
-    }
-  };
-
-  const handlePlayTopSong = async () => {
-    if (!data?.songOfWeek?.fileUrl) {
-      Alert.alert('Unavailable', 'Song not available');
-      return;
-    }
-
-    playMedia(
-      {
-        type: 'song',
-        url: data.songOfWeek.fileUrl,
-        title: data.songOfWeek.title,
-        artist: data.songOfWeek.artist,
-        artwork: data.songOfWeek.image,
-      } as any,
-      []
-    );
-
-    if (data.songOfWeek.id && userId) {
-      try {
-        await axiosInstance.post(
-          `/v1/media/song/${data.songOfWeek.id}/play?userId=${userId}`
-        );
-      } catch (err) {
-        console.error('Failed to track play:', err);
-      }
-    }
-  };
-
+  // ── Play handlers ──
   const handlePlayArtist = async (artist: Artist) => {
     try {
-      const response = await axiosInstance.get(
-        `/v1/users/${artist.id}/default-song`
-      );
-      const defaultSong = response.data;
-
-      if (defaultSong && defaultSong.fileUrl) {
-        const fullUrl = getMediaUrl(defaultSong.fileUrl);
-
-        playMedia(
-          {
-            type: 'song',
-            url: fullUrl,
-            title: defaultSong.title,
-            artist: artist.name,
-            artwork: getMediaUrl(defaultSong.artworkUrl) || artist.thumbnail,
-          } as any,
-          []
-        );
-
-        if (defaultSong.songId && userId) {
-          try {
-            await axiosInstance.post(
-              `/v1/media/song/${defaultSong.songId}/play?userId=${userId}`
-            );
-          } catch (err) {
-            console.error('Failed to track play:', err);
-          }
-        }
-      } else {
-        Alert.alert('Unavailable', `${artist.name} has no default song`);
-      }
-    } catch (err) {
-      console.error('Failed to fetch default song:', err);
-      Alert.alert('Error', "Could not load artist's song");
-    }
+      const res = await axiosInstance.get(`/v1/users/${artist.id}/default-song`);
+      const ds = res.data;
+      if (ds?.fileUrl) {
+        playMedia({ type: 'song', url: getMediaUrl(ds.fileUrl), title: ds.title, artist: artist.name, artwork: getMediaUrl(ds.artworkUrl) || artist.thumbnail } as any, []);
+        if (ds.songId && userId) axiosInstance.post(`/v1/media/song/${ds.songId}/play?userId=${userId}`).catch(() => {});
+      } else Alert.alert('Unavailable', `${artist.name} has no default song`);
+    } catch { Alert.alert('Error', "Could not load artist's song"); }
   };
 
   const handlePlaySong = async (song: Song) => {
-    if (!song.fileUrl) {
-      Alert.alert('Unavailable', 'Song not available');
-      return;
-    }
-
-    playMedia(
-      {
-        type: 'song',
-        url: song.fileUrl,
-        title: song.title,
-        artist: song.artist,
-        artwork: song.thumbnail,
-      } as any,
-      []
-    );
-
-    if (song.id && userId) {
-      try {
-        await axiosInstance.post(
-          `/v1/media/song/${song.id}/play?userId=${userId}`
-        );
-      } catch (err) {
-        console.error('Failed to track play:', err);
-      }
-    }
+    if (!song.fileUrl) { Alert.alert('Unavailable', 'Song not available'); return; }
+    playMedia({ type: 'song', url: song.fileUrl, title: song.title, artist: song.artist, artwork: song.thumbnail } as any, []);
+    if (song.id && userId) axiosInstance.post(`/v1/media/song/${song.id}/play?userId=${userId}`).catch(() => {});
   };
 
-  // ============================================================================
-  // NAVIGATION HANDLERS
-  // ============================================================================
-  const handleViewArtist = (artistId: string) => {
-    (navigation as any).navigate('Home', { screen: 'Artist', params: { artistId } });
-  };
+  const handlePlayTopSong = () => { if (data?.songOfWeek) handlePlaySong(data.songOfWeek as any); };
 
-  const handleViewSong = (songId: string) => {
-    (navigation as any).navigate('Home', { screen: 'Song', params: { songId } });
-  };
+  const handleViewArtist = (id: string) => navigation.navigate('Artist', { artistId: id });
+  const handleViewSong = (id: string) => navigation.navigate('Song', { songId: id });
 
-  // ============================================================================
-  // LOADING STATE
-  // ============================================================================
-  if (loading) {
-    return (
-      <View style={styles.loadingBackground}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.unisBlue} />
-          <Text style={styles.loadingText}>Loading {jurName}...</Text>
-        </View>
-      </View>
-    );
-  }
+  if (loading) return <View style={s.loadingWrap}><ActivityIndicator size="large" color={C.unisBlue} /><Text style={s.loadingText}>Loading {jurName}...</Text></View>;
+  if (!data) return <View style={s.loadingWrap}><Text style={s.errorText}>{error || `No data for ${jurName}`}</Text></View>;
 
-  // ============================================================================
-  // ERROR STATE
-  // ============================================================================
-  if (!data) {
-    return (
-      <View style={styles.loadingBackground}>
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>{error || `No data available for ${jurName}`}</Text>
-          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-            <Text style={styles.backButtonText}>Go Back</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
+  const nameParts = jurName.split(' ');
+  const firstWord = nameParts.slice(0, -1).join(' ') || '';
+  const lastWord = nameParts[nameParts.length - 1] || jurName;
 
-  // ============================================================================
-  // MAIN RENDER
-  // ============================================================================
   return (
-    <View style={styles.screenContainer}>
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>{jurName}</Text>
+    <View style={s.container}>
+      <ScrollView style={s.scroll} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
+
+        {/* ═══ HERO ═══ */}
+        <View style={s.hero}>
+          <Text style={s.heroLabel}>Current Jurisdiction</Text>
+          {firstWord ? <Text style={s.nameFirst}>{firstWord}</Text> : null}
+          <Text style={s.nameAccent}>{lastWord}</Text>
+          <Text style={s.heroDesc}>{data.description}</Text>
         </View>
 
-        {/* Hero Section — SVG Logo */}
-        <View style={styles.heroSection}>
-          <LinearGradient
-            colors={['rgba(22, 51, 135, 0.15)', 'rgba(0, 0, 0, 0.3)']}
-            style={styles.heroBg}
-          >
-            <UnisLogo width={IS_MOBILE ? 120 : 160} height={IS_MOBILE ? 120 : 160} />
-            <Text style={styles.heroSubtitle}>{data.description}</Text>
-          </LinearGradient>
+        {/* ═══ SEARCH BAR ═══ */}
+        <TouchableOpacity style={s.searchBar} onPress={() => navigation.navigate('Find')} activeOpacity={0.7}>
+          <SearchIcon />
+          <Text style={s.searchText}>Search artists...</Text>
+        </TouchableOpacity>
+
+        {/* ═══ TOP ARTISTS ═══ */}
+        <View style={s.section}>
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionTitleItalic}>Top {data.topArtists.length} </Text>
+            <Text style={s.sectionTitleCaps}>Artists</Text>
+          </View>
+
+          {data.topArtists.length > 0 ? data.topArtists.map((artist: Artist) => (
+            <TouchableOpacity key={artist.id} style={s.artistRow} onPress={() => handleViewArtist(artist.id)} activeOpacity={0.7}>
+              <Text style={s.artistRank}>{String(artist.rank).padStart(2, '0')}</Text>
+              <Image source={{ uri: artist.thumbnail || 'https://picsum.photos/80' }} style={s.artistPhoto} />
+              <View style={s.artistInfo}>
+                <Text style={s.artistName} numberOfLines={1}>{artist.name}</Text>
+                {artist.genre ? <Text style={s.artistGenre}>{artist.genre}</Text> : null}
+              </View>
+              <ChevronRightIcon />
+            </TouchableOpacity>
+          )) : <Text style={s.emptyText}>No artists yet in {jurName}</Text>}
         </View>
 
-        {/* Highlights Grid */}
-        <View style={styles.highlightsGrid}>
-          {/* Top Artist Card */}
-          {data.artistOfMonth && (
-            <View style={styles.highlightCard}>
-              <LinearGradient
-                colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
-                style={styles.highlightOverlay}
-              >
-                <View style={styles.sectionHeaderContainer}>
-                  <Text style={styles.highlightSectionTitle}>
-                    #1 Artist in {jurName}
-                  </Text>
-                </View>
+        {/* ═══ LOCAL ANTHEMS ═══ */}
+        <View style={s.section}>
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionTitleItalic}>Local </Text>
+            <Text style={s.sectionTitleCaps}>Anthems</Text>
+          </View>
 
-                <View style={styles.highlightContent}>
-                  <TouchableOpacity
-                    onPress={() => handleViewArtist(data.artistOfMonth!.id)}
-                  >
-                    <Image
-                      source={
-                        data.artistOfMonth.image
-                          ? { uri: data.artistOfMonth.image }
-                          : require('../../assets/randomrapper.jpeg')
-                      }
-                      style={styles.profileImage}
-                    />
-                  </TouchableOpacity>
-
-                  <View style={styles.highlightInfo}>
-                    <TouchableOpacity
-                      onPress={() => handleViewArtist(data.artistOfMonth!.id)}
-                    >
-                      <Text style={styles.highlightName}>
-                        {data.artistOfMonth.name}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.listenButton}
-                      onPress={handlePlayTopArtist}
-                    >
-                      <Text style={styles.listenButtonText}>Listen Now</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </LinearGradient>
-            </View>
-          )}
-
-          {/* Top Song Card */}
           {data.songOfWeek && (
-            <ImageBackground
-              source={
-                data.songOfWeek.image
-                  ? { uri: data.songOfWeek.image }
-                  : require('../../assets/randomrapper.jpeg')
-              }
-              style={styles.highlightCard}
-              imageStyle={styles.highlightCardImage}
-            >
-              <LinearGradient
-                colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.7)']}
-                style={styles.highlightOverlay}
-              >
-                <View style={styles.sectionHeaderContainer}>
-                  <Text style={styles.highlightSectionTitle}>
-                    #1 Song in {jurName}
-                  </Text>
-                </View>
-
-                <View style={styles.highlightContent}>
-                  <View style={styles.songIcon}>
-                    <Play
-                      size={28}
-                      color={COLORS.accentWhite}
-                      fill={COLORS.accentWhite}
-                    />
-                  </View>
-
-                  <View style={styles.highlightInfo}>
-                    <TouchableOpacity
-                      onPress={() => handleViewSong(data.songOfWeek!.id)}
-                    >
-                      <Text style={styles.highlightName}>
-                        {data.songOfWeek.title}
-                      </Text>
-                    </TouchableOpacity>
-                    <Text style={styles.highlightArtist}>
-                      by {data.songOfWeek.artist}
-                    </Text>
-
-                    <TouchableOpacity
-                      style={styles.listenButton}
-                      onPress={handlePlayTopSong}
-                    >
-                      <Text style={styles.listenButtonText}>Play</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </LinearGradient>
-            </ImageBackground>
+            <TouchableOpacity activeOpacity={0.9} onPress={() => handleViewSong(data.songOfWeek.id)}>
+              <ImageBackground source={{ uri: data.songOfWeek.image || 'https://picsum.photos/400' }} style={s.anthemHero} imageStyle={{ borderRadius: 14 }}>
+                <LinearGradient colors={['transparent', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.88)']} locations={[0, 0.5, 1]} style={s.anthemOverlay}>
+                  <View style={s.anthemBadge}><Text style={s.anthemBadgeText}>#1 This Week</Text></View>
+                  <Text style={s.anthemTitle}>{data.songOfWeek.title}</Text>
+                  <Text style={s.anthemArtist}>{data.songOfWeek.artist}</Text>
+                  <TouchableOpacity style={s.listenBtn} onPress={(e) => { e.stopPropagation?.(); handlePlayTopSong(); }}>
+                    <PlayIconSvg size={14} />
+                    <Text style={s.listenBtnText}>Listen Now</Text>
+                  </TouchableOpacity>
+                </LinearGradient>
+              </ImageBackground>
+            </TouchableOpacity>
           )}
+
+          {data.topSongs.slice(1).map((song: Song) => (
+            <TouchableOpacity key={song.id} style={s.songRow} onPress={() => handleViewSong(song.id)} activeOpacity={0.7}>
+              <Image source={{ uri: song.thumbnail || 'https://picsum.photos/80' }} style={s.songThumb} />
+              <View style={s.songInfo}>
+                <Text style={s.songRank}>#{song.rank}</Text>
+                <Text style={s.songTitle} numberOfLines={1}>{song.title}</Text>
+                <Text style={s.songArtist}>{song.artist}</Text>
+                <View style={s.songStatRow}><EyeIcon /><Text style={s.songStat}>{song.plays.toLocaleString()}</Text></View>
+              </View>
+              <TouchableOpacity style={s.songPlayBtn} onPress={() => handlePlaySong(song)}>
+                <PlayIconSvg size={12} />
+              </TouchableOpacity>
+            </TouchableOpacity>
+          ))}
         </View>
 
-        {/* Content Grid - Top Artists & Top Songs */}
-        <View style={styles.contentGrid}>
-          {/* Top Artists Section */}
-          <View style={styles.contentSection}>
-            <View style={styles.contentSectionHeader}>
-              <Music size={20} color={COLORS.unisBlue} />
-              <Text style={styles.contentSectionTitle}>
-                Top {data.topArtists.length} Artists in {jurName}
-              </Text>
-            </View>
-
-            <View style={styles.contentList}>
-              {data.topArtists.length > 0 ? (
-                data.topArtists.map((artist) => (
-                  <View key={artist.id} style={styles.contentItem}>
-                    <Text style={styles.rankBadge}>{artist.rank}</Text>
-
-                    <TouchableOpacity onPress={() => handleViewArtist(artist.id)}>
-                      <Image
-                        source={
-                          artist.thumbnail
-                            ? { uri: artist.thumbnail }
-                            : require('../../assets/randomrapper.jpeg')
-                        }
-                        style={styles.topThumbnail}
-                      />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.itemHeader}
-                      onPress={() => handleViewArtist(artist.id)}
-                    >
-                      <Text style={styles.itemName} numberOfLines={1}>
-                        {artist.name}
-                      </Text>
-                    </TouchableOpacity>
-
-                    {!IS_MOBILE && (
-                      <View style={styles.itemStats}>
-                        <View style={styles.statItem}>
-                          <Heart size={12} color={COLORS.textGray} />
-                          <Text style={styles.statText}>
-                            {artist.supporters.toLocaleString()}
-                          </Text>
-                        </View>
-                        <View style={styles.statItem}>
-                          <Eye size={12} color={COLORS.textGray} />
-                          <Text style={styles.statText}>
-                            {artist.plays.toLocaleString()}
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.playButton}
-                      onPress={() => handlePlayArtist(artist)}
-                    >
-                      <Text style={styles.playButtonText}>Play</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.emptyText}>No artists yet in {jurName}</Text>
-              )}
-            </View>
-          </View>
-
-          {/* Top Songs Section */}
-          <View style={styles.contentSection}>
-            <View style={styles.contentSectionHeader}>
-              <Play size={20} color={COLORS.unisBlue} />
-              <Text style={styles.contentSectionTitle}>
-                Top {data.topSongs.length} Songs in {jurName}
-              </Text>
-            </View>
-
-            <View style={styles.contentList}>
-              {data.topSongs.length > 0 ? (
-                data.topSongs.map((song) => (
-                  <View key={song.id} style={styles.contentItem}>
-                    <Text style={styles.rankBadge}>{song.rank}</Text>
-
-                    <TouchableOpacity onPress={() => handleViewSong(song.id)}>
-                      <Image
-                        source={
-                          song.thumbnail
-                            ? { uri: song.thumbnail }
-                            : require('../../assets/randomrapper.jpeg')
-                        }
-                        style={styles.topThumbnail}
-                      />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.itemHeader}
-                      onPress={() => handleViewSong(song.id)}
-                    >
-                      <Text style={styles.itemName} numberOfLines={1}>
-                        {song.title}
-                      </Text>
-                      <Text style={styles.itemSubtext} numberOfLines={1}>
-                        {song.artist}
-                      </Text>
-                    </TouchableOpacity>
-
-                    {!IS_MOBILE && (
-                      <View style={styles.itemStats}>
-                        <View style={styles.statItem}>
-                          <Eye size={12} color={COLORS.textGray} />
-                          <Text style={styles.statText}>
-                            {song.plays.toLocaleString()}
-                          </Text>
-                        </View>
-                        <View style={styles.statItem}>
-                          <Heart size={12} color={COLORS.textGray} />
-                          <Text style={styles.statText}>
-                            {song.likes.toLocaleString()}
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.playButton}
-                      onPress={() => handlePlaySong(song)}
-                    >
-                      <Text style={styles.playButtonText}>Play</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              ) : (
-                <Text style={styles.emptyText}>No songs yet in {jurName}</Text>
-              )}
-            </View>
+        {/* ═══ EDITORIAL ═══ */}
+        <View style={s.editorial}>
+          <Text style={s.editorialTitle}>
+            <Text style={s.editorialItalic}>Discover the{'\n'}Rhythm of </Text>
+            <Text style={s.editorialAccent}>Your</Text>
+            <Text style={s.editorialItalic}>{'\n'}Streets</Text>
+          </Text>
+          <Text style={s.editorialBody}>
+            UNIS Jurisdictions use localized streaming data to show you exactly what's trending in your neighborhood. No global algorithms, just the heartbeat of {jurName}.
+          </Text>
+          <View style={s.editorialStats}>
+            <View style={s.editorialStat}><Text style={s.editorialStatLabel}>Local Artists</Text><Text style={s.editorialStatValue}>{data.topArtists.length}</Text></View>
+            <View style={s.editorialStat}><Text style={s.editorialStatLabel}>Local Songs</Text><Text style={s.editorialStatValue}>{data.topSongs.length}</Text></View>
           </View>
         </View>
 
-        {/* Error Banner */}
-        {error && (
-          <View style={styles.errorBanner}>
-            <Text style={styles.errorBannerText}>{error}</Text>
-          </View>
-        )}
-
-        {/* Bottom spacing for player */}
+        {error && <View style={s.errorBanner}><Text style={s.errorBannerText}>{error}</Text></View>}
         <View style={{ height: 120 }} />
       </ScrollView>
     </View>
   );
 };
 
-// ============================================================================
-// STYLES
-// ============================================================================
-const styles = StyleSheet.create({
-  screenContainer: {
-    flex: 1,
-    backgroundColor: COLORS.bgBlack,
-  },
-  loadingBackground: {
-    flex: 1,
-    backgroundColor: COLORS.bgBlack,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingTop: IS_MOBILE ? 20 : 40,
-    paddingHorizontal: IS_MOBILE ? 8 : 16,
-  },
+const s = StyleSheet.create({
+  container: { flex: 1, backgroundColor: C.bgBase },
+  scroll: { flex: 1 },
+  scrollContent: { padding: IS_MOBILE ? 14 : 32, paddingTop: 8 },
+  loadingWrap: { flex: 1, backgroundColor: C.bgBase, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { color: C.textSecondary, marginTop: 12 },
+  errorText: { color: '#e74c3c', fontSize: 15 },
 
-  // Loading & Error States
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    color: COLORS.textSilver,
-    marginTop: 16,
-    fontSize: 16,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  errorText: {
-    color: '#ff6b6b',
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  backButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.textSilver,
-  },
-  backButtonText: {
-    color: COLORS.textSilver,
-    fontWeight: '600',
-  },
+  // Hero
+  hero: { paddingTop: 32, paddingBottom: 28 },
+  heroLabel: { fontSize: 11, fontWeight: '600', letterSpacing: 2.5, textTransform: 'uppercase', color: C.unisBlueLight, marginBottom: 10 },
+  nameFirst: { fontSize: IS_MOBILE ? 36 : 56, fontWeight: '800', fontStyle: 'italic', color: C.textPrimary, letterSpacing: -1, lineHeight: IS_MOBILE ? 40 : 58 },
+  nameAccent: { fontSize: IS_MOBILE ? 36 : 56, fontWeight: '800', fontStyle: 'italic', color: C.unisBlue, letterSpacing: -1, lineHeight: IS_MOBILE ? 40 : 58, marginBottom: 16 },
+  heroDesc: { fontSize: 14, lineHeight: 22, color: C.textSecondary, maxWidth: 400 },
 
-  // Header
-  header: {
-    alignItems: 'center',
-    marginBottom: IS_MOBILE ? 16 : 24,
-  },
-  headerTitle: {
-    fontSize: IS_MOBILE ? 32 : 42,
-    color: COLORS.textSilver,
-    fontWeight: '400',
-    textAlign: 'center',
-  },
+  // Search
+  searchBar: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: C.bgElevated, borderWidth: 1, borderColor: C.borderDim, borderRadius: 100, paddingHorizontal: 16, paddingVertical: 10, marginBottom: 28, maxWidth: 280 },
+  searchText: { color: C.textTertiary, fontSize: 14 },
 
-  // Hero Section — SVG logo with gradient background
-  heroSection: {
-    width: '100%',
-    height: IS_MOBILE ? 180 : 270,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: IS_MOBILE ? 16 : 24,
-    borderWidth: 1,
-    borderColor: 'rgba(22, 51, 135, 0.3)',
-  },
-  heroBg: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  heroSubtitle: {
-    color: COLORS.textGray,
-    fontSize: IS_MOBILE ? 14 : 16,
-    textAlign: 'center',
-    paddingHorizontal: 20,
-  },
+  // Sections
+  section: { marginBottom: 40 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'baseline', marginBottom: 16 },
+  sectionTitleItalic: { fontSize: IS_MOBILE ? 20 : 24, fontWeight: '700', fontStyle: 'italic', color: C.textPrimary },
+  sectionTitleCaps: { fontSize: IS_MOBILE ? 12 : 14, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 2, color: C.textSecondary, marginLeft: 4 },
 
-  // Highlights Grid
-  highlightsGrid: {
-    flexDirection: IS_MOBILE ? 'column' : 'row',
-    gap: IS_MOBILE ? 16 : 24,
-    marginBottom: IS_MOBILE ? 16 : 24,
-  },
-  highlightCard: {
-    flex: 1,
-    minHeight: IS_MOBILE ? 280 : 350,
-    borderRadius: 12,
-    overflow: 'hidden',
-    backgroundColor: COLORS.subtleBlack,
-  },
-  highlightCardImage: {
-    borderRadius: 12,
-  },
-  highlightOverlay: {
-    flex: 1,
-    padding: IS_MOBILE ? 16 : 24,
-    justifyContent: 'space-between',
-  },
-  sectionHeaderContainer: {
-    alignItems: 'center',
-  },
-  highlightSectionTitle: {
-    fontSize: IS_MOBILE ? 16 : 20,
-    color: COLORS.accentWhite,
-    fontWeight: '600',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  highlightContent: {
-    alignItems: 'center',
-    gap: 16,
-  },
-  profileImage: {
-    width: IS_MOBILE ? 120 : 160,
-    height: IS_MOBILE ? 120 : 160,
-    borderRadius: IS_MOBILE ? 60 : 80,
-    borderWidth: 4,
-    borderColor: COLORS.accentWhite,
-  },
-  songIcon: {
-    width: IS_MOBILE ? 60 : 80,
-    height: IS_MOBILE ? 60 : 80,
-    borderRadius: IS_MOBILE ? 30 : 40,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  highlightInfo: {
-    alignItems: 'center',
-    gap: 8,
-  },
-  highlightName: {
-    fontSize: IS_MOBILE ? 20 : 24,
-    color: COLORS.accentWhite,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  highlightArtist: {
-    fontSize: IS_MOBILE ? 14 : 16,
-    color: COLORS.textSilver,
-  },
-  listenButton: {
-    backgroundColor: COLORS.unisBlue,
-    paddingVertical: IS_MOBILE ? 10 : 12,
-    paddingHorizontal: IS_MOBILE ? 20 : 28,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-  listenButtonText: {
-    color: COLORS.accentWhite,
-    fontWeight: '600',
-    fontSize: IS_MOBILE ? 14 : 16,
-  },
+  // Artist rows
+  artistRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 12, borderRadius: 10 },
+  artistRank: { fontSize: 16, fontWeight: '300', color: C.textMuted, minWidth: 28, textAlign: 'center' },
+  artistPhoto: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: C.borderDim },
+  artistInfo: { flex: 1, gap: 2 },
+  artistName: { fontSize: 14, fontWeight: '600', color: C.textPrimary },
+  artistGenre: { fontSize: 11, color: C.textTertiary },
+  emptyText: { color: C.textTertiary, fontSize: 14, paddingVertical: 20 },
 
-  // Content Grid
-  contentGrid: {
-    flexDirection: IS_MOBILE ? 'column' : 'row',
-    gap: IS_MOBILE ? 16 : 24,
-  },
-  contentSection: {
-    flex: 1,
-    backgroundColor: COLORS.bgBlack,
-    borderRadius: 12,
-    padding: IS_MOBILE ? 12 : 20,
-  },
-  contentSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
-  },
-  contentSectionTitle: {
-    fontSize: IS_MOBILE ? 14 : 16,
-    color: COLORS.unisBlue,
-    fontWeight: '600',
-    flex: 1,
-  },
-  contentList: {
-    gap: 10,
-    maxHeight: IS_MOBILE ? 350 : 450,
-  },
-  contentItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: IS_MOBILE ? 10 : 16,
-    padding: IS_MOBILE ? 10 : 12,
-    backgroundColor: COLORS.cardBg,
-    borderRadius: 8,
-  },
-  rankBadge: {
-    fontSize: IS_MOBILE ? 14 : 18,
-    fontWeight: '700',
-    color: COLORS.unisBlue,
-    minWidth: IS_MOBILE ? 20 : 30,
-    textAlign: 'center',
-  },
-  topThumbnail: {
-    width: IS_MOBILE ? 40 : 50,
-    height: IS_MOBILE ? 40 : 50,
-    borderRadius: 6,
-  },
-  itemHeader: {
-    flex: 1,
-  },
-  itemName: {
-    fontSize: IS_MOBILE ? 13 : 15,
-    color: COLORS.accentWhite,
-    fontWeight: '600',
-  },
-  itemSubtext: {
-    fontSize: IS_MOBILE ? 11 : 13,
-    color: COLORS.textSilver,
-    marginTop: 2,
-  },
-  itemStats: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  statText: {
-    fontSize: 12,
-    color: COLORS.textGray,
-  },
-  playButton: {
-    backgroundColor: COLORS.unisBlue,
-    paddingVertical: IS_MOBILE ? 6 : 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 16,
-    borderRadius: 4,
-  },
-  playButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 11 : 13,
-    fontWeight: '600',
-  },
-  emptyText: {
-    color: COLORS.textGray,
-    fontSize: 14,
-    padding: 16,
-  },
+  // Anthem hero
+  anthemHero: { width: '100%', aspectRatio: 16 / 10, borderRadius: 14, overflow: 'hidden', marginBottom: 12 },
+  anthemOverlay: { flex: 1, justifyContent: 'flex-end', padding: 18 },
+  anthemBadge: { backgroundColor: 'rgba(22,51,135,0.15)', borderRadius: 100, paddingHorizontal: 10, paddingVertical: 3, alignSelf: 'flex-start', marginBottom: 8 },
+  anthemBadgeText: { fontSize: 10, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase', color: C.unisBlueLight },
+  anthemTitle: { fontSize: IS_MOBILE ? 22 : 26, fontWeight: '700', fontStyle: 'italic', color: C.textPrimary, marginBottom: 4 },
+  anthemArtist: { fontSize: 13, color: C.textSecondary, marginBottom: 12 },
+  listenBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: C.unisBlue, borderRadius: 100, paddingVertical: 9, paddingHorizontal: 20, alignSelf: 'flex-start' },
+  listenBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 
-  // Error Banner
-  errorBanner: {
-    marginTop: 20,
-    padding: 16,
-    backgroundColor: 'rgba(255, 100, 100, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 100, 100, 0.3)',
-    borderRadius: 8,
-  },
-  errorBannerText: {
-    color: 'orange',
-    textAlign: 'center',
-    fontSize: 14,
-  },
+  // Song rows
+  songRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, paddingHorizontal: 10, borderRadius: 10, marginBottom: 4 },
+  songThumb: { width: 48, height: 48, borderRadius: 6 },
+  songInfo: { flex: 1, gap: 1 },
+  songRank: { fontSize: 10, fontWeight: '600', color: C.textMuted, letterSpacing: 0.5 },
+  songTitle: { fontSize: 14, fontWeight: '600', color: C.textPrimary },
+  songArtist: { fontSize: 12, color: C.textSecondary },
+  songStatRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  songStat: { fontSize: 11, color: C.textTertiary },
+  songPlayBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.unisBlue, justifyContent: 'center', alignItems: 'center' },
+
+  // Editorial
+  editorial: { paddingTop: 40, borderTopWidth: 1, borderTopColor: C.borderDim },
+  editorialTitle: { fontSize: IS_MOBILE ? 28 : 42, lineHeight: IS_MOBILE ? 34 : 50, marginBottom: 16 },
+  editorialItalic: { fontWeight: '700', fontStyle: 'italic', color: C.textPrimary },
+  editorialAccent: { fontWeight: '700', fontStyle: 'italic', color: C.unisBlue },
+  editorialBody: { fontSize: 14, lineHeight: 22, color: C.textSecondary, maxWidth: 400, marginBottom: 24 },
+  editorialStats: { gap: 14 },
+  editorialStat: { gap: 2 },
+  editorialStatLabel: { fontSize: 10, fontWeight: '600', letterSpacing: 1.5, textTransform: 'uppercase', color: C.textTertiary },
+  editorialStatValue: { fontSize: 20, fontWeight: '700', color: C.textPrimary },
+
+  errorBanner: { marginTop: 20, padding: 12, backgroundColor: 'rgba(255,100,100,0.08)', borderWidth: 1, borderColor: 'rgba(255,100,100,0.2)', borderRadius: 10 },
+  errorBannerText: { color: '#f5a623', textAlign: 'center', fontSize: 14 },
 });
 
 export default JurisdictionScreen;
