@@ -5,13 +5,9 @@
 // Slides in from the right with a purple gradient card and
 // flashing colored border, then auto-dismisses after 5 seconds.
 //
-// Port notes:
-// - localStorage → expo-secure-store (already in the project)
-// - CSS @keyframes slideInRight/slideOutRight → Animated translateX
-// - CSS @keyframes flashingColoredBorder → Animated loop
-// - lucide-react icons → lucide-react-native (already in the project)
-// - CSS variable --border-color → dynamic style prop
-// - backdrop-filter: blur → solid gradient background
+// v2: Replaced random template selection with threshold-based logic.
+// Never shows 0-vote leaders or fabricated competition.
+// Four tiers: competitive, active, zero-activity, fallback.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -41,6 +37,13 @@ const COLORS = {
   cyan: '#00D4FF',
   purple: '#9D4EDD',
   coral: '#FF6B6B',
+  blue: '#4ea8f5',
+};
+
+// Thresholds — tune these as your user base grows
+const THRESHOLDS = {
+  COMPETITIVE: 3,   // Leader needs 3+ votes
+  ACTIVE: 1,        // At least 1 vote exists
 };
 
 interface NotificationData {
@@ -52,7 +55,82 @@ interface NotificationData {
   artwork?: string | null;
 }
 
-// Icon component to avoid storing JSX in state
+interface LeaderEntry {
+  name: string;
+  votes: number;
+  artwork: string | null;
+}
+
+// ── Threshold-based message selection ────────────────────────
+const selectNotification = (
+  leaderboardData: LeaderEntry[],
+  jurisdictionName: string
+): NotificationData => {
+  if (!leaderboardData || leaderboardData.length === 0) {
+    return {
+      type: 'welcome',
+      iconName: 'music',
+      title: '\u{1F3B5} Welcome to Unis',
+      message: 'Check out the leaderboards and support your favorite local artists.',
+      color: COLORS.coral,
+      artwork: null,
+    };
+  }
+
+  const leader = leaderboardData[0];
+  const runnerUp = leaderboardData.length > 1 ? leaderboardData[1] : null;
+  const totalVotes = leaderboardData.reduce((sum, e) => sum + e.votes, 0);
+
+  // Tier 1: Competitive — leader has 3+ votes
+  if (leader.votes >= THRESHOLDS.COMPETITIVE) {
+    const gap = leader.votes - (runnerUp?.votes || 0);
+    const isCloseRace = runnerUp && gap <= 2 && runnerUp.votes >= 1;
+
+    if (isCloseRace) {
+      return {
+        type: 'close-race',
+        iconName: 'trending-up',
+        title: '\u{1F4C8} Close Race',
+        message: `${leader.name} and ${runnerUp!.name} are neck and neck for Artist of the Day \u2014 ${gap === 0 ? 'tied' : `just ${gap} vote${gap === 1 ? '' : 's'} apart`}!`,
+        color: COLORS.cyan,
+        artwork: leader.artwork,
+      };
+    }
+
+    return {
+      type: 'leading',
+      iconName: 'trophy',
+      title: '\u{1F3C6} Current Leader',
+      message: `${leader.name} is leading for Artist of the Day with ${leader.votes} vote${leader.votes === 1 ? '' : 's'}. ${totalVotes} total vote${totalVotes === 1 ? '' : 's'} cast today.`,
+      color: COLORS.gold,
+      artwork: leader.artwork,
+    };
+  }
+
+  // Tier 2: Active — at least some votes, not enough for competitive
+  if (totalVotes >= THRESHOLDS.ACTIVE) {
+    return {
+      type: 'active',
+      iconName: 'users',
+      title: '\u{1F5F3}\uFE0F Polls Are Open',
+      message: `${totalVotes} vote${totalVotes === 1 ? '' : 's'} cast so far today in ${jurisdictionName}. Every vote counts \u2014 make yours heard!`,
+      color: COLORS.blue,
+      artwork: leader.artwork,
+    };
+  }
+
+  // Tier 3: Zero activity — artists exist but no votes
+  return {
+    type: 'zero-activity',
+    iconName: 'music',
+    title: '\u{1F3B5} Voting Is Open',
+    message: `Today's Artist of the Day polls are open in ${jurisdictionName}. Be the first to cast your vote!`,
+    color: COLORS.purple,
+    artwork: null,
+  };
+};
+
+// ── Icon component ───────────────────────────────────────────
 const NotificationIcon: React.FC<{ name: string; color: string }> = ({ name, color }) => {
   const size = 22;
   switch (name) {
@@ -68,6 +146,9 @@ const NotificationIcon: React.FC<{ name: string; color: string }> = ({ name, col
   }
 };
 
+// ═════════════════════════════════════════════════════════════
+// COMPONENT
+// ═════════════════════════════════════════════════════════════
 const WinnersNotification: React.FC = () => {
   const { user } = useAuth();
   const [show, setShow] = useState(false);
@@ -137,113 +218,81 @@ const WinnersNotification: React.FC = () => {
     });
   }, []);
 
+  // ── Fetch and evaluate leaderboard data ────────────────────
   const fetchNotificationData = useCallback(async () => {
     if (!user) return;
 
-    try {
-      const userJurisdiction =
-        user.jurisdiction?.jurisdictionId || '00000000-0000-0000-0000-000000000003';
-      const userGenre =
-        user.genre?.genreId || '00000000-0000-0000-0000-000000000101';
+    const jurisdictionId =
+      user.jurisdiction?.jurisdictionId || '00000000-0000-0000-0000-000000000003';
+    const jurisdictionName = user.jurisdiction?.name || 'your area';
+    const genreId =
+      user.genre?.genreId || '00000000-0000-0000-0000-000000000101';
 
+    try {
       const response = await axiosInstance.get(
-        `/v1/vote/leaderboards?jurisdictionId=${userJurisdiction}&genreId=${userGenre}&targetType=artist&intervalId=00000000-0000-0000-0000-000000000201&limit=3`
+        `/v1/vote/leaderboards?jurisdictionId=${jurisdictionId}&genreId=${genreId}&targetType=artist&intervalId=00000000-0000-0000-0000-000000000201&limit=5`
       );
 
-      const leaderboardData = response.data;
+      const leaderboardData: LeaderEntry[] = (response.data || []).map((entry: any) => ({
+        name: entry.name || entry.username || 'Unknown',
+        votes: entry.votes || entry.voteCount || 0,
+        artwork: getMediaUrl(entry.artwork || entry.photoUrl || entry.artworkUrl) || null,
+      }));
 
-      if (leaderboardData && leaderboardData.length > 0) {
-        const leader = leaderboardData[0];
-        const notificationTypes: NotificationData[] = [
-          {
-            type: 'leading',
-            iconName: 'trophy',
-            title: '🏆 Current Leader',
-            message: `${leader.name} is leading for Artist of the Day with ${leader.votes} votes!`,
-            color: COLORS.gold,
-          },
-          {
-            type: 'trending',
-            iconName: 'trending-up',
-            title: '📈 Top 3 Artists',
-            message: `${leaderboardData
-              .slice(0, 3)
-              .map((a: any) => a.name)
-              .join(', ')} are battling for the top spot!`,
-            color: COLORS.cyan,
-          },
-          {
-            type: 'community',
-            iconName: 'users',
-            title: '👥 Community Pulse',
-            message: `${leader.votes} votes cast today in your community. Make yours count!`,
-            color: COLORS.purple,
-          },
-        ];
-
-        // Random variety
-        const randomNotif =
-          notificationTypes[Math.floor(Math.random() * notificationTypes.length)];
-
-        setNotification({
-          ...randomNotif,
-          artwork: leader.artwork || null,
-        });
-      } else {
-        throw new Error('No leaderboard data');
-      }
+      const picked = selectNotification(leaderboardData, jurisdictionName);
+      setNotification(picked);
     } catch (error) {
       console.error('Failed to fetch notification data:', error);
 
-      // Fallback
       setNotification({
         type: 'welcome',
         iconName: 'music',
-        title: '🎵 Welcome to UNIS',
-        message: "Check out today's leaderboards and cast your vote!",
+        title: '\u{1F3B5} Welcome to Unis',
+        message: 'Check out the leaderboards and support your favorite local artists.',
         color: COLORS.coral,
         artwork: null,
       });
     }
 
-    // Show and schedule hide
     setShow(true);
 
-    // Store today's date so we don't show again
+    // Store today's date (EST-aligned) so we don't show again
     try {
-      await SecureStore.setItemAsync(STORAGE_KEY, new Date().toDateString());
+      const todayEst = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+      await SecureStore.setItemAsync(STORAGE_KEY, todayEst);
     } catch (e) {
       console.warn('Could not save notification shown date:', e);
     }
   }, [user]);
 
-  // Trigger on user login, once per day
+  // ── Trigger on user login, once per day (EST-aligned) ──────
   useEffect(() => {
     if (!user) return;
 
     const checkAndShow = async () => {
       try {
         const lastShown = await SecureStore.getItemAsync(STORAGE_KEY);
-        const today = new Date().toDateString();
+        const todayEst = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
 
-        if (lastShown === today) return; // Already shown today
+        if (lastShown === todayEst) return;
 
         fetchNotificationData();
       } catch (e) {
-        // SecureStore error — show anyway
         fetchNotificationData();
       }
     };
 
-    checkAndShow();
+    // Small delay so it doesn't compete with initial load
+    const timer = setTimeout(checkAndShow, 2000);
 
     return () => {
+      clearTimeout(timer);
       if (hideTimer.current) clearTimeout(hideTimer.current);
       glowAnimation.current?.stop();
     };
   }, [user]);
 
-  // Animate when show changes
+  // ── Animate when show changes ──────────────────────────────
   useEffect(() => {
     if (show && notification) {
       slideIn();
@@ -294,7 +343,7 @@ const WinnersNotification: React.FC = () => {
           },
         ]}
       >
-        {/* Purple gradient overlay (simulated with nested view) */}
+        {/* Purple gradient overlay */}
         <View style={styles.gradientBg} />
 
         {/* Artwork */}
@@ -342,7 +391,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'transparent',
     overflow: 'hidden',
-    // Shadow
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
@@ -351,9 +399,6 @@ const styles = StyleSheet.create({
   },
   gradientBg: {
     ...StyleSheet.absoluteFillObject,
-    // Simulating the purple gradient — LinearGradient would be ideal
-    // but this avoids an extra import. If you want the exact gradient,
-    // wrap the card content in <LinearGradient> from expo-linear-gradient
     backgroundColor: 'rgba(75, 0, 130, 0.95)',
     borderRadius: 14,
   },
