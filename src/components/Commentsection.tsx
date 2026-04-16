@@ -1,8 +1,3 @@
-// src/components/CommentSection.tsx
-// Premium comment section ported from web CommentSection.jsx
-// Ambient-aware styling — accepts dominantColor prop from SongScreen
-// Features: fetch/post/delete comments, threaded replies, expand/collapse, avatars
-
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,

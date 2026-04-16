@@ -1,4 +1,15 @@
-import { getMediaUrl } from '../services/axiosInstance';
+// src/components/Player.tsx
+// Updated to match current web Player.jsx behavior:
+// - Pulls userId from AuthContext (was: decoding JWT locally in this file)
+// - Integrates playTracker for 30-second delayed play-count analytics
+// - Renders likeCount in the expanded view
+// - Removes dead/redundant atob helper
+//
+// NOT yet ported from web (follow-up PRs):
+// - DownloadModal      (currently Alert placeholder — needs expo-file-system + expo-sharing)
+// - PlaylistWizard     (currently Alert placeholder — needs component port)
+// - Lock-screen / Media Session controls (requires react-native-track-player migration)
+
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
@@ -15,17 +26,18 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as SecureStore from 'expo-secure-store';
 import { Heart, Vote, ChevronUp, ChevronDown, Download, Plus } from 'lucide-react-native';
 import Svg, { Path } from 'react-native-svg';
 
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance from '../services/axiosInstance';
+import { useAuth } from '../context/AuthContext';
+import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import { schedulePlayTracking, cancelPlayTracking } from '../utils/playTracker';
 import UnisPlayButton from './Unisplaybutton';
 import UnisPauseButton from './Unispausebutton';
 import VotingWizard from './VotingWizard';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH <= 600;
 
 // ─── Design tokens — updated to match web player.scss ────────
@@ -64,7 +76,6 @@ const Triangle: React.FC<TriangleProps> = ({ size = 24, color = COLORS.unisBlue,
 );
 
 const SEEKBAR_HEIGHT = 4;
-const THUMB_SIZE = 18;
 const ARTWORK_SIZE = 50;
 const ARTWORK_SIZE_MOBILE = 42;
 const PLAY_BUTTON_SIZE = 50;
@@ -83,6 +94,7 @@ interface VoteNominee {
 
 const Player: React.FC = () => {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const {
     currentMedia,
     isPlaying,
@@ -97,9 +109,11 @@ const Player: React.FC = () => {
     toggleExpand,
   } = usePlayer();
 
+  // userId now sourced from AuthContext (was: locally decoded JWT)
+  const userId = user?.userId ?? null;
+
   const [isLiked, setIsLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
-  const [userId, setUserId] = useState<string | null>(null);
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showVoteWizard, setShowVoteWizard] = useState(false);
   const [voteNominee, setVoteNominee] = useState<VoteNominee | null>(null);
@@ -112,26 +126,29 @@ const Player: React.FC = () => {
 
   useEffect(() => { durationRef.current = duration; }, [duration]);
 
-  // ── Extract userId from JWT ──
+  // ─── Play tracking (30s delayed analytics, Spotify-standard) ───
+  // On every track change, schedule a play-tracking call. If the user
+  // skips before 30s elapses, schedulePlayTracking cancels the previous
+  // timer internally. On unmount, cancel any pending timer.
   useEffect(() => {
-    const getUserId = async () => {
-      try {
-        const token = await SecureStore.getItemAsync('token');
-        if (token) {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          setUserId(payload.userId);
-        }
-      } catch (err) { console.error('Failed to extract userId:', err); }
+    const songId = currentMedia?.id ?? currentMedia?.songId;
+    if (songId && userId) {
+      schedulePlayTracking(songId, userId);
+    }
+    return () => {
+      cancelPlayTracking();
     };
-    getUserId();
-  }, []);
+  }, [currentMedia?.id, currentMedia?.songId, userId]);
 
-  // ── Fetch like status ──
+  // ─── Fetch like status + count whenever track or user changes ───
   useEffect(() => {
     let isMounted = true;
     const fetchLikeStatus = async () => {
-      if (!currentMedia?.id || !userId) return;
-      const songId = currentMedia.id || currentMedia.songId;
+      const songId = currentMedia?.id || currentMedia?.songId;
+      if (!songId || !userId) {
+        if (isMounted) { setIsLiked(false); setLikeCount(0); }
+        return;
+      }
       try {
         const [likedRes, countRes] = await Promise.all([
           axiosInstance.get(`/v1/media/song/${songId}/is-liked?userId=${userId}`),
@@ -147,9 +164,9 @@ const Player: React.FC = () => {
     };
     fetchLikeStatus();
     return () => { isMounted = false; };
-  }, [currentMedia?.id, userId]);
+  }, [currentMedia?.id, currentMedia?.songId, userId]);
 
-  // ── Toggle mobile actions tray ──
+  // ─── Mobile actions tray toggle ───
   const toggleMobileActions = useCallback(() => {
     Animated.timing(mobileActionsHeight, {
       toValue: showMobileActions ? 0 : TRAY_MAX_HEIGHT,
@@ -159,22 +176,37 @@ const Player: React.FC = () => {
     setShowMobileActions(!showMobileActions);
   }, [showMobileActions, mobileActionsHeight]);
 
-  // ── Like ──
+  // ─── Like (optimistic toggle) ───
   const handleLike = async () => {
     if (!userId) { Alert.alert('Login Required', 'Please log in to like songs'); return; }
     const songId = currentMedia?.id || currentMedia?.songId;
     if (!songId) return;
+
+    // Optimistic update
+    const wasLiked = isLiked;
+    setIsLiked(!wasLiked);
+    setLikeCount(prev => wasLiked ? Math.max(0, prev - 1) : prev + 1);
+
     try {
-      const method = isLiked ? 'delete' : 'post';
-      const res = await axiosInstance({ method, url: `/v1/media/song/${songId}/like?userId=${userId}` });
-      if (res.data.success) {
-        setIsLiked(!isLiked);
-        setLikeCount(prev => isLiked ? Math.max(0, prev - 1) : prev + 1);
+      const method = wasLiked ? 'delete' : 'post';
+      const res = await axiosInstance({
+        method,
+        url: `/v1/media/song/${songId}/like?userId=${userId}`,
+      });
+      if (!res.data.success) {
+        // Roll back
+        setIsLiked(wasLiked);
+        setLikeCount(prev => wasLiked ? prev + 1 : Math.max(0, prev - 1));
       }
-    } catch (err) { console.error('Like toggle failed:', err); }
+    } catch (err) {
+      // Roll back on error
+      setIsLiked(wasLiked);
+      setLikeCount(prev => wasLiked ? prev + 1 : Math.max(0, prev - 1));
+      console.error('Like toggle failed:', err);
+    }
   };
 
-  // ── Vote — same logic as web Player ──
+  // ─── Vote — mirrors web Player.handleVoteClick ───
   const handleVote = async () => {
     if (!userId) { Alert.alert('Login Required', 'Please log in to vote'); return; }
     const songId = currentMedia?.id || currentMedia?.songId;
@@ -192,20 +224,31 @@ const Player: React.FC = () => {
       try {
         const res = await axiosInstance.get(`/v1/media/song/${songId}`);
         const song = res.data;
-        genre = ((typeof song.genre === 'object' ? song.genre?.name : song.genre) || 'unknown').toLowerCase().replace('/', '-');
+        genre = ((typeof song.genre === 'object' ? song.genre?.name : song.genre) || 'unknown')
+          .toLowerCase().replace('/', '-');
         let jurisdictionName = 'harlem';
         if (song.jurisdiction) {
-          jurisdictionName = typeof song.jurisdiction === 'string' ? song.jurisdiction : song.jurisdiction.name || 'harlem';
+          jurisdictionName = typeof song.jurisdiction === 'string'
+            ? song.jurisdiction
+            : song.jurisdiction.name || 'harlem';
         }
         jurisdiction = jurisdictionName.toLowerCase().replace(/\s+/g, '-');
       } catch {
         Alert.alert('Error', 'Could not load song details.');
         setVoteLoading(false);
         return;
-      } finally { setVoteLoading(false); }
+      } finally {
+        setVoteLoading(false);
+      }
     }
 
-    setVoteNominee({ id: songId, name: currentMedia?.title ?? 'Unknown', type: 'song', genreKey: genre, jurisdiction });
+    setVoteNominee({
+      id: songId,
+      name: currentMedia?.title ?? 'Unknown',
+      type: 'song',
+      genreKey: genre,
+      jurisdiction,
+    });
     setShowVoteWizard(true);
   };
 
@@ -219,8 +262,17 @@ const Player: React.FC = () => {
     };
   }, [voteNominee]);
 
-  const handleAddToPlaylist = () => Alert.alert('Coming Soon', 'Playlist management will be available soon');
-  const handleDownload = () => Alert.alert('Coming Soon', 'Download functionality will be available soon');
+  // TODO(next-PR): replace with PlaylistWizard modal — web equivalent is src/playlistWizard.jsx.
+  // Should accept `selectedTrack` and delegate to PlayerContext.addToPlaylist.
+  const handleAddToPlaylist = () =>
+    Alert.alert('Coming Soon', 'Playlist management will be available soon');
+
+  // TODO(next-PR): replace with full DownloadModal — web equivalent is src/DownloadModal.jsx.
+  // Mobile version should use expo-file-system to download to the cache dir, then
+  // expo-sharing to let the user save to Files app / share sheet. Must also handle
+  // the paid-download case (Stripe) and the unavailable case.
+  const handleDownload = () =>
+    Alert.alert('Coming Soon', 'Download functionality will be available soon');
 
   const formatTime = (ms: number): string => {
     if (!ms || isNaN(ms)) return '0:00';
@@ -256,21 +308,8 @@ const Player: React.FC = () => {
           }
         });
       },
-    })
+    }),
   ).current;
-
-  const atob = (input: string): string => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-    let str = input.replace(/=+$/, '');
-    let output = '';
-    for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-      buffer = chars.indexOf(buffer) as any;
-      if ((buffer as number) === -1) continue;
-      bs = bc % 4 ? bs * 64 + (buffer as number) : (buffer as number);
-      if (bc++ % 4) output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
-    }
-    return output;
-  };
 
   if (!currentMedia) return null;
 
@@ -323,7 +362,11 @@ const Player: React.FC = () => {
               <Text style={styles.timeText}>{formatTime(duration)}</Text>
             </View>
 
-            <View style={styles.expandedSeekbarContainer} onLayout={handleSeekbarLayout} {...seekbarPanResponder.panHandlers}>
+            <View
+              style={styles.expandedSeekbarContainer}
+              onLayout={handleSeekbarLayout}
+              {...seekbarPanResponder.panHandlers}
+            >
               <View style={styles.expandedSeekbarTrack}>
                 <View style={[styles.expandedSeekbarProgress, { width: `${progress}%` }]} />
                 <View style={[styles.expandedSeekbarThumb, { left: `${progress}%`, marginLeft: -8 }]} />
@@ -335,8 +378,11 @@ const Player: React.FC = () => {
                 <Triangle size={35} color={COLORS.accentWhite} direction="left" />
               </TouchableOpacity>
               <TouchableOpacity onPress={togglePlayPause} style={styles.expandedPlayButton}>
-                {isBuffering ? <ActivityIndicator size="large" color={COLORS.unisBlue} />
-                  : isPlaying ? <UnisPauseButton size={60} /> : <UnisPlayButton size={60} />}
+                {isBuffering
+                  ? <ActivityIndicator size="large" color={COLORS.unisBlue} />
+                  : isPlaying
+                    ? <UnisPauseButton size={60} />
+                    : <UnisPlayButton size={60} />}
               </TouchableOpacity>
               <TouchableOpacity onPress={next} style={styles.expandedControlButton}>
                 <Triangle size={35} color={COLORS.accentWhite} direction="right" />
@@ -344,8 +390,20 @@ const Player: React.FC = () => {
             </View>
 
             <View style={styles.expandedActions}>
-              <TouchableOpacity onPress={handleLike} style={[styles.expandedActionButton, isLiked && styles.likedButton]}>
-                <Heart size={24} color={isLiked ? COLORS.unisBlue : COLORS.textGray} fill={isLiked ? COLORS.unisBlue : 'none'} />
+              <TouchableOpacity
+                onPress={handleLike}
+                style={[styles.expandedActionButton, isLiked && styles.likedButton]}
+              >
+                <Heart
+                  size={24}
+                  color={isLiked ? COLORS.unisBlue : COLORS.textGray}
+                  fill={isLiked ? COLORS.unisBlue : 'none'}
+                />
+                {likeCount > 0 && (
+                  <Text style={[styles.likeCount, isLiked && styles.likeCountActive]}>
+                    {likeCount}
+                  </Text>
+                )}
               </TouchableOpacity>
               <TouchableOpacity onPress={handleVote} style={styles.expandedActionButton} disabled={voteLoading}>
                 <VoteIcon />
@@ -367,7 +425,12 @@ const Player: React.FC = () => {
       <View style={styles.container}>
         {/* Mobile actions tray */}
         <Animated.View style={[styles.mobileActionsTray, { height: mobileActionsHeight }]}>
-          <LinearGradient colors={[COLORS.bgElevated, COLORS.bgSurface]} start={{ x: 0, y: 1 }} end={{ x: 0, y: 0 }} style={styles.trayGradient}>
+          <LinearGradient
+            colors={[COLORS.bgElevated, COLORS.bgSurface]}
+            start={{ x: 0, y: 1 }}
+            end={{ x: 0, y: 0 }}
+            style={styles.trayGradient}
+          >
             <View style={styles.trayContent}>
               <TouchableOpacity onPress={handleVote} style={styles.trayAction} disabled={voteLoading}>
                 <VoteIconSmall /><Text style={styles.trayLabel}>Vote</Text>
@@ -376,8 +439,14 @@ const Player: React.FC = () => {
                 <Plus size={20} color={COLORS.textSilver} /><Text style={styles.trayLabel}>Add</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleLike} style={[styles.trayAction, isLiked && styles.trayActionLiked]}>
-                <Heart size={20} color={isLiked ? COLORS.unisBlue : COLORS.textSilver} fill={isLiked ? COLORS.unisBlue : 'none'} />
-                <Text style={[styles.trayLabel, isLiked && styles.trayLabelLiked]}>{isLiked ? 'Liked' : 'Like'}</Text>
+                <Heart
+                  size={20}
+                  color={isLiked ? COLORS.unisBlue : COLORS.textSilver}
+                  fill={isLiked ? COLORS.unisBlue : 'none'}
+                />
+                <Text style={[styles.trayLabel, isLiked && styles.trayLabelLiked]}>
+                  {isLiked ? 'Liked' : 'Like'}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={handleDownload} style={styles.trayAction}>
                 <Download size={20} color={COLORS.textSilver} /><Text style={styles.trayLabel}>Download</Text>
@@ -389,7 +458,12 @@ const Player: React.FC = () => {
         {/* Main player bar */}
         <View style={[styles.playerBar, { paddingBottom: insets.bottom }]}>
           {/* Progress bar across top */}
-          <View ref={seekbarRef} style={styles.seekbar} onLayout={handleSeekbarLayout} {...seekbarPanResponder.panHandlers}>
+          <View
+            ref={seekbarRef}
+            style={styles.seekbar}
+            onLayout={handleSeekbarLayout}
+            {...seekbarPanResponder.panHandlers}
+          >
             <View style={styles.seekbarTrack}>
               <View style={[styles.seekbarProgress, { width: `${progress}%` }]} />
             </View>
@@ -411,8 +485,11 @@ const Player: React.FC = () => {
                 <Triangle size={18} color={COLORS.textSecondary} direction="left" />
               </TouchableOpacity>
               <TouchableOpacity onPress={togglePlayPause} style={styles.playBtn}>
-                {isBuffering ? <ActivityIndicator size="small" color={COLORS.accentWhite} />
-                  : isPlaying ? <UnisPauseButton size={PLAY_BUTTON_SIZE_MOBILE} /> : <UnisPlayButton size={PLAY_BUTTON_SIZE_MOBILE} />}
+                {isBuffering
+                  ? <ActivityIndicator size="small" color={COLORS.accentWhite} />
+                  : isPlaying
+                    ? <UnisPauseButton size={PLAY_BUTTON_SIZE_MOBILE} />
+                    : <UnisPlayButton size={PLAY_BUTTON_SIZE_MOBILE} />}
               </TouchableOpacity>
               <TouchableOpacity onPress={next} style={styles.controlBtn}>
                 <Triangle size={18} color={COLORS.textSecondary} direction="right" />
@@ -423,13 +500,19 @@ const Player: React.FC = () => {
             {!IS_MOBILE ? (
               <View style={styles.rightActions}>
                 <TouchableOpacity onPress={handleVote} style={styles.actionBtn} disabled={voteLoading}>
-                  {voteLoading ? <ActivityIndicator size="small" color={COLORS.textGray} /> : <Vote size={16} color={COLORS.textSecondary} />}
+                  {voteLoading
+                    ? <ActivityIndicator size="small" color={COLORS.textGray} />
+                    : <Vote size={16} color={COLORS.textSecondary} />}
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleAddToPlaylist} style={styles.actionBtn}>
                   <Plus size={16} color={COLORS.textSecondary} />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleLike} style={[styles.actionBtn, isLiked && styles.actionBtnLiked]}>
-                  <Heart size={16} color={isLiked ? COLORS.unisBlue : COLORS.textSecondary} fill={isLiked ? COLORS.unisBlue : 'none'} />
+                  <Heart
+                    size={16}
+                    color={isLiked ? COLORS.unisBlue : COLORS.textSecondary}
+                    fill={isLiked ? COLORS.unisBlue : 'none'}
+                  />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleDownload} style={styles.actionBtn}>
                   <Download size={16} color={COLORS.textSecondary} />
@@ -437,7 +520,9 @@ const Player: React.FC = () => {
               </View>
             ) : (
               <TouchableOpacity style={styles.mobileToggle} onPress={toggleMobileActions}>
-                {showMobileActions ? <ChevronDown size={20} color={COLORS.textSecondary} /> : <ChevronUp size={20} color={COLORS.textSecondary} />}
+                {showMobileActions
+                  ? <ChevronDown size={20} color={COLORS.textSecondary} />
+                  : <ChevronUp size={20} color={COLORS.textSecondary} />}
               </TouchableOpacity>
             )}
           </View>
@@ -613,23 +698,64 @@ const styles = StyleSheet.create({
   expandedContent: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
   minimizeButton: { position: 'absolute', top: 20, left: 20, padding: 10, zIndex: 10 },
   minimizeText: { color: COLORS.accentWhite, fontSize: 24 },
-  expandedArtworkContainer: { marginBottom: 40, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 30, elevation: 10 },
+  expandedArtworkContainer: {
+    marginBottom: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 30,
+    elevation: 10,
+  },
   expandedArtwork: { width: EXPANDED_ARTWORK_SIZE, height: EXPANDED_ARTWORK_SIZE, borderRadius: 12 },
   expandedInfo: { alignItems: 'center', marginBottom: 30, width: '100%', maxWidth: 500 },
   expandedTitle: { color: COLORS.accentWhite, fontSize: 24, fontWeight: '600', marginBottom: 5, textAlign: 'center' },
   expandedArtist: { color: COLORS.textSilver, fontSize: 18, textAlign: 'center' },
-  expandedTimeInfo: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', maxWidth: 500, marginBottom: 10 },
+  expandedTimeInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    maxWidth: 500,
+    marginBottom: 10,
+  },
   timeText: { color: COLORS.textSecondary, fontSize: 14 },
   expandedSeekbarContainer: { width: '100%', maxWidth: 500, height: 30, justifyContent: 'center', marginBottom: 30 },
   expandedSeekbarTrack: { height: 6, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 3, position: 'relative' },
   expandedSeekbarProgress: { height: '100%', backgroundColor: COLORS.unisBlue, borderRadius: 3 },
-  expandedSeekbarThumb: { position: 'absolute', top: -5, width: 16, height: 16, borderRadius: 8, backgroundColor: COLORS.unisBlue, borderWidth: 2, borderColor: COLORS.accentWhite },
-  expandedControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 30, marginBottom: 20 },
+  expandedSeekbarThumb: {
+    position: 'absolute',
+    top: -5,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: COLORS.unisBlue,
+    borderWidth: 2,
+    borderColor: COLORS.accentWhite,
+  },
+  expandedControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 30,
+    marginBottom: 20,
+  },
   expandedControlButton: { padding: 10 },
   expandedPlayButton: { width: 60, height: 60, justifyContent: 'center', alignItems: 'center' },
   expandedActions: { flexDirection: 'row', gap: 20 },
-  expandedActionButton: { padding: 10 },
+  expandedActionButton: {
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   likedButton: {},
+  likeCount: {
+    color: COLORS.textGray,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  likeCountActive: {
+    color: COLORS.unisBlue,
+  },
 });
 
 export default Player;
