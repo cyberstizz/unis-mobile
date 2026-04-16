@@ -10,6 +10,7 @@ import Player from './src/components/Player';
 import SongNotification from './src/components/SongNotification';
 import WinnersNotification from './src/components/WinnersNotification';
 import * as NavigationBar from 'expo-navigation-bar';
+import PlayChoiceModal from './src/components/PlayChoiceModal';
 
 
 
@@ -49,6 +50,7 @@ useEffect(() => {
           <SongNotification />
           <WinnersNotification />
           <Player />
+          <PlayChoiceModal />
         </>
       )}
 
