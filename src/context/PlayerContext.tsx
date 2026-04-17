@@ -1,24 +1,22 @@
 // src/context/PlayerContext.tsx
-// Full parity port of web PlayerContext.
+// Phase A + B complete. Full parity with web PlayerContext.
 //
-// BREAKING CHANGE from previous mobile version:
-//   `playlist` (the queue) has been renamed to `queue` to match web vocabulary.
-//   Any consumer doing `const { playlist } = usePlayer()` must rename to `queue`.
-//
-// Phase A features (this file):
-//   - Queue system: queue, queueSource, isShuffled, originalQueue, autoplay
-//   - requestPlay + PlayChoiceModal flow (Play Now / Add to Queue / Cancel)
+// Phase A (queue system):
+//   - Queue state: queue, queueSource, isShuffled, originalQueue, autoplay
+//   - requestPlay + PlayChoiceModal flow
 //   - playNext, playLater, removeFromQueue, reorderQueue, clearQueue
 //   - toggleShuffle (Fisher-Yates, keeps current track at index 0)
 //   - saveQueueAsPlaylist
-//   - next() / prev() stop at queue boundaries (do not wrap)
-//   - Reactive auth — playlists reload on login via useAuth()
+//   - next() / prev() stop at queue boundaries
+//   - Reactive auth — playlists reload on login
 //   - Self-healing openPlaylistManager
 //
-// Phase B (pending playlistService extension, see stubs at bottom):
-//   - followedPlaylists + loadFollowedPlaylists
-//   - loadPlaylistDetails
-//   - follow/unfollow/suggest/vote/block/unblock
+// Phase B (followed playlists + community features):
+//   - followedPlaylists state + loadFollowedPlaylists
+//   - loadPlaylistDetails (returns a normalized playlist)
+//   - follow/unfollow — refreshes followedPlaylists on success
+//   - suggestSong/voteOnSuggestion
+//   - blockSong/unblockSong
 
 import React, {
   createContext,
@@ -29,7 +27,7 @@ import React, {
   useRef,
 } from 'react';
 import { Audio, AVPlaybackStatus } from 'expo-av';
-import playlistService, { Playlist, Track } from '../services/playlistService';
+import playlistService, { Playlist, Track, SongSuggestion } from '../services/playlistService';
 import { getMediaUrl } from '../services/axiosInstance';
 import { useAuth } from './AuthContext';
 
@@ -140,13 +138,17 @@ interface PlayerContextType {
   loadPlaylist: (playlist: TransformedPlaylist) => void;
   refreshPlaylists: () => Promise<void>;
 
-  // Phase B stubs (see bottom of file)
+  // Phase B — followed playlists + community features
   loadFollowedPlaylists: () => Promise<void>;
   loadPlaylistDetails: (playlistId: string) => Promise<TransformedPlaylist | null>;
   followPlaylist: (playlistId: string) => Promise<void>;
   unfollowPlaylist: (playlistId: string) => Promise<void>;
-  suggestSong: (playlistId: string, songId: string) => Promise<void>;
-  voteOnSuggestion: (playlistId: string, suggestionId: string) => Promise<void>;
+  suggestSong: (playlistId: string, songId: string) => Promise<SongSuggestion | null>;
+  voteOnSuggestion: (
+    playlistId: string,
+    suggestionId: string,
+    direction?: 'up' | 'down',
+  ) => Promise<void>;
   blockSong: (playlistId: string, songId: string) => Promise<void>;
   unblockSong: (playlistId: string, songId: string) => Promise<void>;
 }
@@ -181,10 +183,6 @@ const transformPlaylist = (pl: Playlist): TransformedPlaylist => ({
   tracks: pl.tracks.map(t => normalizeTrack(t)),
 });
 
-/**
- * Fisher-Yates shuffle of `rest`, then prepend `head` at index 0.
- * Used for toggleShuffle to keep the currently-playing track at position 0.
- */
 const shuffleKeepingHead = (
   head: NormalizedTrack | null,
   rest: NormalizedTrack[],
@@ -238,7 +236,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
   const soundRef = useRef<Audio.Sound | null>(null);
 
   // Refs mirroring state for use inside audio status callbacks
-  // (callbacks are attached once on track load and would otherwise read stale state)
   const queueRef = useRef<NormalizedTrack[]>([]);
   const currentIndexRef = useRef(0);
   const autoplayRef = useRef(true);
@@ -268,21 +265,17 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     };
   }, []);
 
-  // ─── Reactive auth: load playlists on login, no-op on logout ─────
-  // Logout clearing is handled at App.tsx via clearPlayer() — don't
-  // duplicate the clear here.
+  // ─── Reactive auth: load playlists on login ──────────────────────
   useEffect(() => {
     if (user?.userId) {
       loadUserPlaylists();
       loadFollowedPlaylists();
     }
-    // Intentionally depend on userId only, not the whole user object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.userId]);
 
   // ─── Audio playback status callback ──────────────────────────────
   const handleTrackEnd = useCallback(async () => {
-    // Match web: respect autoplay flag, stop at queue end (no wrap).
     if (!autoplayRef.current) {
       setIsPlaying(false);
       return;
@@ -349,11 +342,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
 
   // ─── Public playback controls ────────────────────────────────────
 
-  /**
-   * Replace queue (or play a single song) and start playing.
-   * For the "smart" behavior (prompt user if queue already has tracks),
-   * use requestPlay() instead.
-   */
   const playMedia = async (
     media: MediaItem,
     newQueue: MediaItem[] = [],
@@ -383,10 +371,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     await loadAndPlayTrack(normalizedMedia);
   };
 
-  /**
-   * Smart play: if queue is empty, play immediately. If queue has tracks,
-   * open the PlayChoiceModal so the user can pick Play Now or Add to Queue.
-   */
   const requestPlay = useCallback((song: MediaItem) => {
     if (queue.length === 0) {
       playMedia(song, [song], '');
@@ -437,7 +421,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     else await soundRef.current.playAsync();
   }, [currentMedia]);
 
-  /** Next track — stops at queue end. Matches web. */
   const next = useCallback(async () => {
     if (queue.length === 0) return;
     const nextIdx = currentIndex + 1;
@@ -449,7 +432,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     await playTrackAtIndex(nextIdx);
   }, [queue.length, currentIndex, playTrackAtIndex]);
 
-  /** Previous track — stops at index 0 (does not wrap). */
   const prev = useCallback(async () => {
     if (queue.length === 0) return;
     const prevIdx = currentIndex - 1;
@@ -476,17 +458,12 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     setQueue(prev => [...prev, normalized]);
   }, []);
 
-  /** Remove a queue item. Blocks removal of the currently playing track. */
   const removeFromQueue = useCallback((index: number) => {
     if (index === currentIndex) return;
     setQueue(prev => prev.filter((_, i) => i !== index));
     if (index < currentIndex) setCurrentIndex(prev => prev - 1);
   }, [currentIndex]);
 
-  /**
-   * Reorder queue by index. Blocks moving the currently playing track.
-   * Recomputes currentIndex by looking up currentMedia.id in the new queue.
-   */
   const reorderQueue = useCallback((fromIndex: number, toIndex: number) => {
     if (fromIndex === currentIndex || toIndex === currentIndex) return;
     if (fromIndex === toIndex) return;
@@ -502,7 +479,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     }
   }, [queue, currentIndex, currentMedia]);
 
-  /** Clear queue — pauses audio but does NOT fully unload. Use clearPlayer() for logout. */
   const clearQueue = useCallback(async () => {
     if (soundRef.current) {
       try { await soundRef.current.pauseAsync(); } catch {}
@@ -518,7 +494,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     setQueueSource('');
   }, []);
 
-  /** Shuffle toggle — Fisher-Yates, keeps currently playing track at index 0. */
   const toggleShuffle = useCallback(() => {
     if (!isShuffled) {
       const current = queue[currentIndex] ?? null;
@@ -539,13 +514,10 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     }
   }, [queue, currentIndex, isShuffled, originalQueue, currentMedia]);
 
-  /** Save current queue as a new playlist, then refresh library. */
   const saveQueueAsPlaylist = useCallback(async (name: string) => {
     if (queue.length === 0) throw new Error('Queue is empty');
     try {
       const created = await playlistService.createPlaylist(name);
-      // playlistService.createPlaylist should return the new Playlist with playlistId.
-      // If your service returns void, adjust this to fetch the new playlist after creation.
       const newPlaylistId = (created as any)?.playlistId;
       if (!newPlaylistId) {
         throw new Error('createPlaylist did not return playlistId');
@@ -565,10 +537,6 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
 
   const toggleExpand = () => setIsExpanded(v => !v);
 
-  /**
-   * Self-healing open: if playlists state is empty but we have an auth'd user,
-   * trigger a fetch. Third line of defense after mount + login-event reloads.
-   */
   const openPlaylistManager = useCallback(async () => {
     setShowPlaylistManager(true);
     if (playlists.length === 0 && user?.userId) {
@@ -609,7 +577,7 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     setPlayChoiceModal({ open: false, pendingSong: null });
   };
 
-  // ─── Playlist library ops (unchanged from previous mobile version) ──
+  // ─── Playlist CRUD ───────────────────────────────────────────────
 
   const loadUserPlaylists = async () => {
     try {
@@ -700,57 +668,92 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     if (pl.tracks.length > 0) setCurrentMedia(pl.tracks[0]);
   };
 
-  // ─── Phase B stubs — filled in once playlistService is extended ──
-  // Signatures are stable so consumers can import now and not break
-  // when the real implementations land.
+  // ─── Phase B — followed playlists + community features ──────────
 
   const loadFollowedPlaylists = async () => {
-    // TODO(Phase B): replace with playlistService.getFollowedPlaylists().
-    // Shape: GET /v1/playlists/following → Playlist[]
-    if (__DEV__) {
-      console.warn('[PlayerContext] loadFollowedPlaylists not yet implemented — Phase B.');
+    try {
+      const data = await playlistService.getFollowedPlaylists();
+      setFollowedPlaylists(data.map(transformPlaylist));
+    } catch (error) {
+      console.error('Failed to load followed playlists:', error);
+      setFollowedPlaylists([]);
     }
   };
 
   const loadPlaylistDetails = async (
     playlistId: string,
   ): Promise<TransformedPlaylist | null> => {
-    // TODO(Phase B): replace with playlistService.getPlaylistDetails(id).
-    // Shape: GET /v1/playlists/{id} → Playlist with tracks
-    if (__DEV__) {
-      console.warn('[PlayerContext] loadPlaylistDetails not yet implemented — Phase B.');
+    try {
+      const data = await playlistService.getPlaylistById(playlistId);
+      return transformPlaylist(data);
+    } catch (error) {
+      console.error('Failed to load playlist details:', error);
+      return null;
     }
-    return null;
   };
 
-  const followPlaylist = async (_playlistId: string) => {
-    // TODO(Phase B): POST /v1/playlists/{id}/follow → refresh followedPlaylists
-    if (__DEV__) console.warn('[PlayerContext] followPlaylist not yet implemented.');
+  const followPlaylist = async (playlistId: string) => {
+    try {
+      await playlistService.followPlaylist(playlistId);
+      await loadFollowedPlaylists();
+    } catch (error) {
+      console.error('Failed to follow playlist:', error);
+      throw error;
+    }
   };
 
-  const unfollowPlaylist = async (_playlistId: string) => {
-    // TODO(Phase B): DELETE /v1/playlists/{id}/follow → refresh followedPlaylists
-    if (__DEV__) console.warn('[PlayerContext] unfollowPlaylist not yet implemented.');
+  const unfollowPlaylist = async (playlistId: string) => {
+    try {
+      await playlistService.unfollowPlaylist(playlistId);
+      await loadFollowedPlaylists();
+    } catch (error) {
+      console.error('Failed to unfollow playlist:', error);
+      throw error;
+    }
   };
 
-  const suggestSong = async (_playlistId: string, _songId: string) => {
-    // TODO(Phase B): POST /v1/playlists/{id}/suggestions
-    if (__DEV__) console.warn('[PlayerContext] suggestSong not yet implemented.');
+  const suggestSong = async (
+    playlistId: string,
+    songId: string,
+  ): Promise<SongSuggestion | null> => {
+    try {
+      const suggestion = await playlistService.suggestSong(playlistId, songId);
+      return suggestion;
+    } catch (error) {
+      console.error('Failed to suggest song:', error);
+      throw error;
+    }
   };
 
-  const voteOnSuggestion = async (_playlistId: string, _suggestionId: string) => {
-    // TODO(Phase B): POST /v1/playlists/{id}/suggestions/{suggId}/vote
-    if (__DEV__) console.warn('[PlayerContext] voteOnSuggestion not yet implemented.');
+  const voteOnSuggestion = async (
+    playlistId: string,
+    suggestionId: string,
+    direction?: 'up' | 'down',
+  ) => {
+    try {
+      await playlistService.voteOnSuggestion(playlistId, suggestionId, direction);
+    } catch (error) {
+      console.error('Failed to vote on suggestion:', error);
+      throw error;
+    }
   };
 
-  const blockSong = async (_playlistId: string, _songId: string) => {
-    // TODO(Phase B): POST /v1/playlists/{id}/block
-    if (__DEV__) console.warn('[PlayerContext] blockSong not yet implemented.');
+  const blockSong = async (playlistId: string, songId: string) => {
+    try {
+      await playlistService.blockSong(playlistId, songId);
+    } catch (error) {
+      console.error('Failed to block song:', error);
+      throw error;
+    }
   };
 
-  const unblockSong = async (_playlistId: string, _songId: string) => {
-    // TODO(Phase B): DELETE /v1/playlists/{id}/block/{songId}
-    if (__DEV__) console.warn('[PlayerContext] unblockSong not yet implemented.');
+  const unblockSong = async (playlistId: string, songId: string) => {
+    try {
+      await playlistService.unblockSong(playlistId, songId);
+    } catch (error) {
+      console.error('Failed to unblock song:', error);
+      throw error;
+    }
   };
 
   // ─── Context value ───────────────────────────────────────────────
@@ -819,7 +822,7 @@ export const PlayerProvider: React.FC<PlayerProviderProps> = ({ children }) => {
     loadPlaylist,
     refreshPlaylists: loadUserPlaylists,
 
-    // Phase B stubs
+    // Phase B
     loadFollowedPlaylists,
     loadPlaylistDetails,
     followPlaylist,
