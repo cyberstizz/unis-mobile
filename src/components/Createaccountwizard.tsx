@@ -106,6 +106,11 @@ interface FormData {
   agreedToArtistTerms: boolean;
   address: string;
   detectingLocation: boolean;
+  // ★ parity with web register payload
+  dateOfBirth: string | null;
+  gender: string | null;
+  themePreference: string;
+  songIsrc: string;
 }
 
 interface ValidationState {
@@ -233,6 +238,10 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
     agreedToArtistTerms: false,
     address: '',
     detectingLocation: false,
+    dateOfBirth: null,
+    gender: null,
+    themePreference: 'blue',
+    songIsrc: '',
   });
 
   // Validation state
@@ -258,6 +267,10 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  // ★ parity: phased submit + verify-email success screen
+  const [partialSuccess, setPartialSuccess] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [submitPhase, setSubmitPhase] = useState<string | null>(null);
 
   // Scroll ref
   const scrollViewRef = useRef<ScrollView>(null);
@@ -345,20 +358,17 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
       updateValidation('referralCode', { checking: true, valid: null, message: '' });
 
       try {
-        // TODO: Replace with actual API call
-        // const response = await axiosInstance.get(`/v1/users/validate-referral/${encodeURIComponent(code)}`);
+        const response = await axiosInstance.get(
+          `/v1/users/validate-referral/${encodeURIComponent(code)}`
+        );
 
-        // Simulate API delay
-        await new Promise((resolve) => setTimeout(resolve, 500));
-
-        // For demo: accept UNIS-LAUNCH-2024 as valid
-        if (code === 'UNIS-LAUNCH-2024') {
+        if (response.data?.valid) {
           updateValidation('referralCode', {
             checking: false,
             valid: true,
-            message: 'Welcome early adopter!',
+            message: `Referred by ${response.data.referrerUsername}`,
           });
-          updateForm('referrerUsername', 'Unis');
+          updateForm('referrerUsername', response.data.referrerUsername);
         } else {
           updateValidation('referralCode', {
             checking: false,
@@ -367,11 +377,23 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
           });
         }
       } catch (err) {
-        updateValidation('referralCode', {
-          checking: false,
-          valid: false,
-          message: 'Could not verify code',
-        });
+        // Launch-code fallback when the endpoint is unreachable.
+        if (code === 'UNIS-LAUNCH-2024') {
+          console.warn('[wizard] referral endpoint failed; applied launch-code fallback', err);
+          updateValidation('referralCode', {
+            checking: false,
+            valid: true,
+            message: 'Welcome early adopter!',
+          });
+          updateForm('referrerUsername', 'Unis');
+        } else {
+          console.error('[wizard] referral validation failed:', err);
+          updateValidation('referralCode', {
+            checking: false,
+            valid: false,
+            message: 'Could not verify code',
+          });
+        }
       }
     }, 500),
     []
@@ -400,19 +422,19 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
       updateValidation('username', { checking: true, valid: null, message: '' });
 
       try {
-        // TODO: Replace with actual API call
-        // const response = await axiosInstance.get(`/v1/users/check-username?username=${encodeURIComponent(username)}`);
+        const response = await axiosInstance.get(
+          `/v1/users/check-username?username=${encodeURIComponent(username)}`
+        );
 
-        // Simulate API delay
-        await new Promise((resolve) => setTimeout(resolve, 500));
-
-        // For demo: always available
         updateValidation('username', {
           checking: false,
-          valid: true,
-          message: 'Username available!',
+          valid: response.data?.available !== false,
+          message:
+            response.data?.available === false ? 'Username taken' : 'Username available!',
         });
       } catch (err) {
+        // Fail open (don't block signup on a check outage); register 409 is the backstop.
+        console.error('[wizard] username availability check failed:', err);
         updateValidation('username', { checking: false, valid: true, message: '' });
       }
     }, 500),
@@ -440,15 +462,18 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
       updateValidation('email', { checking: true, valid: null, message: '' });
 
       try {
-        // TODO: Replace with actual API call
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        const response = await axiosInstance.get(
+          `/v1/users/check-email?email=${encodeURIComponent(email)}`
+        );
 
         updateValidation('email', {
           checking: false,
-          valid: true,
-          message: '',
+          valid: response.data?.available !== false,
+          message: response.data?.available === false ? 'Email already registered' : '',
         });
       } catch (err) {
+        // Fail open; register 409 is the backstop.
+        console.error('[wizard] email availability check failed:', err);
         updateValidation('email', { checking: false, valid: true, message: '' });
       }
     }, 500),
@@ -789,36 +814,56 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
 const handleSubmit = async () => {
     setLoading(true);
     setError('');
+    setSubmitPhase(null);
+    setPartialSuccess(false);
 
     try {
-      let photoUrl = null;
+      let photoUrl: string | null = null;
 
-      // Step 1: Upload photo (endpoint doesn't require auth)
+      // ---- Phase 1: Photo upload (anonymous endpoint) ----
       const photoUri = formData.role === 'artist'
         ? formData.artistPhotoUri
         : formData.listenerPhotoUri;
 
       if (photoUri) {
-        console.log('Photo URI:', photoUri);
-        
-        const photoFormData = new FormData();
-        photoFormData.append('photo', {
-          uri: photoUri,
-          type: 'image/jpeg',
-          name: 'profile-photo.jpg',
-        } as any);
+        setSubmitPhase('uploading-photo');
+        try {
+          const photoFormData = new FormData();
+          photoFormData.append('photo', {
+            uri: photoUri,
+            type: 'image/jpeg',
+            name: 'profile-photo.jpg',
+          } as any);
 
-        console.log('Uploading photo...');
-        const photoResponse = await fetch('http://192.168.1.154:8080/api/v1/users/profile/photo', {
-          method: 'PATCH',
-          body: photoFormData,
-        });
-        const photoData = await photoResponse.json();
-        console.log('Photo response:', photoData);
-        photoUrl = photoData?.photoUrl;
+          const photoResponse = await axiosInstance.patch(
+            '/v1/users/profile/photo',
+            photoFormData
+          );
+          photoUrl = photoResponse.data?.photoUrl ?? null;
+        } catch (photoErr: any) {
+          const status = photoErr.response?.status;
+          const serverMsg = photoErr.response?.data?.message || '';
+          console.error('[wizard] photo upload failed:', { status, serverMsg, err: photoErr?.message });
+          let userMessage: string;
+          if (status === 413 || /size|large/i.test(serverMsg)) {
+            userMessage = "Your photo couldn't be uploaded — it's too large. Go back to the photo step and choose a smaller image.";
+          } else if (status === 415 || /type|format/i.test(serverMsg)) {
+            userMessage = 'Your photo format isn\'t supported. Go back and choose a JPG, PNG, WebP, or GIF.';
+          } else if (status === 408 || photoErr.code === 'ECONNABORTED') {
+            userMessage = 'The photo upload timed out — your connection may be slow. Try again or choose a smaller image.';
+          } else {
+            userMessage = `Your photo couldn't be uploaded (${serverMsg || 'server error'}). Go back and try a different image, or try again in a moment.`;
+          }
+          setError(userMessage);
+          setSubmitPhase(null);
+          setLoading(false);
+          return;
+        }
       }
 
-      // Step 2: Register user with photoUrl
+      // ---- Phase 2: Account registration (creates an UNVERIFIED account) ----
+      setSubmitPhase('creating-account');
+
       const registerPayload = {
         username: formData.username,
         email: formData.email,
@@ -829,55 +874,104 @@ const handleSubmit = async () => {
         referralCode: formData.referralCode,
         bio: formData.bio || null,
         genreId: formData.role === 'artist' ? formData.genreId : null,
-        photoUrl: photoUrl,
+        photoUrl,
+        dateOfBirth: formData.dateOfBirth || null,
+        gender: formData.gender || null,
+        themePreference: formData.themePreference || 'blue',
       };
 
-      console.log('Registering user...');
-      const registerResponse = await axiosInstance.post('/v1/users/register', registerPayload);
-      const newUser = registerResponse.data;
-      console.log('User registered:', newUser.userId);
-
-      // Step 3: Upload song if artist
-      if (formData.role === 'artist' && formData.songFileUri) {
-        const songData = {
-          title: formData.songTitle,
-          artistId: newUser.userId,
-          genreId: formData.genreId,
-          jurisdictionId: formData.jurisdictionId,
-        };
-
-        const songFormData = new FormData();
-        songFormData.append('song', JSON.stringify(songData));
-        songFormData.append('file', {
-          uri: formData.songFileUri,
-          type: 'audio/mpeg',
-          name: formData.songFileName || 'song.mp3',
-        } as any);
-
-        if (formData.songArtworkUri) {
-          songFormData.append('artwork', {
-            uri: formData.songArtworkUri,
-            type: 'image/jpeg',
-            name: 'artwork.jpg',
-          } as any);
+      let reg: any;
+      try {
+        const registerResponse = await axiosInstance.post('/v1/users/register', registerPayload);
+        reg = registerResponse.data; // { userId, role, signupToken, emailVerificationSent }
+      } catch (regErr: any) {
+        const serverMsg = regErr.response?.data?.message || '';
+        const status = regErr.response?.status;
+        console.error('[wizard] registration failed:', { status, serverMsg, err: regErr?.message });
+        let userMessage: string;
+        if (status === 409 || /already|taken|exists/i.test(serverMsg)) {
+          userMessage = 'An account with this email or username already exists. Go back and use different credentials.';
+        } else if (serverMsg) {
+          userMessage = `Account creation failed: ${serverMsg}`;
+        } else {
+          userMessage = 'Account creation failed due to a server error. Please try again in a moment.';
         }
-
-        console.log('Uploading song...');
-        const songResponse = await fetch('http://192.168.1.154:8080/api/v1/media/song', {
-          method: 'POST',
-          body: songFormData,
-        });
-        const songResult = await songResponse.json();
-        console.log('Song uploaded:', songResult);
+        setError(userMessage);
+        setSubmitPhase(null);
+        setLoading(false);
+        return;
       }
 
+      // ---- Phase 3: Artist debut song (token-authorized, NO login) ----
+      if (formData.role === 'artist' && formData.songFileUri) {
+        if (!reg.signupToken) {
+          console.warn('[wizard] account created but no signupToken returned; deferring debut-song upload to dashboard', { userId: reg.userId });
+          setPartialSuccess(true);
+          setVerificationEmail(formData.email);
+          setError("Your account was created, but we couldn't prepare the song upload. You can add your debut track from your dashboard after verifying your email.");
+          setSubmitPhase(null);
+          setLoading(false);
+          return;
+        }
+
+        setSubmitPhase('uploading-song');
+        try {
+          const songData = {
+            title: formData.songTitle,
+            genreId: formData.genreId,
+            jurisdictionId: formData.jurisdictionId,
+            isrc: formData.songIsrc || null,
+          };
+          const songFormData = new FormData();
+          songFormData.append('song', JSON.stringify(songData));
+          songFormData.append('file', {
+            uri: formData.songFileUri,
+            type: 'audio/mpeg',
+            name: formData.songFileName || 'song.mp3',
+          } as any);
+          if (formData.songArtworkUri) {
+            songFormData.append('artwork', {
+              uri: formData.songArtworkUri,
+              type: 'image/jpeg',
+              name: 'artwork.jpg',
+            } as any);
+          }
+
+          await axiosInstance.post(
+            `/v1/media/signup-song?signupToken=${encodeURIComponent(reg.signupToken)}`,
+            songFormData
+          );
+        } catch (songErr: any) {
+          const serverMsg = songErr.response?.data?.message || '';
+          const status = songErr.response?.status;
+          console.error('[wizard] debut-song upload failed (account already created):', { status, serverMsg, err: songErr?.message });
+          setPartialSuccess(true);
+          setVerificationEmail(formData.email);
+          let detail: string;
+          if (status === 413 || /size|large/i.test(serverMsg)) {
+            detail = 'The audio file was too large.';
+          } else if (serverMsg) {
+            detail = serverMsg;
+          } else {
+            detail = 'a server error occurred';
+          }
+          setError(`Your account was created! However, your song couldn't be uploaded (${detail}). You can upload it from your dashboard after verifying your email.`);
+          setSubmitPhase(null);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // ---- All phases succeeded — account created, verification email sent ----
+      console.info('[wizard] account created (unverified); verification email sent', { role: reg.role, userId: reg.userId, songUploaded: formData.role === 'artist' && !!formData.songFileUri });
+      setVerificationEmail(formData.email);
+      setSubmitPhase(null);
       setSuccess(true);
-      setTimeout(() => {
-        onSuccess();
-      }, 1500);
+      // No auto-login: the user must verify their email before signing in.
     } catch (err: any) {
-      console.error('Registration failed:', err.response?.data || err.message);
-      setError(err.response?.data?.message || err.message || 'Registration failed. Please try again.');
+      console.error('[wizard] unexpected submit failure:', err?.message || err);
+      setSubmitPhase(null);
+      setError(err.response?.data?.message || 'Something unexpected went wrong. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -912,6 +1006,10 @@ const handleSubmit = async () => {
       agreedToArtistTerms: false,
       address: '',
       detectingLocation: false,
+      dateOfBirth: null,
+      gender: null,
+      themePreference: 'blue',
+      songIsrc: '',
     });
     setValidation({
       referralCode: { checking: false, valid: null, message: '' },
@@ -922,6 +1020,9 @@ const handleSubmit = async () => {
     });
     setError('');
     setSuccess(false);
+    setPartialSuccess(false);
+    setVerificationEmail('');
+    setSubmitPhase(null);
     onClose();
   };
 
@@ -1745,14 +1846,37 @@ const handleSubmit = async () => {
 
       // ========== REVIEW STEP ==========
       case 'review':
-        if (success) {
+        if (success || partialSuccess) {
           return (
             <View style={styles.successAnimation}>
-              <View style={styles.checkmarkCircle}>
+              <View
+                style={[
+                  styles.checkmarkCircle,
+                  partialSuccess && { backgroundColor: COLORS.warningAmber },
+                ]}
+              >
                 <Check size={40} color={COLORS.accentWhite} />
               </View>
-              <Text style={styles.successTitle}>Welcome to Unis!</Text>
-              <Text style={styles.successSubtitle}>Your account has been created.</Text>
+              <Text style={styles.successTitle}>
+                {partialSuccess ? 'Account created' : 'Check your email'}
+              </Text>
+              {partialSuccess ? (
+                <Text style={styles.successSubtitle}>{error}</Text>
+              ) : (
+                <Text style={styles.successSubtitle}>
+                  We sent a verification link to{' '}
+                  <Text style={{ color: COLORS.accentWhite }}>{verificationEmail}</Text>. Verify
+                  your email, then sign in to start using Unis.
+                </Text>
+              )}
+              <TouchableOpacity
+                style={[styles.primaryNavButton, { marginTop: 24, alignSelf: 'stretch' }]}
+                onPress={onSuccess}
+                accessibilityRole="button"
+                accessibilityLabel="Continue to sign in"
+              >
+                <Text style={styles.primaryNavButtonText}>Go to Sign In</Text>
+              </TouchableOpacity>
             </View>
           );
         }
@@ -1947,8 +2071,8 @@ const handleSubmit = async () => {
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              {/* Error Alert */}
-              {error ? (
+              {/* Error Alert — hidden on the success/partial-success screen (message shown there) */}
+              {error && !success && !partialSuccess ? (
                 <View style={[styles.alertBox, styles.alertError]}>
                   <AlertCircle size={20} color={COLORS.errorRed} />
                   <View style={styles.alertContent}>
@@ -1968,7 +2092,7 @@ const handleSubmit = async () => {
             </ScrollView>
 
             {/* Navigation Buttons */}
-            {!success && (
+            {!success && !partialSuccess && (
               <View style={styles.navigation}>
                 {currentStep > 1 && (
                   <TouchableOpacity style={styles.secondaryNavButton} onPress={goBack}>
@@ -2000,7 +2124,16 @@ const handleSubmit = async () => {
                     disabled={!canProceed() || loading}
                   >
                     {loading ? (
-                      <ActivityIndicator size="small" color={COLORS.accentWhite} />
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <ActivityIndicator size="small" color={COLORS.accentWhite} />
+                        <Text style={styles.primaryNavButtonText}>
+                          {submitPhase === 'uploading-photo'
+                            ? 'Uploading photo…'
+                            : submitPhase === 'uploading-song'
+                            ? 'Uploading song…'
+                            : 'Creating account…'}
+                        </Text>
+                      </View>
                     ) : (
                       <>
                         <Text style={styles.primaryNavButtonText}>Create Account</Text>
