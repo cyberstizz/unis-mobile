@@ -35,7 +35,7 @@ import ChangePasswordWizard from '../components/Changepasswordwizard';
 
 // ── New profile-summary sections (ported with this screen) ──────────────────
 import ReferralCodeCard from '../components/ReferralCodeCard';
-import SocialLinksSection from '../components/SocialLinksSection';
+import SocialLinksSection from '../components/SocialLinkssection';
 import ThemePicker from '../components/ThemePicker';
 import AccountSettings from '../components/AccountSettings';
 import CollapsibleSection from '../components/CollapsibleSection';
