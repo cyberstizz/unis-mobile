@@ -1,46 +1,54 @@
-import React, { useState, useEffect } from 'react';
+// src/screens/ProfileScreen.tsx
+// Ported from web `profile.jsx` (production version).
+//
+// Profile — single fetch, single error boundary, single source of truth.
+//
+// Core data comes from GET /v1/users/profile-summary/{userId}. Vote history is
+// owned by VoteHistorySection (its own /v1/vote/history fetch) because the
+// summary can't cheaply resolve nominee names/images.
+//
+// URL building uses the shared buildUrl utility (R2/CDN aware).
+
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Image,
-  TouchableOpacity,
-  TextInput,
-  Dimensions,
-  ActivityIndicator,
   ImageBackground,
-  Modal,
-  Pressable,
+  TouchableOpacity,
+  ActivityIndicator,
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
-import {
-  Play,
-  Heart,
-  Edit3,
-  Trash2,
-  User,
-  Music,
-  History,
-} from 'lucide-react-native';
+import { Play, Edit3, Trash2, Clock, Heart } from 'lucide-react-native';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import axiosInstance from '../services/axiosInstance';
+import buildUrl from '../utils/buildUrl';
 
 // ── Wizards (exact filenames from repo) ──────────────────────────────────────
 import Editprofilewizard from '../components/Editprofilewizard';
 import DeleteAccountWizard from '../components/DeleteAccountWizard';
 import ChangePasswordWizard from '../components/Changepasswordwizard';
 
+// ── New profile-summary sections (ported with this screen) ──────────────────
+import ReferralCodeCard from '../components/ReferralCodeCard';
+import SocialLinksSection from '../components/SocialLinksSection';
+import ThemePicker from '../components/ThemePicker';
+import AccountSettings from '../components/AccountSettings';
+import CollapsibleSection from '../components/CollapsibleSection';
+import VoteHistorySection from '../components/VoteHistorySection';
+import SupportedArtistPicker from '../components/SupportedArtistPicker';
+import VerificationGate from '../components/VerificationGate';
+
 // ============================================================================
-// COLORS & SIZES
+// COLORS
 // ============================================================================
 const COLORS = {
   bgBlack: '#000000',
   cardBg: 'rgba(255, 255, 255, 0.03)',
-  cardBgHover: 'rgba(255, 255, 255, 0.05)',
   borderSubtle: 'rgba(255, 255, 255, 0.08)',
   textWhite: '#FFFFFF',
   textSilver: '#CCCCCC',
@@ -49,540 +57,819 @@ const COLORS = {
   unisBlue: '#004aad',
   unisBlueBright: '#4a9eff',
   dangerRed: '#dc3545',
-  dangerRedHover: '#c82333',
+  errorRed: '#f87171',
 };
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 768;
-
 // ============================================================================
-// INTERFACES
+// INTERFACES — mirror ProfileSummaryDto
 // ============================================================================
-interface UserProfile {
+interface SummaryProfile {
   userId: string;
   username: string;
   bio?: string;
-  photoUrl: string | null;
+  photoUrl?: string | null;
   score?: number;
   level?: string;
-  supportedArtistId?: string;
-  instagramUrl?: string;
-  twitterUrl?: string;
-  tiktokUrl?: string;
+  role?: string; // 'artist' | 'listener'
+  instagramUrl?: string | null;
+  twitterUrl?: string | null;
+  tiktokUrl?: string | null;
 }
 
-interface SupportedArtist {
+interface SummaryDefaultSong {
+  songId: string;
+  title: string;
+  fileUrl?: string | null;
+  artworkUrl?: string | null;
+}
+
+interface SummarySupportedArtist {
   userId: string;
   username: string;
-  photoUrl: string | null;
-  defaultSong?: {
-    songId: string;
-    title: string;
-    fileUrl: string | null;
-    artworkUrl: string | null;
-  };
+  photoUrl?: string | null;
+  defaultSong?: SummaryDefaultSong | null;
 }
 
-interface VoteHistoryItem {
-  id: number;
-  targetName: string;
-  targetType: string;
-  createdAt: string;
+interface SummaryPendingArtist {
+  userId: string;
+  username: string;
+  effectiveDate?: string;
 }
+
+interface ProfileSummary {
+  profile: SummaryProfile;
+  supportedArtist?: SummarySupportedArtist | null;
+  pendingSupportedArtist?: SummaryPendingArtist | null;
+  voteHistory?: { totalCount?: number } | null;
+  referralCode?: string;
+  settings?: {
+    emailNotifications?: boolean;
+    publicProfile?: boolean;
+    showVoteHistory?: boolean;
+  } | null;
+}
+
+// ============================================================================
+// Inline section UI helpers (SectionLoader / SectionError from web)
+// ============================================================================
+const SectionLoader: React.FC<{ label?: string }> = ({ label = 'Loading...' }) => (
+  <View style={styles.sectionState}>
+    <ActivityIndicator size="large" color={COLORS.unisBlueBright} />
+    <Text style={styles.sectionStateText}>{label}</Text>
+  </View>
+);
+
+const SectionError: React.FC<{ message?: string; onRetry?: () => void }> = ({
+  message = 'Failed to load.',
+  onRetry,
+}) => (
+  <View style={styles.sectionState}>
+    <Text style={styles.sectionErrorText}>{message}</Text>
+    {onRetry && (
+      <TouchableOpacity style={styles.retryBtn} onPress={onRetry}>
+        <Text style={styles.retryBtnText}>Retry</Text>
+      </TouchableOpacity>
+    )}
+  </View>
+);
 
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 const ProfileScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
-  const { playMedia } = usePlayer();
   const { user } = useAuth();
+  const { requestPlay } = usePlayer();
 
-  const [showChangePassword, setShowChangePassword] = useState(false);
-
-  // State
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [supportedArtist, setSupportedArtist] = useState<SupportedArtist | null>(null);
-  const [voteHistory, setVoteHistory] = useState<VoteHistoryItem[]>([]);
+  const [summary, setSummary] = useState<ProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Social media
-  const [instagramUrl, setInstagramUrl] = useState('');
-  const [twitterUrl, setTwitterUrl] = useState('');
-  const [tiktokUrl, setTiktokUrl] = useState('');
+  // ---- UI state ---------------------------------------------------------
+  const [showEditWizard, setShowEditWizard] = useState(false);
+  const [showDeleteWizard, setShowDeleteWizard] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showArtistPicker, setShowArtistPicker] = useState(false);
 
-  // Modals
-  const [showVoteHistory, setShowVoteHistory] = useState(false);
+  // ---- Pending supported-artist cancel state ----------------------------
+  const [cancellingPending, setCancellingPending] = useState(false);
 
-  // Wizard visibility
-  const [showEditProfile, setShowEditProfile] = useState(false);
-  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
-
-  const fallbackImage = require('../../assets/randomrapper.jpeg');
-
-  // ============================================================================
-  // DATA FETCHING
-  // ============================================================================
-  const refreshProfile = async () => {
-    if (!user?.userId) return;
+  // -----------------------------------------------------------------------
+  // Single consolidated fetch
+  // -----------------------------------------------------------------------
+  const fetchSummary = useCallback(async (userId: string) => {
+    if (!userId) return;
+    const startedAt = Date.now();
+    setLoading(true);
+    setError(null);
     try {
-      const res = await axiosInstance.get(`/v1/users/profile/${user.userId}`);
-      setUserProfile(res.data);
-      setInstagramUrl(res.data.instagramUrl || '');
-      setTwitterUrl(res.data.twitterUrl || '');
-      setTiktokUrl(res.data.tiktokUrl || '');
+      const res = await axiosInstance.get(`/v1/users/profile-summary/${userId}`);
+      setSummary(res.data);
+      console.log(`[Profile] action=fetch_summary userId=${userId} status=ok durationMs=${Date.now() - startedAt}`);
     } catch (err) {
-      console.error('Failed to refresh profile:', err);
+      console.error(`[Profile] action=fetch_summary userId=${userId} status=fail durationMs=${Date.now() - startedAt} err=`, err);
+      setError('Failed to load your profile. Please try again.');
+    } finally {
+      setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
+    if (user?.userId) fetchSummary(user.userId);
+  }, [user?.userId, fetchSummary]);
+
+  // After a profile mutation, children call this to refresh the summary.
+  const reload = useCallback(() => {
+    if (user?.userId) fetchSummary(user.userId);
+  }, [user?.userId, fetchSummary]);
+
+  // Cancel a queued supported-artist change.
+  const cancelPendingArtist = async () => {
     if (!user?.userId) return;
-
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        // FIX: Use Promise.all so setLoading(false) only fires after ALL requests resolve.
-        // Previously, .then() chains were fired off without being awaited, so the finally
-        // block ran immediately — causing a race condition where the screen could flash
-        // "Please log in" or render with stale/empty data.
-        const [profileRes, voteRes] = await Promise.all([
-          axiosInstance.get(`/v1/users/profile/${user.userId}`),
-          axiosInstance.get('/v1/vote/history?limit=50'),
-        ]);
-
-        // Set profile data
-        const profileData = profileRes.data;
-        setUserProfile(profileData);
-        setInstagramUrl(profileData.instagramUrl || '');
-        setTwitterUrl(profileData.twitterUrl || '');
-        setTiktokUrl(profileData.tiktokUrl || '');
-
-        // Set vote history
-        setVoteHistory(voteRes.data || []);
-
-        // Fetch supported artist if present (sequential since it depends on profile data)
-        if (profileData.supportedArtistId) {
-          try {
-            const artistRes = await axiosInstance.get(`/v1/users/profile/${profileData.supportedArtistId}`);
-            setSupportedArtist(artistRes.data);
-          } catch (err) {
-            console.error('Failed to fetch supported artist:', err);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load profile data:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [user?.userId]);
-
-  // ============================================================================
-  // HANDLERS
-  // ============================================================================
-  const handleSaveSocialMedia = async (platform: string, url: string) => {
+    setCancellingPending(true);
+    const startedAt = Date.now();
     try {
-      await axiosInstance.put(`/v1/users/profile/${user!.userId}`, {
-        [`${platform}Url`]: url,
-      });
-      await refreshProfile();
+      await axiosInstance.delete(`/v1/users/${user.userId}/supported-artist/pending`);
+      console.log(`[Profile] action=cancel_pending_artist status=ok durationMs=${Date.now() - startedAt}`);
+      reload();
     } catch (err) {
-      console.error('Failed to update social media:', err);
-      Alert.alert('Error', 'Failed to update link. Please try again.');
+      console.error(`[Profile] action=cancel_pending_artist status=fail durationMs=${Date.now() - startedAt} err=`, err);
+      Alert.alert('Error', 'Failed to cancel the pending change. Please try again.');
+    } finally {
+      setCancellingPending(false);
     }
   };
 
-  const handlePlaySupportedArtist = async () => {
-    if (!supportedArtist?.defaultSong) {
-      Alert.alert('No Song', 'This artist has not set a featured song yet.');
-      return;
-    }
-    const song = supportedArtist.defaultSong;
-    const songId = (song as any).songId || (song as any).id;
-    const songUrl = getMediaUrl(song.fileUrl);
-    const artworkUrl = getMediaUrl(song.artworkUrl) || getMediaUrl(supportedArtist.photoUrl);
-    if (!songUrl) { Alert.alert('Unavailable', 'Song file not available.'); return; }
-    playMedia(
-      { type: 'song', url: songUrl, title: song.title, artist: supportedArtist.username, artwork: artworkUrl } as any,
-      []
-    );
-    if (songId && user?.userId) {
-      try {
-        await axiosInstance.post(`/v1/media/song/${songId}/play?userId=${user.userId}`);
-      } catch (err) {
-        console.error('Failed to track play:', err);
-      }
-    }
-  };
-
-  const handleViewArtist = () => {
-    if (supportedArtist) {
-      navigation.navigate('Artist', { artistId: supportedArtist.userId });
-    }
-  };
-
-  // ============================================================================
-  // LOADING STATE
-  // ============================================================================
-  if (loading) {
+  // -----------------------------------------------------------------------
+  // Early returns
+  // -----------------------------------------------------------------------
+  if (!user) {
     return (
-      <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-        <LinearGradient colors={['rgba(0,0,0,0.8)', COLORS.bgBlack]} style={styles.gradientOverlay}>
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={COLORS.unisBlue} />
-            <Text style={styles.loadingText}>Loading your profile...</Text>
-          </View>
-        </LinearGradient>
-      </ImageBackground>
-    );
-  }
-
-  if (!userProfile) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Please log in to view your profile.</Text>
+      <View style={[styles.screen, styles.center]}>
+        <Text style={styles.fullscreenMsg}>Please log in.</Text>
       </View>
     );
   }
 
-  const displayPhoto = userProfile.photoUrl
-    ? { uri: getMediaUrl(userProfile.photoUrl) }
-    : fallbackImage;
+  if (loading) {
+    return (
+      <View style={[styles.screen, styles.center]}>
+        <SectionLoader label="Loading your profile..." />
+      </View>
+    );
+  }
 
-  // ============================================================================
-  // MAIN RENDER
-  // ============================================================================
+  if (error || !summary) {
+    return (
+      <View style={[styles.screen, styles.center]}>
+        <SectionError
+          message={error || 'No profile data.'}
+          onRetry={() => fetchSummary(user.userId)}
+        />
+      </View>
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Derived display values — all URL building goes through buildUrl
+  // -----------------------------------------------------------------------
+  const { profile, supportedArtist, pendingSupportedArtist, voteHistory, referralCode, settings } = summary;
+
+  const photoUrl = buildUrl(profile.photoUrl);
+  const userInitial = (profile.username || '?').charAt(0).toUpperCase();
+
+  // Show the ARTIST for clarity: prefer the artist's own photo, fall back to
+  // the default song's artwork only if the artist has no photo. The default
+  // song still PLAYS unchanged — this only affects the hero image.
+  const featuredArt = supportedArtist
+    ? (buildUrl(supportedArtist.photoUrl) ||
+       buildUrl(supportedArtist.defaultSong?.artworkUrl))
+    : null;
+
+  const featuredTitle = supportedArtist?.defaultSong?.title || supportedArtist?.username;
+  const hasPlayableSong = Boolean(supportedArtist?.defaultSong);
+
+  // Pending-change display
+  const pendingEffective = pendingSupportedArtist?.effectiveDate
+    ? new Date(pendingSupportedArtist.effectiveDate).toLocaleDateString(undefined, {
+        month: 'long', day: 'numeric',
+      })
+    : null;
+
+  // -----------------------------------------------------------------------
+  // Actions
+  // -----------------------------------------------------------------------
+  const playDefaultSong = async () => {
+    if (!supportedArtist?.defaultSong) {
+      console.warn('[Profile] action=play_default status=skip reason=no_song');
+      return;
+    }
+    const song = supportedArtist.defaultSong;
+    const songId = song.songId;
+    const songUrl = buildUrl(song.fileUrl);
+    const artworkResolved = buildUrl(song.artworkUrl) || buildUrl(supportedArtist.photoUrl) || photoUrl;
+
+    const mediaObject = {
+      type: 'song',
+      id: songId,
+      songId,
+      url: songUrl,
+      fileUrl: songUrl,
+      title: song.title,
+      artist: supportedArtist.username,
+      artistName: supportedArtist.username,
+      artistId: supportedArtist.userId,
+      artwork: artworkResolved,
+      artworkUrl: artworkResolved,
+    };
+
+    try {
+      await axiosInstance.post(`/v1/media/song/${songId}/play?userId=${user.userId}`);
+    } catch (err) {
+      console.error('[Profile] action=track_play status=fail err=', err);
+    }
+
+    // requestPlay: empty queue -> plays immediately,
+    //              non-empty   -> opens PlayChoiceModal (preserves queue)
+    requestPlay(mediaObject as any);
+  };
+
+  // -----------------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------------
   return (
-    <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-      <LinearGradient colors={['rgba(0,0,0,0.8)', COLORS.bgBlack]} style={styles.gradientOverlay}>
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
 
-          {/* ── Profile Header ── */}
-          <View style={styles.card}>
-            <View style={styles.profileHeader}>
-              <Image source={displayPhoto} style={styles.profileImage} />
-              <Text style={styles.profileName}>{userProfile.username}</Text>
-              <Text style={styles.profileBio}>
-                {userProfile.bio || 'No bio yet — tell Harlem who you are!'}
-              </Text>
-              <TouchableOpacity
-                style={styles.editButton}
-                onPress={() => setShowEditProfile(true)}
+        {/* ============== HERO ============== */}
+        <View style={styles.hero}>
+          <Text style={styles.heroEyebrow}>
+            Member · {profile.level || 'Silver'} Tier
+          </Text>
+
+          <View style={styles.heroIdentity}>
+            {photoUrl ? (
+              <Image
+                source={{ uri: photoUrl }}
+                style={styles.heroAvatar}
+                onError={() =>
+                  console.warn('[Profile] action=load_photo status=fail src=', photoUrl)
+                }
+                accessibilityLabel={`${profile.username}'s profile photo`}
+              />
+            ) : (
+              <View
+                style={[styles.heroAvatar, styles.heroAvatarPlaceholder]}
+                accessibilityLabel={`${profile.username}'s profile photo placeholder`}
               >
-                <Edit3 size={16} color={COLORS.textWhite} />
-                <Text style={styles.editButtonText}>Edit Profile</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* ── Supported Artist ── */}
-          {supportedArtist && (
-            <View style={styles.card}>
-              <View style={styles.sectionHeader}>
-                <Heart size={20} color={COLORS.unisBlue} />
-                <Text style={styles.sectionTitle}>I Support</Text>
-              </View>
-              <View style={styles.supportedArtistCard}>
-                <TouchableOpacity onPress={handleViewArtist}>
-                  <Image
-                    source={supportedArtist.photoUrl ? { uri: getMediaUrl(supportedArtist.photoUrl) } : fallbackImage}
-                    style={styles.artistPhoto}
-                  />
-                </TouchableOpacity>
-                <View style={styles.artistInfo}>
-                  <TouchableOpacity onPress={handleViewArtist}>
-                    <Text style={styles.artistName}>{supportedArtist.username}</Text>
-                  </TouchableOpacity>
-                  {supportedArtist.defaultSong ? (
-                    <View style={styles.defaultSongSection}>
-                      <View style={styles.songDetails}>
-                        <Music size={16} color={COLORS.unisBlue} />
-                        <View style={styles.songText}>
-                          <Text style={styles.songTitle}>{supportedArtist.defaultSong.title}</Text>
-                          <Text style={styles.songLabel}>Featured Track</Text>
-                        </View>
-                      </View>
-                      <TouchableOpacity style={styles.playButton} onPress={handlePlaySupportedArtist}>
-                        <Play size={20} color={COLORS.textWhite} fill={COLORS.textWhite} />
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <Text style={styles.noSongText}>No featured song set</Text>
-                  )}
-                </View>
-              </View>
-            </View>
-          )}
-
-          {/* ── Stats Grid ── */}
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Music size={28} color={COLORS.unisBlue} />
-              <Text style={styles.statLabel}>Score</Text>
-              <Text style={styles.statValue}>{(userProfile.score || 0).toLocaleString()}</Text>
-            </View>
-            <View style={styles.statCard}>
-              <User size={28} color={COLORS.unisBlue} />
-              <Text style={styles.statLabel}>Level</Text>
-              <Text style={styles.statValue}>{userProfile.level || 'Silver'}</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Heart size={28} color={COLORS.unisBlue} />
-              <Text style={styles.statLabel}>Total Votes</Text>
-              <Text style={styles.statValue}>{voteHistory.length}</Text>
-            </View>
-          </View>
-
-          {/* ── Vote History ── */}
-          <View style={styles.card}>
-            <View style={styles.voteHistoryHeader}>
-              <View style={styles.sectionHeader}>
-                <History size={20} color={COLORS.unisBlue} />
-                <Text style={styles.sectionTitle}>Vote History</Text>
-              </View>
-              <TouchableOpacity style={styles.viewAllButton} onPress={() => setShowVoteHistory(true)}>
-                <Text style={styles.viewAllButtonText}>View All</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.voteSummary}>
-              <View style={styles.voteStatBox}>
-                <Text style={styles.voteCount}>{voteHistory.length}</Text>
-                <Text style={styles.voteLabel}>Total Votes</Text>
-              </View>
-              <Text style={styles.voteCta}>
-                {voteHistory.length > 0
-                  ? 'See your complete voting history'
-                  : 'No votes yet — go support your favorites!'}
-              </Text>
-            </View>
-            {/* Recent 3 preview */}
-            {voteHistory.length > 0 && (
-              <View style={styles.recentVotes}>
-                <Text style={styles.recentVotesLabel}>Recent</Text>
-                {voteHistory.slice(0, 3).map((vote, index) => (
-                  <View key={vote.id || index} style={styles.votePreviewItem}>
-                    <Text style={styles.votePreviewName} numberOfLines={1}>{vote.targetName}</Text>
-                    <Text style={styles.votePreviewType}>{vote.targetType}</Text>
-                  </View>
-                ))}
+                <Text style={styles.heroAvatarInitial}>{userInitial}</Text>
               </View>
             )}
-          </View>
-
-          {/* ── Social Media Links ── */}
-          <View style={styles.card}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Social Media Links</Text>
-            </View>
-            <View style={styles.socialLinksEdit}>
-              {[
-                { label: '📷 Instagram', value: instagramUrl, setter: setInstagramUrl, platform: 'instagram', placeholder: 'https://instagram.com/yourprofile' },
-                { label: '𝕏 Twitter / X', value: twitterUrl, setter: setTwitterUrl, platform: 'twitter', placeholder: 'https://twitter.com/yourprofile' },
-                { label: '🎵 TikTok', value: tiktokUrl, setter: setTiktokUrl, platform: 'tiktok', placeholder: 'https://tiktok.com/@yourprofile' },
-              ].map(({ label, value, setter, platform, placeholder }) => (
-                <View key={platform} style={styles.socialLinkItem}>
-                  <Text style={styles.socialLabel}>{label}</Text>
-                  <TextInput
-                    style={styles.socialInput}
-                    placeholder={placeholder}
-                    placeholderTextColor={COLORS.textMuted}
-                    value={value}
-                    onChangeText={setter}
-                    onBlur={() => handleSaveSocialMedia(platform, value)}
-                    autoCapitalize="none"
-                    keyboardType="url"
-                  />
-                </View>
-              ))}
+            <View style={styles.heroIdentityText}>
+              <Text style={styles.heroDisplayName}>{profile.username}</Text>
+              <Text style={styles.heroTagline}>
+                {profile.bio || 'No bio yet — tell Harlem who you are!'}
+              </Text>
             </View>
           </View>
 
-          {/* ── Danger Zone ── */}
-          <View style={styles.dangerZone}>
-            <View style={styles.dangerContent}>
-              <Text style={styles.dangerTitle}>Danger Zone</Text>
-              <Text style={styles.dangerText}>This cannot be undone.</Text>
-              <TouchableOpacity
-                style={styles.changePasswordButton}
-                onPress={() => setShowChangePassword(true)}
-              >
-                <Text style={styles.changePasswordButtonText}>Change Password</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.deleteButton}
-                onPress={() => setShowDeleteAccount(true)}
-              >
-                <Trash2 size={16} color={COLORS.textWhite} />
-                <Text style={styles.deleteButtonText}>Delete Account</Text>
-              </TouchableOpacity>
+          <View style={styles.heroStats}>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>Score</Text>
+              <Text style={styles.heroStatValue}>{profile.score || 0}</Text>
+            </View>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>Tier</Text>
+              <Text style={[styles.heroStatValue, styles.heroStatValueTier]}>
+                {profile.level || 'Silver'}
+              </Text>
+            </View>
+            <View style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>Total Votes</Text>
+              <Text style={styles.heroStatValue}>{voteHistory?.totalCount ?? 0}</Text>
             </View>
           </View>
 
-          <View style={{ height: 120 }} />
-        </ScrollView>
+          <TouchableOpacity
+            style={[styles.btn, styles.btnPrimary, styles.heroCta]}
+            onPress={() => setShowEditWizard(true)}
+          >
+            <Edit3 size={14} color={COLORS.textWhite} />
+            <Text style={styles.btnText}>Edit Profile</Text>
+          </TouchableOpacity>
+        </View>
 
-        {/* ── Vote History Modal ── */}
-        <Modal visible={showVoteHistory} transparent animationType="slide">
-          <Pressable style={styles.modalOverlay} onPress={() => setShowVoteHistory(false)}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Vote History</Text>
-                <TouchableOpacity onPress={() => setShowVoteHistory(false)}>
-                  <Text style={styles.modalClose}>✕</Text>
+        {/* ============== FEATURED (supported artist) ============== */}
+        {supportedArtist && featuredArt ? (
+          <ImageBackground
+            source={{ uri: featuredArt }}
+            style={styles.featured}
+            imageStyle={styles.featuredImage}
+            accessibilityLabel={`Supporting ${supportedArtist.username}`}
+          >
+            <LinearGradient
+              colors={['rgba(0,0,0,0.25)', 'rgba(0,0,0,0.85)']}
+              style={styles.featuredOverlay}
+            />
+            <View style={styles.featuredContent}>
+              <Text style={styles.featuredTag}>You support</Text>
+              <Text style={styles.featuredTitle}>{supportedArtist.username}</Text>
+              <Text style={styles.featuredSub}>
+                {hasPlayableSong
+                  ? `Featured track: ${featuredTitle}`
+                  : 'No featured track yet'}
+              </Text>
+
+              <View style={styles.featuredActions}>
+                {hasPlayableSong && (
+                  <TouchableOpacity style={styles.featuredCta} onPress={playDefaultSong}>
+                    <Play size={12} color={COLORS.bgBlack} fill={COLORS.bgBlack} />
+                    <Text style={styles.featuredCtaText}>Listen</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.featuredChange}
+                  onPress={() => setShowArtistPicker(true)}
+                >
+                  <Text style={styles.featuredChangeText}>Change</Text>
                 </TouchableOpacity>
               </View>
-              <ScrollView style={styles.modalBody}>
-                {voteHistory.length > 0 ? (
-                  voteHistory.map((vote, index) => (
-                    <View key={vote.id || index} style={styles.voteItem}>
-                      <View style={styles.voteInfo}>
-                        <Text style={styles.voteTargetName}>{vote.targetName}</Text>
-                        <Text style={styles.voteTargetType}>{vote.targetType}</Text>
-                      </View>
-                      <Text style={styles.voteDate}>{vote.createdAt}</Text>
-                    </View>
-                  ))
-                ) : (
-                  <Text style={styles.emptyText}>No votes yet — go support your favorites!</Text>
-                )}
-              </ScrollView>
-              <TouchableOpacity style={styles.modalCloseButton} onPress={() => setShowVoteHistory(false)}>
-                <Text style={styles.modalCloseButtonText}>Close</Text>
+
+              {pendingSupportedArtist && (
+                <View style={styles.pending}>
+                  <Clock size={12} color={COLORS.textSilver} />
+                  <Text style={styles.pendingText}>
+                    Switching to{' '}
+                    <Text style={styles.pendingStrong}>{pendingSupportedArtist.username}</Text>
+                    {pendingEffective ? ` on ${pendingEffective}` : ''}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.pendingCancel}
+                    onPress={cancelPendingArtist}
+                    disabled={cancellingPending}
+                  >
+                    <Text style={styles.pendingCancelText}>
+                      {cancellingPending ? 'Cancelling…' : 'Cancel'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          </ImageBackground>
+        ) : (
+          <View style={[styles.featured, styles.featuredEmpty]}>
+            <View style={styles.featuredContent}>
+              <Text style={styles.featuredTag}>You support</Text>
+              <Text style={styles.featuredTitle}>No artist yet</Text>
+              <Text style={styles.featuredSub}>
+                Find an artist whose voice you want to amplify.
+              </Text>
+              <TouchableOpacity
+                style={[styles.featuredCta, styles.featuredCtaEmpty]}
+                onPress={() => setShowArtistPicker(true)}
+              >
+                <Heart size={12} color={COLORS.bgBlack} />
+                <Text style={styles.featuredCtaText}>Choose an artist</Text>
               </TouchableOpacity>
             </View>
-          </Pressable>
-        </Modal>
+          </View>
+        )}
 
-        {/* ── EditProfileWizard ── */}
+        {/* ============== VOTE HISTORY ============== */}
+        <CollapsibleSection
+          id="vote-history"
+          eyebrow="Your Activity"
+          title="Vote history"
+        >
+          <VoteHistorySection userId={user.userId} />
+        </CollapsibleSection>
+
+        {/* ============== REFERRAL ============== */}
+        <CollapsibleSection
+          id="referral"
+          eyebrow="Grow the network"
+          title="Refer & earn"
+        >
+          <VerificationGate title="Verify your phone to refer & earn">
+            <ReferralCodeCard
+              referralCode={referralCode}
+              username={profile.username}
+              isArtist={profile.role === 'artist'}
+            />
+          </VerificationGate>
+        </CollapsibleSection>
+
+        {/* ============== SOCIAL LINKS ============== */}
+        <CollapsibleSection
+          id="social-links"
+          eyebrow="Find me online"
+          title="Social links"
+        >
+          <SocialLinksSection
+            userId={user.userId}
+            profile={profile}
+            onUpdated={reload}
+          />
+        </CollapsibleSection>
+
+        {/* ============== PREFERENCES ============== */}
+        <CollapsibleSection
+          id="theme"
+          eyebrow="Personalization"
+          title="Color theme"
+        >
+          {/*
+            ThemePicker keeps its useAuth()-based state (theme/setTheme were
+            added to the mobile AuthContext as part of this port). Theme lives
+            in AuthContext, not in the profile summary, so it was never part
+            of the fetch waterfall.
+          */}
+          <ThemePicker userId={user.userId} />
+        </CollapsibleSection>
+
+        {/* ============== ACCOUNT (toggles) ============== */}
+        <CollapsibleSection
+          id="account"
+          eyebrow="Account"
+          title="Notifications & privacy"
+        >
+          <AccountSettings
+            userId={user.userId}
+            settings={settings}
+            onUpdated={reload}
+          />
+        </CollapsibleSection>
+
+        {/* ============== DANGER ZONE ============== */}
+        <View style={styles.danger}>
+          <Text style={styles.dangerHeading}>Danger zone</Text>
+          <Text style={styles.dangerText}>
+            Change your password or permanently delete your account. Deletion cannot be undone.
+          </Text>
+          <View style={styles.dangerActions}>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnGhost]}
+              onPress={() => setShowChangePassword(true)}
+            >
+              <Text style={styles.btnText}>Change Password</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnDanger]}
+              onPress={() => setShowDeleteWizard(true)}
+              accessibilityLabel="Delete account permanently"
+            >
+              <Trash2 size={14} color={COLORS.textWhite} />
+              <Text style={styles.btnText}>Delete Account</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+      </ScrollView>
+
+      {/* ============== WIZARDS / MODALS ============== */}
+      {showEditWizard && (
         <Editprofilewizard
-          visible={showEditProfile}
-          onClose={() => setShowEditProfile(false)}
+          visible={showEditWizard}
+          onClose={() => setShowEditWizard(false)}
           onSuccess={() => {
-            refreshProfile();
-            setShowEditProfile(false);
+            setShowEditWizard(false);
+            reload();
           }}
           user={{
-            userId: user!.userId,
-            username: userProfile.username,
-            bio: userProfile.bio,
-            photoUrl: userProfile.photoUrl,
+            userId: profile.userId,
+            username: profile.username,
+            bio: profile.bio,
+            photoUrl: profile.photoUrl || null,
           }}
-          isArtist={false}
+          isArtist={profile.role === 'artist'}
         />
+      )}
 
-        {/* ── DeleteAccountWizard ── */}
+      {showDeleteWizard && (
         <DeleteAccountWizard
-          visible={showDeleteAccount}
-          onClose={() => setShowDeleteAccount(false)}
+          visible={showDeleteWizard}
+          onClose={() => setShowDeleteWizard(false)}
         />
+      )}
 
-        <ChangePasswordWizard
-          visible={showChangePassword}
-          onClose={() => setShowChangePassword(false)}
-        />
+      <ChangePasswordWizard
+        visible={showChangePassword}
+        onClose={() => setShowChangePassword(false)}
+      />
 
-      </LinearGradient>
-    </ImageBackground>
+      <SupportedArtistPicker
+        show={showArtistPicker}
+        onClose={() => setShowArtistPicker(false)}
+        userId={user.userId}
+        currentArtistId={supportedArtist?.userId || null}
+        userJurisdictionId={user.jurisdiction?.jurisdictionId}
+        userJurisdictionName={user.jurisdiction?.name}
+        onSuccess={reload}
+      />
+    </View>
   );
 };
 
 // ============================================================================
-// STYLES — original preserved exactly, new styles appended at bottom
+// STYLES
 // ============================================================================
 const styles = StyleSheet.create({
-  backgroundImage: { flex: 1, width: '100%', height: '100%' },
-  gradientOverlay: { flex: 1 },
-  scrollView: { flex: 1 },
-  scrollContent: { paddingTop: IS_MOBILE ? 20 : 40, paddingHorizontal: IS_MOBILE ? 12 : 20, alignItems: 'center' },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bgBlack },
-  loadingText: { color: COLORS.textGray, marginTop: 16, fontSize: 16 },
-  card: { backgroundColor: COLORS.cardBg, borderRadius: 16, padding: IS_MOBILE ? 20 : 28, marginBottom: 20, width: '100%', maxWidth: 600, borderWidth: 1, borderColor: COLORS.borderSubtle },
-  profileHeader: { alignItems: 'center' },
-  profileImage: { width: IS_MOBILE ? 100 : 140, height: IS_MOBILE ? 100 : 140, borderRadius: IS_MOBILE ? 50 : 70, borderWidth: IS_MOBILE ? 3 : 4, borderColor: COLORS.unisBlue },
-  profileName: { fontSize: IS_MOBILE ? 24 : 32, fontWeight: '700', color: COLORS.textWhite, marginTop: 16, marginBottom: 8 },
-  profileBio: { fontSize: IS_MOBILE ? 14 : 16, color: COLORS.textGray, textAlign: 'center', maxWidth: 400, marginBottom: 16, lineHeight: 22 },
-  editButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.unisBlue, paddingVertical: IS_MOBILE ? 10 : 12, paddingHorizontal: IS_MOBILE ? 20 : 28, borderRadius: 12 },
-  editButtonText: { color: COLORS.textWhite, fontWeight: '600', fontSize: IS_MOBILE ? 14 : 16 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 },
-  sectionTitle: { fontSize: IS_MOBILE ? 18 : 22, fontWeight: '700', color: COLORS.textWhite },
-  supportedArtistCard: { backgroundColor: COLORS.cardBgHover, borderRadius: 12, padding: IS_MOBILE ? 16 : 24, flexDirection: IS_MOBILE ? 'column' : 'row', alignItems: IS_MOBILE ? 'center' : 'flex-start', gap: IS_MOBILE ? 16 : 24 },
-  artistPhoto: { width: IS_MOBILE ? 80 : 100, height: IS_MOBILE ? 80 : 100, borderRadius: IS_MOBILE ? 40 : 50, borderWidth: IS_MOBILE ? 2 : 3, borderColor: COLORS.unisBlue },
-  artistInfo: { flex: 1, width: '100%', alignItems: IS_MOBILE ? 'center' : 'flex-start' },
-  artistName: { fontSize: IS_MOBILE ? 18 : 20, fontWeight: '700', color: COLORS.textWhite, marginBottom: 12 },
-  defaultSongSection: { flexDirection: IS_MOBILE ? 'column' : 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'rgba(0, 74, 173, 0.1)', borderWidth: 1, borderColor: 'rgba(0, 74, 173, 0.3)', borderRadius: 10, padding: IS_MOBILE ? 12 : 16, gap: IS_MOBILE ? 12 : 16, width: '100%' },
-  songDetails: { flexDirection: IS_MOBILE ? 'column' : 'row', alignItems: 'center', gap: IS_MOBILE ? 8 : 12, flex: 1 },
-  songText: { alignItems: IS_MOBILE ? 'center' : 'flex-start' },
-  songTitle: { fontSize: IS_MOBILE ? 14 : 16, fontWeight: '600', color: COLORS.textWhite },
-  songLabel: { fontSize: IS_MOBILE ? 12 : 13, color: COLORS.textGray, marginTop: 2 },
-  playButton: { width: IS_MOBILE ? 45 : 50, height: IS_MOBILE ? 45 : 50, borderRadius: IS_MOBILE ? 22.5 : 25, backgroundColor: COLORS.unisBlue, justifyContent: 'center', alignItems: 'center' },
-  noSongText: { fontSize: 14, color: COLORS.textMuted, fontStyle: 'italic' },
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: IS_MOBILE ? 12 : 20, marginBottom: 20, width: '100%', maxWidth: 600 },
-  statCard: { backgroundColor: COLORS.cardBg, borderRadius: 16, padding: IS_MOBILE ? 16 : 24, alignItems: 'center', width: IS_MOBILE ? '47%' : '30%', borderWidth: 1, borderColor: COLORS.borderSubtle },
-  statLabel: { fontSize: IS_MOBILE ? 12 : 14, color: COLORS.textGray, marginTop: 8, marginBottom: 4 },
-  statValue: { fontSize: IS_MOBILE ? 24 : 32, fontWeight: '700', color: COLORS.textWhite },
-  voteHistoryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  viewAllButton: { backgroundColor: 'rgba(0, 74, 173, 0.2)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(0, 74, 173, 0.3)' },
-  viewAllButtonText: { color: COLORS.unisBlueBright, fontWeight: '600', fontSize: IS_MOBILE ? 13 : 14 },
-  voteSummary: { flexDirection: IS_MOBILE ? 'column' : 'row', alignItems: 'center', gap: IS_MOBILE ? 16 : 24, backgroundColor: COLORS.cardBgHover, padding: IS_MOBILE ? 16 : 24, borderRadius: 12, marginBottom: 12 },
-  voteStatBox: { alignItems: 'center', minWidth: 80 },
-  voteCount: { fontSize: IS_MOBILE ? 36 : 48, fontWeight: '700', color: COLORS.unisBlue, lineHeight: IS_MOBILE ? 40 : 52 },
-  voteLabel: { fontSize: IS_MOBILE ? 11 : 12, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 4 },
-  voteCta: { flex: 1, fontSize: IS_MOBILE ? 14 : 15, color: COLORS.textGray, textAlign: IS_MOBILE ? 'center' : 'left' },
-  // Vote preview (new)
-  recentVotes: { gap: 8 },
-  recentVotesLabel: { color: COLORS.textMuted, fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
-  votePreviewItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.cardBgHover, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8 },
-  votePreviewName: { color: COLORS.textWhite, fontSize: 14, fontWeight: '500', flex: 1 },
-  votePreviewType: { color: COLORS.textMuted, fontSize: 12, textTransform: 'capitalize', marginLeft: 8 },
-  // Social media (new)
-  socialLinksEdit: { gap: 16 },
-  socialLinkItem: { gap: 8 },
-  socialLabel: { fontSize: 14, fontWeight: '600', color: COLORS.textGray },
-  socialInput: { backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: COLORS.borderSubtle, borderRadius: 10, padding: 12, color: COLORS.textWhite, fontSize: 14 },
-  // Danger zone
-  dangerZone: { backgroundColor: COLORS.cardBg, borderRadius: 16, borderWidth: 2, borderColor: COLORS.dangerRed, padding: IS_MOBILE ? 20 : 28, marginBottom: 20, width: '100%', maxWidth: 600 },
-  dangerContent: { alignItems: 'center' },
-  dangerTitle: { fontSize: IS_MOBILE ? 18 : 20, fontWeight: '700', color: COLORS.dangerRed, marginBottom: 8 },
-  dangerText: { fontSize: 14, color: '#faa', marginBottom: 16 },
-  deleteButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.dangerRed, paddingVertical: IS_MOBILE ? 10 : 12, paddingHorizontal: IS_MOBILE ? 16 : 24, borderRadius: 10 },
-  deleteButtonText: { color: COLORS.textWhite, fontWeight: '600', fontSize: IS_MOBILE ? 14 : 15 },
-  // Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.85)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#1a1a1a', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '70%' },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.1)' },
-  modalTitle: { fontSize: 20, fontWeight: '700', color: COLORS.textWhite },
-  modalClose: { fontSize: 24, color: COLORS.textGray, padding: 4 },
-  modalBody: { maxHeight: 300 },
-  voteItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.cardBgHover, padding: 16, borderRadius: 10, marginBottom: 10 },
-  voteInfo: { flex: 1 },
-  voteTargetName: { fontSize: 15, fontWeight: '600', color: COLORS.textWhite },
-  voteTargetType: { fontSize: 13, color: COLORS.textGray, textTransform: 'capitalize', marginTop: 2 },
-  voteDate: { fontSize: 13, color: COLORS.textMuted },
-  emptyText: { fontSize: 14, color: COLORS.textMuted, fontStyle: 'italic', textAlign: 'center', padding: 24 },
-  modalCloseButton: { backgroundColor: COLORS.unisBlue, paddingVertical: 14, borderRadius: 10, marginTop: 16, alignItems: 'center' },
-  modalCloseButtonText: { color: COLORS.textWhite, fontWeight: '600', fontSize: 16 },
-  changePasswordButton: {
-  backgroundColor: 'rgba(255,255,255,0.05)',
-  borderWidth: 1,
-  borderColor: 'rgba(255,255,255,0.15)',
-  paddingVertical: 12,
-  paddingHorizontal: 24,
-  borderRadius: 10,
-  marginBottom: 12,
-},
-changePasswordButtonText: {
-  color: COLORS.textWhite,
-  fontWeight: '600',
-  textAlign: 'center',
-  fontSize: 14,
-},
+  screen: {
+    flex: 1,
+    backgroundColor: COLORS.bgBlack,
+  },
+  center: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  fullscreenMsg: {
+    color: COLORS.textGray,
+    fontSize: 15,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 120, // clear the mini player / tab bar
+  },
+
+  // ---- Section loader/error ----
+  sectionState: {
+    alignItems: 'center',
+  },
+  sectionStateText: {
+    color: COLORS.textGray,
+    fontSize: 14,
+    marginTop: 12,
+  },
+  sectionErrorText: {
+    color: COLORS.errorRed,
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  retryBtn: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 20,
+  },
+  retryBtnText: {
+    color: COLORS.textWhite,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  // ---- Hero ----
+  hero: {
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.borderSubtle,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 16,
+  },
+  heroEyebrow: {
+    color: COLORS.unisBlueBright,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 14,
+  },
+  heroIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  heroAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  heroAvatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroAvatarInitial: {
+    color: COLORS.textWhite,
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  heroIdentityText: {
+    flex: 1,
+    marginLeft: 16,
+  },
+  heroDisplayName: {
+    color: COLORS.textWhite,
+    fontSize: 26,
+    fontWeight: '800',
+  },
+  heroTagline: {
+    color: COLORS.textGray,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  heroStats: {
+    flexDirection: 'row',
+    borderTopColor: COLORS.borderSubtle,
+    borderTopWidth: 1,
+    paddingTop: 14,
+    marginBottom: 16,
+  },
+  heroStat: {
+    flex: 1,
+  },
+  heroStatLabel: {
+    color: COLORS.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  heroStatValue: {
+    color: COLORS.textWhite,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  heroStatValueTier: {
+    color: COLORS.unisBlueBright,
+  },
+  heroCta: {
+    alignSelf: 'flex-start',
+  },
+
+  // ---- Shared buttons ----
+  btn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 22,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+  },
+  btnPrimary: {
+    backgroundColor: COLORS.unisBlue,
+  },
+  btnGhost: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  btnDanger: {
+    backgroundColor: COLORS.dangerRed,
+  },
+  btnText: {
+    color: COLORS.textWhite,
+    fontSize: 13,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+
+  // ---- Featured (supported artist) ----
+  featured: {
+    borderRadius: 18,
+    overflow: 'hidden',
+    minHeight: 220,
+    marginBottom: 16,
+    justifyContent: 'flex-end',
+  },
+  featuredImage: {
+    borderRadius: 18,
+  },
+  featuredOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  featuredEmpty: {
+    backgroundColor: COLORS.cardBg,
+    borderColor: COLORS.borderSubtle,
+    borderWidth: 1,
+  },
+  featuredContent: {
+    padding: 20,
+  },
+  featuredTag: {
+    color: COLORS.textSilver,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  featuredTitle: {
+    color: COLORS.textWhite,
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  featuredSub: {
+    color: COLORS.textSilver,
+    fontSize: 13,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  featuredActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  featuredCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.textWhite,
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+    marginRight: 10,
+  },
+  featuredCtaEmpty: {
+    alignSelf: 'flex-start',
+  },
+  featuredCtaText: {
+    color: COLORS.bgBlack,
+    fontSize: 13,
+    fontWeight: '800',
+    marginLeft: 6,
+  },
+  featuredChange: {
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    borderRadius: 20,
+    paddingVertical: 9,
+    paddingHorizontal: 16,
+  },
+  featuredChangeText: {
+    color: COLORS.textWhite,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+
+  // ---- Pending banner ----
+  pending: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 14,
+  },
+  pendingText: {
+    color: COLORS.textSilver,
+    fontSize: 12,
+    flex: 1,
+    marginLeft: 6,
+  },
+  pendingStrong: {
+    color: COLORS.textWhite,
+    fontWeight: '700',
+  },
+  pendingCancel: {
+    marginLeft: 8,
+  },
+  pendingCancelText: {
+    color: COLORS.unisBlueBright,
+    fontSize: 12,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+
+  // ---- Danger zone ----
+  danger: {
+    borderColor: 'rgba(220, 53, 69, 0.35)',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 24,
+  },
+  dangerHeading: {
+    color: COLORS.textWhite,
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  dangerText: {
+    color: COLORS.textGray,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  dangerActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
 });
 
 export default ProfileScreen;
