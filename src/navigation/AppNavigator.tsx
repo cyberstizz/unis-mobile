@@ -26,6 +26,7 @@ import JurisdictionScreen from '../screens/JurisdictionScreen';
 import ArtistDashboardScreen from '../screens/ArtistdashboardScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import EarningsScreen from '../screens/Earningsscreen';
+import MessagesScreen from '../screens/MessagesScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
@@ -87,6 +88,7 @@ const MainStack = () => {
       <Stack.Screen name="Jurisdiction" component={JurisdictionScreen} />
       <Stack.Screen name="ArtistDashboard" component={ArtistDashboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="Messages" component={MessagesScreen} />
     </Stack.Navigator>
   );
 };
