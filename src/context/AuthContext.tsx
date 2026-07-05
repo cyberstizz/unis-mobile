@@ -1,6 +1,3 @@
-// src/context/AuthContext.tsx
-// Ported from web - uses SecureStore instead of localStorage
-
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import axiosInstance from '../services/axiosInstance';
@@ -16,6 +13,8 @@ interface User {
   };
   supportedArtistId?: string | null;
   isArtist?: boolean;
+  phoneVerified?: boolean;
+  themePreference?: string;
   // Add other user fields as needed
 }
 
@@ -30,7 +29,15 @@ interface AuthContextType {
   login: (credentials: LoginCredentials) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  /** Current theme id — mirrors web AuthContext (blue | orange | red | green | purple | yellow | dianna). */
+  theme: string;
+  /** Persists the theme to the backend (themePreference) + local cache, mirroring web setTheme(themeName, userId). */
+  setTheme: (themeName: string, userId: string) => Promise<void>;
 }
+
+// Same VALID_THEMES as web AuthContext — keep the two lists in sync.
+const VALID_THEMES = ['blue', 'orange', 'red', 'green', 'purple', 'yellow', 'dianna'];
+const THEME_STORAGE_KEY = 'unis.theme'; // SecureStore keys allow [A-Za-z0-9._-] only
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -88,11 +95,45 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [theme, setThemeState] = useState<string>('blue');
+
+  // Apply theme locally (state + cache). The web version also sets a DOM
+  // data-theme attribute; on mobile, consumers read `theme` from context.
+  const applyTheme = async (themeName?: string | null) => {
+    const validated = themeName && VALID_THEMES.includes(themeName) ? themeName : 'blue';
+    setThemeState(validated);
+    try {
+      await SecureStore.setItemAsync(THEME_STORAGE_KEY, validated);
+    } catch (_) {
+      /* cache failure is non-fatal */
+    }
+  };
+
+  // Save theme to backend + apply locally — same endpoint/payload as web.
+  const setTheme = async (themeName: string, userId: string): Promise<void> => {
+    await applyTheme(themeName);
+    try {
+      await axiosInstance.put(`/v1/users/profile/${userId}`, {
+        themePreference: themeName,
+      });
+      setUser(prev => (prev ? { ...prev, themePreference: themeName } : prev));
+    } catch (err) {
+      console.error('Failed to save theme preference:', err);
+    }
+  };
 
   // On mount, check token + fetch profile if present
   useEffect(() => {
     const initAuth = async () => {
       try {
+        // Apply cached theme immediately (before profile loads), like web.
+        try {
+          const cachedTheme = await SecureStore.getItemAsync(THEME_STORAGE_KEY);
+          if (cachedTheme && VALID_THEMES.includes(cachedTheme)) {
+            setThemeState(cachedTheme);
+          }
+        } catch (_) { /* ignore */ }
+
         const token = await SecureStore.getItemAsync('token');
         
         if (token) {
@@ -102,6 +143,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             try {
               const res = await axiosInstance.get(`/v1/users/profile/${userId}`);
               setUser({ ...res.data, isArtist: !!res.data.genre });
+              if (res.data.themePreference) await applyTheme(res.data.themePreference);
             } catch (err: any) {
               if (err.response?.status === 401 || err.response?.status === 404) {
                 await SecureStore.deleteItemAsync('token');
@@ -132,6 +174,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       if (userId) {
         const profileRes = await axiosInstance.get(`/v1/users/profile/${userId}`);
         setUser({ ...profileRes.data, isArtist: !!profileRes.data.genre });
+        if (profileRes.data.themePreference) await applyTheme(profileRes.data.themePreference);
         return { success: true };
       } else {
         throw new Error('Invalid token');
@@ -166,6 +209,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (userId) {
           const res = await axiosInstance.get(`/v1/users/profile/${userId}`);
           setUser({ ...res.data, isArtist: !!res.data.genre });
+          if (res.data.themePreference) await applyTheme(res.data.themePreference);
         }
       }
     } catch (error) {
@@ -178,7 +222,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     login, 
     logout, 
     loading,
-    refreshUser
+    refreshUser,
+    theme,
+    setTheme
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
