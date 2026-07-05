@@ -1,3 +1,11 @@
+// src/components/Downloadcontractbutton.tsx
+// Updated to mirror the CURRENT web contract (artistDashboard.jsx →
+// downloadOwnershipContract): the launch-ready "Artist Ownership & Revenue
+// Share Agreement" — 13 sections including the Revenue Share Schedule
+// (85/50/60/15), the tiered Referral Program (10/5/2), DMCA, and NY governing
+// law. Web renders it with jsPDF; mobile renders the same text as HTML via
+// expo-print (native HTML → PDF), then hands it to the share sheet.
+
 import React, { useState } from 'react';
 import {
   TouchableOpacity,
@@ -5,7 +13,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
-  Platform,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -18,8 +25,13 @@ interface DownloadContractButtonProps {
 }
 
 // ─── HTML contract template ───────────────────────────────────────────────────
-// Mirrors the jsPDF contract from the web dashboard, rebuilt as HTML for expo-print.
-// expo-print renders HTML → PDF natively on device (no external dependency).
+// Text is verbatim from the web jsPDF build so both platforms distribute the
+// identical agreement.
+//
+// ★ item 2a + item 11 FLAG (carried from web): confirm the Revenue Share
+// Schedule percentages against the published terms at artists.unismusic.com
+// AND the reconciled EarningsService before this document is distributed to
+// any artist.
 
 const buildContractHtml = (artistName: string, dateStr: string): string => `
 <!DOCTYPE html>
@@ -31,9 +43,11 @@ const buildContractHtml = (artistName: string, dateStr: string): string => `
 
     body {
       font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-      color: #111;
-      padding: 60px 72px;
+      color: #2d2d2d;
+      padding: 56px 56px 72px;
       position: relative;
+      font-size: 9.5pt;
+      line-height: 1.5;
     }
 
     /* Watermark */
@@ -41,11 +55,11 @@ const buildContractHtml = (artistName: string, dateStr: string): string => `
       position: fixed;
       top: 50%;
       left: 50%;
-      transform: translate(-50%, -50%) rotate(45deg);
-      font-size: 96px;
+      transform: translate(-50%, -50%) rotate(32deg);
+      font-size: 120px;
       font-weight: 900;
-      color: rgba(22, 51, 135, 0.06);
-      letter-spacing: 24px;
+      color: rgba(242, 243, 245, 1);
+      letter-spacing: 12px;
       white-space: nowrap;
       pointer-events: none;
       z-index: 0;
@@ -56,84 +70,73 @@ const buildContractHtml = (artistName: string, dateStr: string): string => `
     /* Header */
     .header {
       text-align: center;
-      border-bottom: 3px solid #163387;
-      padding-bottom: 24px;
-      margin-bottom: 32px;
+      margin-bottom: 28px;
     }
     .header h1 {
-      font-size: 22px;
-      font-weight: 900;
-      color: #163387;
-      text-transform: uppercase;
-      letter-spacing: 2px;
-      line-height: 1.3;
-    }
-    .header .subtitle {
-      font-size: 13px;
-      color: #555;
-      margin-top: 8px;
-    }
-
-    /* Body */
-    h2 {
-      font-size: 15px;
+      font-size: 19pt;
       font-weight: 700;
-      color: #163387;
-      margin: 28px 0 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      color: #0c0c0c;
+      line-height: 1.35;
     }
-    p {
-      font-size: 13px;
-      line-height: 1.75;
-      color: #333;
-      margin-bottom: 10px;
-    }
-    .parties {
-      background: #f7f9ff;
-      border-left: 4px solid #163387;
-      padding: 16px 20px;
-      border-radius: 4px;
-      margin: 16px 0;
-    }
-    .parties p { margin-bottom: 6px; }
-    .parties strong { color: #111; }
-
-    ul {
-      margin: 10px 0 10px 20px;
-    }
-    ul li {
-      font-size: 13px;
-      line-height: 1.75;
-      color: #333;
-      margin-bottom: 4px;
+    .header .effective {
+      font-size: 10pt;
+      color: #5a5a5a;
+      margin-top: 12px;
     }
 
-    /* Signature block */
-    .signature-section {
-      margin-top: 48px;
-      border-top: 1px solid #ddd;
-      padding-top: 32px;
-      display: flex;
-      gap: 60px;
-    }
-    .sig-block { flex: 1; }
-    .sig-line {
-      border-bottom: 1px solid #111;
-      height: 40px;
+    h2 {
+      font-size: 11pt;
+      font-weight: 700;
+      color: #111111;
+      margin-top: 18px;
       margin-bottom: 6px;
     }
-    .sig-label { font-size: 11px; color: #666; }
-    .sig-name { font-size: 13px; font-weight: 700; margin-top: 4px; }
 
-    /* Footer */
+    p {
+      color: #2d2d2d;
+      margin-bottom: 10px;
+      text-align: justify;
+    }
+
+    /* Revenue Share Schedule table */
+    table.schedule {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6px 0 12px;
+    }
+    table.schedule td {
+      padding: 6px 8px;
+      font-size: 9.5pt;
+    }
+    table.schedule tr:nth-child(odd) { background: #f7f8fa; }
+    table.schedule td.share {
+      text-align: right;
+      font-weight: 700;
+      color: #141414;
+    }
+
+    /* Signatures */
+    .signature-section {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 56px;
+    }
+    .sig-block { width: 44%; }
+    .sig-line {
+      border-bottom: 1px solid #787878;
+      height: 28px;
+      margin-bottom: 8px;
+    }
+    .sig-label { font-size: 9pt; color: #464646; }
+    .sig-date { font-size: 9pt; color: #464646; margin-top: 10px; }
+
     .footer {
-      margin-top: 40px;
+      margin-top: 48px;
+      padding-top: 12px;
+      border-top: 1px solid #e2e2e2;
+      font-size: 8pt;
+      color: #969696;
       text-align: center;
-      font-size: 10px;
-      color: #aaa;
-      border-top: 1px solid #eee;
-      padding-top: 16px;
     }
   </style>
 </head>
@@ -142,78 +145,78 @@ const buildContractHtml = (artistName: string, dateStr: string): string => `
   <div class="content">
 
     <div class="header">
-      <h1>UNIS Artist Ownership &amp;<br/>Revenue Share Agreement</h1>
-      <p class="subtitle">Effective Date: ${dateStr}</p>
+      <h1>ARTIST OWNERSHIP &amp;<br/>REVENUE SHARE AGREEMENT</h1>
+      <div class="effective">Effective Date: ${dateStr}</div>
     </div>
 
-    <h2>Parties</h2>
-    <div class="parties">
-      <p><strong>Platform:</strong> UNIS Music Platform ("Unis"), a digital music discovery service</p>
-      <p><strong>Artist:</strong> ${artistName} ("Artist"), an independent creator</p>
-    </div>
+    <p>This Artist Ownership &amp; Revenue Share Agreement (the "Agreement") is entered into as of the Effective Date above, by and between Unis Music Corporation, a New York corporation and wholly-owned subsidiary of Lamb Services, Inc. ("Unis," "we," or "us"), and ${artistName} ("Artist," "you"), an independent music creator. Unis and Artist are each a "Party" and together the "Parties."</p>
 
-    <h2>1. Ownership</h2>
-    <p>
-      The Artist retains 100% ownership of all original compositions, sound recordings,
-      lyrics, and associated artwork uploaded to the UNIS platform. UNIS claims no
-      ownership rights over any Artist content.
-    </p>
+    <h2>1. Definitions</h2>
+    <p>"Platform" means the Unis hyperlocal music discovery, voting, and sales service, including its websites, mobile applications, and related services. "Content" means the audio recordings, artwork, lyrics, metadata, and other materials you upload. "Master Recording" means a sound recording you own or control. "Net Revenue" means amounts actually received by Unis attributable to your Content, less payment-processor fees, refunds, chargebacks, and applicable taxes.</p>
 
-    <h2>2. License Grant</h2>
-    <p>
-      By uploading content to UNIS, the Artist grants UNIS a non-exclusive, royalty-free,
-      worldwide license to stream, display, and promote the content solely within the
-      UNIS platform and its affiliated marketing channels for the purpose of music
-      discovery and community engagement.
-    </p>
+    <h2>2. Ownership of Your Content</h2>
+    <p>You retain all right, title, and interest in and to your Content, including all Master Recordings and underlying compositions you own or control. Nothing in this Agreement transfers ownership of your Content to Unis. Unis claims no ownership of your music.</p>
 
-    <h2>3. Revenue Share</h2>
-    <p>
-      Artists who participate in UNIS jurisdiction-based competitions and earn community
-      awards are entitled to revenue share distributions as outlined in the current UNIS
-      Revenue Share Policy, which may be updated from time to time with notice to Artists.
-    </p>
-    <ul>
-      <li>Voting-based awards carry the highest revenue weighting</li>
-      <li>Score-based and engagement awards carry secondary weighting</li>
-      <li>Distributions are processed monthly for eligible Artists</li>
-    </ul>
+    <h2>3. License Grant</h2>
+    <p>You grant Unis a non-exclusive, worldwide, royalty-bearing, revocable license to host, store, reproduce, stream, publicly perform, display, promote, and (where you enable sales or downloads) distribute your Content on and through the Platform for the purpose of operating its discovery, voting, and sales features. This license exists only while your Content remains on the Platform and terminates as described in Section 8.</p>
 
-    <h2>4. Content Standards</h2>
-    <p>
-      The Artist warrants that all uploaded content is original, does not infringe
-      third-party intellectual property rights, and complies with UNIS Community
-      Guidelines. UNIS reserves the right to remove content that violates these standards.
-    </p>
+    <h2>4. Revenue Share Schedule</h2>
+    <p>Subject to the payment terms below, Unis will pay you the following share of Net Revenue attributable to your Content in each revenue stream:</p>
 
-    <h2>5. Termination</h2>
-    <p>
-      Either party may terminate this agreement at any time. Upon account deletion,
-      the Artist's content will be removed from the platform within 30 days. Earned
-      but undistributed revenue share will be processed in the final distribution cycle.
-    </p>
+    <table class="schedule">
+      <tr><td>Direct song sales &amp; downloads</td><td class="share">85% to Artist</td></tr>
+      <tr><td>Paid subscription streaming pool</td><td class="share">50% to Artist</td></tr>
+      <tr><td>Audio advertising revenue</td><td class="share">60% to Artist</td></tr>
+      <tr><td>Supporter contributions</td><td class="share">15% to Artist</td></tr>
+    </table>
 
-    <h2>6. Governing Law</h2>
-    <p>
-      This Agreement shall be governed by the laws of the State of New York,
-      without regard to conflict of law principles.
-    </p>
+    <p>Revenue-stream definitions and the methodology for allocating pooled revenue (such as the subscription streaming pool) are described in the then-current published terms at artists.unismusic.com, which are incorporated by reference. Where this Schedule and the published terms conflict, the published terms control.</p>
+
+    <h2>5. Referral Program</h2>
+    <p>Where you refer new members using your referral code, you may earn referral income on qualifying Net Revenue generated by your referrals: 10% on first-tier (direct) referrals, 5% on second-tier referrals, and 2% on third-tier referrals, in each case as further described in the published referral terms. Referral tiers and rates may be adjusted prospectively on notice.</p>
+
+    <h2>6. Payments and Payouts</h2>
+    <p>Unis processes artist payouts through Stripe. You are responsible for completing Stripe onboarding and providing accurate payout information. Payouts are made periodically once your available balance meets the minimum payout threshold (currently $50.00). You are solely responsible for all taxes on amounts you receive. Unis may withhold or offset amounts subject to refund, chargeback, or fraud review.</p>
+
+    <h2>7. Your Representations and Warranties</h2>
+    <p>You represent and warrant that: (a) you own or control all rights necessary to grant the license in Section 3; (b) your Content does not infringe any third party's copyright, trademark, publicity, privacy, or other rights; (c) you have paid or will pay any co-writers, producers, featured performers, or rights holders any share of the revenue you receive that is due to them; and (d) your Content complies with the Platform's content standards and applicable law.</p>
+
+    <h2>8. Term and Termination</h2>
+    <p>This Agreement begins on the Effective Date and continues until terminated. You may remove your Content or close your account at any time, which terminates the Section 3 license on a going-forward basis (subject to cached copies and completed transactions). Unis may suspend or remove Content that violates this Agreement, the content standards, or law, including in response to a valid DMCA notice. Provisions that by their nature should survive termination — including ownership, payment for amounts already earned, warranties, and limitation of liability — survive.</p>
+
+    <h2>9. Copyright and DMCA</h2>
+    <p>Unis operates a notice-and-takedown process under the Digital Millennium Copyright Act. If Unis receives a valid infringement notice concerning your Content, Unis may remove or disable access to that Content. You may submit a counter-notice where permitted by law. Repeat infringers may be terminated.</p>
+
+    <h2>10. Limitation of Liability</h2>
+    <p>To the maximum extent permitted by law, Unis will not be liable for indirect, incidental, special, consequential, or punitive damages, or for lost profits or revenues, arising out of or relating to this Agreement. Unis's total aggregate liability arising out of this Agreement will not exceed the greater of the amounts paid or payable to you in the twelve months preceding the claim, or $100.</p>
+
+    <h2>11. Independent Relationship</h2>
+    <p>The Parties are independent contractors. Nothing in this Agreement creates a partnership, joint venture, employment, or agency relationship, and neither Party may bind the other.</p>
+
+    <h2>12. Governing Law and Disputes</h2>
+    <p>This Agreement is governed by the laws of the State of New York, without regard to its conflict-of-laws rules. The state and federal courts located in New York County, New York will have jurisdiction over disputes not otherwise subject to an agreed dispute-resolution process.</p>
+
+    <h2>13. Entire Agreement; Changes</h2>
+    <p>This Agreement, together with the published terms incorporated by reference, is the entire agreement between the Parties regarding its subject matter. Unis may update the published terms prospectively; your continued use of the Platform after an update constitutes acceptance. No modification by you is effective unless agreed in writing by Unis.</p>
+
+    <h2>Acknowledgement &amp; Signatures</h2>
+    <p>By downloading, retaining, or continuing to use the Platform to distribute your Content, you acknowledge that you have read, understood, and agree to this Agreement.</p>
 
     <div class="signature-section">
       <div class="sig-block">
         <div class="sig-line"></div>
-        <div class="sig-label">Artist Signature</div>
-        <div class="sig-name">${artistName}</div>
+        <div class="sig-label">${artistName} (Artist)</div>
+        <div class="sig-date">Date: ${dateStr}</div>
       </div>
       <div class="sig-block">
         <div class="sig-line"></div>
-        <div class="sig-label">UNIS Platform Representative</div>
-        <div class="sig-name">UNIS Music Platform</div>
+        <div class="sig-label">Unis Music Corporation</div>
+        <div class="sig-date">By: Authorized Officer</div>
       </div>
     </div>
 
     <div class="footer">
-      Generated by UNIS · ${dateStr} · unis.app
+      Unis Music Corporation · Artist Ownership &amp; Revenue Share Agreement
     </div>
 
   </div>
@@ -251,7 +254,7 @@ const DownloadContractButton: React.FC<DownloadContractButtonProps> = ({
       if (canShare) {
         await Sharing.shareAsync(uri, {
           mimeType: 'application/pdf',
-          dialogTitle: 'Save Ownership Contract',
+          dialogTitle: 'Save Artist Agreement',
           UTI: 'com.adobe.pdf', // iOS
         });
       } else {
@@ -262,7 +265,7 @@ const DownloadContractButton: React.FC<DownloadContractButtonProps> = ({
       }
     } catch (err) {
       console.error('Contract generation error:', err);
-      Alert.alert('Error', 'Failed to generate contract. Please try again.');
+      Alert.alert('Error', 'Failed to generate the agreement. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -275,33 +278,29 @@ const DownloadContractButton: React.FC<DownloadContractButtonProps> = ({
       disabled={loading}
     >
       {loading ? (
-        <ActivityIndicator color="#C0C0C0" size="small" />
+        <ActivityIndicator color="#FFFFFF" size="small" />
       ) : (
-        <Text style={styles.btnText}>⬇  Download Ownership Contract</Text>
+        <Text style={styles.btnText}>Agreement</Text>
       )}
     </TouchableOpacity>
   );
 };
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   btn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(192,192,192,0.3)',
-    backgroundColor: '#1a1a1a',
-    gap: 8,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 22,
+    paddingVertical: 11,
+    paddingHorizontal: 18,
   },
   btnText: {
-    color: '#C0C0C0',
-    fontSize: 14,
-    fontWeight: '600',
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });
 
