@@ -21,7 +21,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import axiosInstance from '../services/axiosInstance';
+import buildUrl from '../utils/buildUrl'; // ★ canonical media URL builder (R2→CDN rewrite + safe-encode), matches ProfileScreen/SupportedArtistPicker
 import {
   X,
   ChevronRight,
@@ -148,6 +149,19 @@ interface CreateAccountWizardProps {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+// ★ Theme options — mirrors web THEME_OPTIONS + ThemePicker.tsx ids/colors.
+// The mobile app itself uses a fixed COLORS palette; this selection is stored
+// as the account's themePreference (the web app honors it after sign-in).
+const THEME_SWATCHES: { id: string; label: string; color: string }[] = [
+  { id: 'blue',   label: 'Blue',   color: '#163387' },
+  { id: 'orange', label: 'Orange', color: '#C44B0A' },
+  { id: 'red',    label: 'Red',    color: '#B51C24' },
+  { id: 'green',  label: 'Green',  color: '#0F7A3E' },
+  { id: 'purple', label: 'Purple', color: '#4A1A8C' },
+  { id: 'yellow', label: 'Gold',   color: '#C49A0A' },
+  { id: 'dianna', label: 'Dianna', color: '#C8A84B' },
+];
+
 const debounce = <T extends (...args: any[]) => any>(func: T, wait: number) => {
   let timeout: NodeJS.Timeout;
   return (...args: Parameters<T>) => {
@@ -162,6 +176,26 @@ const formatFileSize = (bytes: number): string => {
   const sizes = ['Bytes', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+// ★ Age from a YYYY-MM-DD string (parity with web's DOB gating). Returns null if unparseable.
+const computeAge = (dobString: string | null): number | null => {
+  if (!dobString) return null;
+  const dob = new Date(dobString);
+  if (isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const m = today.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+  return age;
+};
+
+// ★ Digits → YYYY-MM-DD mask as the user types (dependency-free DOB entry).
+const maskDob = (raw: string): string => {
+  const d = raw.replace(/\D/g, '').slice(0, 8);
+  if (d.length <= 4) return d;
+  if (d.length <= 6) return `${d.slice(0, 4)}-${d.slice(4)}`;
+  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
 };
 
 // ============================================================================
@@ -595,13 +629,13 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
       let songUrl: string | undefined;
 
       if (artist.defaultSong?.fileUrl) {
-        songUrl = getMediaUrl(artist.defaultSong.fileUrl);
+        songUrl = buildUrl(artist.defaultSong.fileUrl) ?? undefined;
       } else {
         // Fetch song data from the user's default-song endpoint
         const songRes = await axiosInstance.get(`/v1/users/${artist.userId}/default-song`);
         const songData = songRes.data;
         if (songData?.fileUrl) {
-          songUrl = getMediaUrl(songData.fileUrl);
+          songUrl = buildUrl(songData.fileUrl) ?? undefined;
         }
       }
 
@@ -757,15 +791,19 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
     switch (currentStepData?.id) {
       case 'welcome':
         return validation.referralCode.valid === true;
-      case 'basicInfo':
+      case 'basicInfo': {
+        const age = computeAge(formData.dateOfBirth);
+        const dobValid = age !== null && age >= 13;
         return (
           formData.username.length >= 3 &&
           validation.username.valid !== false &&
           validation.email.valid !== false &&
           !!formData.email &&
           formData.password.length >= 8 &&
-          formData.passwordConfirm === formData.password
+          formData.passwordConfirm === formData.password &&
+          dobValid
         );
+      }
       case 'location':
         return !!formData.jurisdictionId;
       case 'role':
@@ -1248,6 +1286,84 @@ const handleSubmit = async () => {
                 </Text>
               ) : null}
             </View>
+
+            {/* Date of Birth — required, age >= 13 (parity with web) */}
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Date of Birth</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={[
+                    styles.input,
+                    computeAge(formData.dateOfBirth) === null
+                      ? undefined
+                      : (computeAge(formData.dateOfBirth) as number) >= 13
+                      ? styles.inputSuccess
+                      : styles.inputError,
+                  ]}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={COLORS.textGray}
+                  value={formData.dateOfBirth ?? ''}
+                  onChangeText={(text) => updateForm('dateOfBirth', maskDob(text))}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                />
+              </View>
+              {(() => {
+                const age = computeAge(formData.dateOfBirth);
+                if (age !== null && age < 13) {
+                  return (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <AlertCircle size={14} color={COLORS.errorRed} />
+                      <Text style={[styles.helperText, styles.errorText]}>
+                        You must be at least 13 years old to join Unis.
+                      </Text>
+                    </View>
+                  );
+                }
+                if (age !== null && age >= 13 && age < 18) {
+                  return (
+                    <Text style={[styles.helperText, { color: COLORS.warningAmber }]}>
+                      Under 18: Explicit content will be disabled on your account.
+                    </Text>
+                  );
+                }
+                return null;
+              })()}
+              <Text style={styles.helperText}>
+                Your date of birth is private and never shown publicly. Used for age verification only.
+              </Text>
+            </View>
+
+            {/* Gender (optional) — feeds the artist demographics filter */}
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Gender (optional)</Text>
+              <View style={[styles.genreChips, { flexWrap: 'wrap' }]}>
+                {[
+                  { value: '', label: 'Prefer not to say' },
+                  { value: 'male', label: 'Male' },
+                  { value: 'female', label: 'Female' },
+                  { value: 'non-binary', label: 'Non-binary' },
+                ].map((opt) => {
+                  const selected = (formData.gender ?? '') === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value || 'none'}
+                      style={[styles.genreChip, selected && styles.genreChipSelected]}
+                      onPress={() => updateForm('gender', opt.value || null)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={opt.label}
+                    >
+                      <Text
+                        style={[styles.genreChipText, selected && styles.genreChipTextSelected]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
           </View>
         );
 
@@ -1414,6 +1530,32 @@ const handleSubmit = async () => {
                 </View>
               </View>
             ) : null}
+
+            {/* Theme preference — stored on the account; honored by the web app */}
+            <View style={[styles.formGroup, { marginTop: 20 }]}>
+              <Text style={styles.label}>Pick your theme</Text>
+              <View style={styles.themeSwatches}>
+                {THEME_SWATCHES.map((t) => {
+                  const selected = formData.themePreference === t.id;
+                  return (
+                    <TouchableOpacity
+                      key={t.id}
+                      style={[
+                        styles.themeSwatch,
+                        { backgroundColor: t.color },
+                        selected && styles.themeSwatchSelected,
+                      ]}
+                      onPress={() => updateForm('themePreference', t.id)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${t.label} theme`}
+                    >
+                      {selected && <Check size={16} color={COLORS.accentWhite} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
           </View>
         );
 
@@ -1523,6 +1665,24 @@ const handleSubmit = async () => {
                   onChangeText={(text) => updateForm('songTitle', text)}
                 />
               </View>
+            </View>
+
+            {/* ISRC (Optional) */}
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>ISRC (Optional)</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. US-ABC-24-00001"
+                  placeholderTextColor={COLORS.textGray}
+                  value={formData.songIsrc}
+                  onChangeText={(text) => updateForm('songIsrc', text.toUpperCase())}
+                  autoCapitalize="characters"
+                />
+              </View>
+              <Text style={styles.helperText}>
+                Your International Standard Recording Code, if you have one.
+              </Text>
             </View>
 
             {/* Audio File Upload */}
@@ -1787,9 +1947,9 @@ const handleSubmit = async () => {
                       updateForm('supportedArtistName', artist.username);
                     }}
                   >
-                    {artist.photoUrl ? (
+                    {buildUrl(artist.photoUrl) ? (
                       <Image
-                          source={{ uri: getMediaUrl(artist.photoUrl) }}
+                          source={{ uri: buildUrl(artist.photoUrl) as string }}
                           style={styles.artistPhoto}
                       />
                     ) : (
@@ -2527,6 +2687,24 @@ const styles = StyleSheet.create({
   genreChipTextSelected: {
     color: COLORS.accentWhite,
     fontWeight: '600',
+  },
+  themeSwatches: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  themeSwatch: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  themeSwatchSelected: {
+    borderColor: COLORS.accentWhite,
   },
 
   // Filter Chips
