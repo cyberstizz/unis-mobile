@@ -1,3 +1,6 @@
+// src/context/AuthContext.tsx
+// Ported from web - uses SecureStore instead of localStorage
+
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import axiosInstance from '../services/axiosInstance';
@@ -18,6 +21,16 @@ interface User {
   // Add other user fields as needed
 }
 
+// Result of a login attempt. `data` carries the raw error-response body so the
+// UI can branch on server signals like { unverified, email } or
+// { waitlist, username, referralCode, regionSignupCount, ... } — matching web,
+// where the Login page reads result.data for the unverified/waitlist flows.
+export interface LoginResult {
+  success: boolean;
+  error?: string;
+  data?: any;
+}
+
 interface LoginCredentials {
   email: string;
   password: string;
@@ -26,7 +39,7 @@ interface LoginCredentials {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (credentials: LoginCredentials) => Promise<{ success: boolean; error?: string }>;
+  login: (credentials: LoginCredentials) => Promise<LoginResult>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   /** Current theme id — mirrors web AuthContext (blue | orange | red | green | purple | yellow | dianna). */
@@ -164,7 +177,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     initAuth();
   }, []);
 
-  const login = async (credentials: LoginCredentials): Promise<{ success: boolean; error?: string }> => {
+  const login = async (credentials: LoginCredentials): Promise<LoginResult> => {
     try {
       const response = await axiosInstance.post('/auth/login', credentials);
       await SecureStore.setItemAsync('token', response.data.token);
@@ -181,9 +194,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       }
     } catch (error: any) {
       await SecureStore.deleteItemAsync('token');
-      return { 
-        success: false, 
-        error: error.response?.data?.message || error.message || 'Login failed' 
+      const body = error.response?.data;
+      return {
+        success: false,
+        // Web mirrors this: a string body is the message; otherwise use .message.
+        error: typeof body === 'string' ? body : body?.message || error.message || 'Login failed',
+        // Carry the raw body so the screen can branch on unverified / waitlist.
+        data: body,
       };
     }
   };
