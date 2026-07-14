@@ -24,7 +24,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { Crown, Heart, MessageCircle, Megaphone, Send, X } from 'lucide-react-native';
+import { Crown, Heart, MessageCircle, Megaphone, Send, X, TrendingUp } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
 import buildUrl from '../utils/buildUrl';
 
@@ -191,8 +191,13 @@ const SupporterSection: React.FC<SupporterSectionProps> = ({ artistId }) => {
   const count = Number(data?.supportersCount || 0);
   const topSupporter = data?.topSupporter || null;
   const recentSupporters = data?.recentSupporters || [];
+  // ★ CHART REMOVED (web parity). The old sparkline plotted `supporterGrowth`,
+  //   which the backend returns as *only the days that had activity* — not a
+  //   padded 30-day series. With 2 new supporters that produced 2 flex-1 bars
+  //   splitting the entire width: an unreadable block. Rather than fake a
+  //   30-day axis client-side, the same fact is now stated in one line.
   const growth = data?.supporterGrowth || [];
-  const maxGrowth = growth.reduce((m, g) => Math.max(m, Number(g.count || 0)), 0);
+  const newLast30 = growth.reduce((sum, g) => sum + Number(g.count || 0), 0);
 
   return (
     <View style={styles.section}>
@@ -260,11 +265,20 @@ const SupporterSection: React.FC<SupporterSectionProps> = ({ artistId }) => {
             </View>
           )}
 
+          {/* ★ headline count + the 30-day delta, on one legible line */}
           <View style={styles.countRow}>
             <Text style={styles.countNum}>{formatNumber(count)}</Text>
             <Text style={styles.countLabel}>
               {count === 1 ? 'supporter' : 'supporters'} backing you
             </Text>
+
+            {newLast30 > 0 && (
+              <View style={styles.trendChip}>
+                <TrendingUp size={13} color="#4a9eff" />
+                <Text style={styles.trendNum}>+{formatNumber(newLast30)}</Text>
+                <Text style={styles.trendLabel}>LAST 30 DAYS</Text>
+              </View>
+            )}
           </View>
 
           {recentSupporters.length > 0 ? (
@@ -302,22 +316,6 @@ const SupporterSection: React.FC<SupporterSectionProps> = ({ artistId }) => {
             </View>
           )}
 
-          {growth.length > 0 && (
-            <View style={styles.growth}>
-              <Text style={styles.growthEyebrow}>Last 30 days</Text>
-              <Text style={styles.growthTitle}>New supporters</Text>
-              <View
-                style={styles.sparkline}
-                accessibilityLabel="New supporters over the last 30 days"
-              >
-                {growth.map((g, i) => {
-                  const c = Number(g.count || 0);
-                  const h = maxGrowth > 0 ? Math.max(6, (c / maxGrowth) * 100) : 6;
-                  return <View key={i} style={[styles.bar, { height: `${h}%` }]} />;
-                })}
-              </View>
-            </View>
-          )}
         </>
       )}
 
@@ -470,6 +468,8 @@ const styles = StyleSheet.create({
   countRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
+    flexWrap: 'wrap',
+    rowGap: 8,
     marginBottom: 12,
   },
   countNum: {
@@ -532,36 +532,151 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 8,
   },
-  growth: {
-    marginTop: 14,
-    borderTopColor: 'rgba(255, 255, 255, 0.07)',
-    borderTopWidth: 1,
-    paddingTop: 14,
+  // ★ replaces the chart: the 30-day delta, stated once, unmistakably
+  trendChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 'auto',
+    alignSelf: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(74, 158, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(74, 158, 255, 0.35)',
   },
-  growthEyebrow: {
+  trendNum: {
     color: '#4a9eff',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
+    fontSize: 14,
+    fontWeight: '800',
   },
-  growthTitle: {
+  trendLabel: {
+    color: '#888888',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  // ===========================================================================
+  // ★ BroadcastComposer styles. These were REFERENCED by the component but
+  //   never defined — every `styles.scb*` lookup resolved to `undefined`, so
+  //   the broadcast modal was rendering with no overlay, no card, and no button
+  //   chrome. Ported from the web `.scb` block for 1:1 parity.
+  // ===========================================================================
+  scbOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    backgroundColor: 'rgba(3, 5, 10, 0.72)',
+  },
+  scbShell: {
+    width: '100%',
+    maxWidth: 440,
+    maxHeight: '88%',
+    padding: 24,
+    paddingTop: 26,
+    borderRadius: 20,
+    backgroundColor: '#0d1119',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  scbClose: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    zIndex: 2,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  scbHead: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  scbIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+    backgroundColor: 'rgba(74, 158, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(74, 158, 255, 0.35)',
+  },
+  scbTitle: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  scbSub: {
+    color: '#888888',
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 5,
+  },
+  scbInput: {
+    width: '100%',
+    minHeight: 110,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    color: '#FFFFFF',
+    fontSize: 14,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+  },
+  scbError: {
+    color: '#f0a5a5',
+    fontSize: 13,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(229, 75, 74, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(229, 75, 74, 0.35)',
+    marginBottom: 12,
+  },
+  scbBtn: {
+    width: '100%',
+    height: 46,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4a9eff',
+  },
+  scbBtnDisabled: {
+    opacity: 0.5,
+  },
+  scbBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '600',
+  },
+  scbDone: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  scbDoneTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
     fontWeight: '700',
-    marginTop: 2,
-    marginBottom: 10,
+    marginTop: 10,
   },
-  sparkline: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    height: 56,
-  },
-  bar: {
-    flex: 1,
-    backgroundColor: 'rgba(74, 158, 255, 0.6)',
-    borderRadius: 2,
-    marginHorizontal: 1,
+  scbDoneSub: {
+    color: '#888888',
+    fontSize: 13,
+    marginTop: 5,
+    marginBottom: 14,
+    textAlign: 'center',
   },
 });
 
