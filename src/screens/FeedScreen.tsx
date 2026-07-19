@@ -1293,6 +1293,12 @@ const FeedScreen: React.FC = () => {
                       activeOpacity={0.85}
                       onPress={() => handleSongNav(entry.songId, 'song')}
                     >
+                      <Image
+                        source={entry.artworkUrl ? { uri: getMediaUrl(entry.artworkUrl) || entry.artworkUrl } : require('../../assets/randomrapper.jpeg')}
+                        style={chartStyles.ambient}
+                        blurRadius={25}
+                      />
+                      <View style={chartStyles.ambientOverlay} />
                       <Text
                         style={[
                           chartStyles.rank,
@@ -1659,6 +1665,17 @@ const chartStyles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.04)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  // Ambient blurred artwork layer (matches Trophy Case / VotingWizard)
+  ambient: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.45,
+  },
+  ambientOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(10,10,12,0.72)',
   },
   rank: {
     width: 22,
