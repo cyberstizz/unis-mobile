@@ -18,6 +18,7 @@ import {
 import Svg, { Path, Circle, G } from 'react-native-svg';
 import { X } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useAuth } from '../context/AuthContext';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
 import PremiumPicker from './Premiumpicker';
 import ConfettiCannon from './Confetticannon';
@@ -46,12 +47,6 @@ const INTERVAL_OPTIONS = [
   { label: 'Quarter', value: 'quarterly' },
   { label: 'Year', value: 'annual' },
 ];
-
-// ─────────────────────────────────────────────
-// HELPER: Get key from jurisdiction ID
-// ─────────────────────────────────────────────
-const getKeyFromId = (id: string | undefined): string | undefined =>
-  id ? Object.keys(JURISDICTION_IDS).find(key => JURISDICTION_IDS[key] === id) : undefined;
 
 const formatText = (str: string): string =>
   str ? str.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
@@ -217,7 +212,7 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   // --- State ---
   const [step, setStep] = useState(1);
   const [currentFilters, setCurrentFilters] = useState<VoteFilters>({
-    selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap-hiphop',
+    selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap',
     selectedType: nominee?.type || filters?.selectedType || 'artist',
     selectedInterval: filters?.selectedInterval || 'daily',
     selectedJurisdiction: '',
@@ -225,10 +220,16 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   const [artistNameForward, setArtistNameForward] = useState('');
   const [artistNameBackward, setArtistNameBackward] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [eligibleJurisdictionIds, setEligibleJurisdictionIds] = useState<string[]>([]);
+  // ★ ironclad (ported from web): the picker is built from real API
+  //   jurisdiction objects ({jurisdictionId, name}) instead of the hardcoded
+  //   3-slug map, and the selection IS the UUID — no slug→UUID re-mapping at
+  //   submit time.
+  const [jurisdictionOptions, setJurisdictionOptions] = useState<{ jurisdictionId: string; name: string }[]>([]);
+  const [selectedJurisdictionId, setSelectedJurisdictionId] = useState('');
   const [isFetchingJurisdictions, setIsFetchingJurisdictions] = useState(false);
   const [voteResult, setVoteResult] = useState<VoteResult>({ status: 'idle', message: '', details: '' });
   const [showConfetti, setShowConfetti] = useState(false);
+  const { user } = useAuth();
 
   // --- Animations ---
   const backdropAnim = useRef(new Animated.Value(0)).current;
@@ -248,19 +249,15 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
     [selectedNominee]
   );
 
-  // Jurisdiction options filtered to eligible ones
-  const jurisdictionOptions = useMemo(() => {
-    if (isFetchingJurisdictions) return [];
-    return Object.keys(JURISDICTION_IDS)
-      .filter(key => {
-        if (eligibleJurisdictionIds.length === 0) return true;
-        return eligibleJurisdictionIds.includes(JURISDICTION_IDS[key]);
-      })
-      .map(key => ({
-        label: formatText(key),
-        value: key,
-      }));
-  }, [eligibleJurisdictionIds, isFetchingJurisdictions]);
+  // Picker options derived straight from the API-sourced jurisdiction list.
+  const pickerJurisdictionOptions = useMemo(
+    () => jurisdictionOptions.map(o => ({ label: o.name, value: o.jurisdictionId })),
+    [jurisdictionOptions]
+  );
+
+  // ★ ironclad: display name comes from the selected option itself.
+  const selectedJurisdictionName =
+    jurisdictionOptions.find(o => o.jurisdictionId === selectedJurisdictionId)?.name || '…';
 
   // ─── MODAL OPEN/CLOSE ANIMATIONS ───
   useEffect(() => {
@@ -359,7 +356,7 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
       setArtistNameForward('');
       setArtistNameBackward('');
       setSubmitting(false);
-      setEligibleJurisdictionIds([]);
+      setJurisdictionOptions([]); // ★ ironclad
     }
   }, [visible]);
 
@@ -368,16 +365,25 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
   // firing on every re-render when Player passes a new object reference.
   useEffect(() => {
     if (visible && nominee) {
-      const homeKey = getKeyFromId(
-        nominee?.jurisdiction && typeof nominee.jurisdiction === 'object'
-          ? (nominee.jurisdiction as any).jurisdictionId
-          : undefined
+      // ★ ironclad: prefer the nominee's REAL jurisdiction UUID; the hardcoded
+      //   map is only a bootstrap fallback until the breadcrumb fetch resolves.
+      const homeSlug =
+        nominee?.jurisdiction && typeof nominee.jurisdiction === 'string'
+          ? nominee.jurisdiction.toLowerCase().replace(/\s+/g, '-')
+          : null;
+      setSelectedJurisdictionId(
+        (nominee as any)?.jurisdictionId
+          || (typeof nominee?.jurisdiction === 'object'
+                ? (nominee.jurisdiction as any)?.jurisdictionId
+                : undefined)
+          || (homeSlug ? JURISDICTION_IDS[homeSlug] : undefined)
+          || (filters?.selectedJurisdiction ? JURISDICTION_IDS[filters.selectedJurisdiction] : undefined)
+          || ''
       );
       setCurrentFilters(prev => ({
         ...prev,
-        selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap-hiphop',
+        selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap',
         selectedType: nominee?.type || filters?.selectedType || 'artist',
-        selectedJurisdiction: homeKey || filters?.selectedJurisdiction || 'harlem',
       }));
     }
   }, [visible, nominee?.id]);
@@ -417,42 +423,53 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
         }
       }
 
-      // Fallback: show all
+      // ★ ironclad: shared fallback — options come from the bootstrap map,
+      //   with readable names via formatText, so the picker is never empty.
+      const mapFallbackOptions = Object.entries(JURISDICTION_IDS).map(([slug, id]) => ({
+        jurisdictionId: id,
+        name: formatText(slug),
+      }));
+
       if (!nomineeJurisdictionId) {
-        setEligibleJurisdictionIds(Object.values(JURISDICTION_IDS));
+        console.warn('[VotingWizard] Could not resolve nominee jurisdiction; using bootstrap options.'); // ★ checklist: logging
+        setJurisdictionOptions(mapFallbackOptions);
+        setSelectedJurisdictionId(prev => prev || mapFallbackOptions[0]?.jurisdictionId || '');
         setIsFetchingJurisdictions(false);
         return;
       }
 
       try {
         const response = await axiosInstance.get(`/v1/jurisdictions/${nomineeJurisdictionId}/breadcrumb`);
-        const eligibleIds = response.data
+
+        // ★ ironclad: the option list IS the API's voting-enabled breadcrumb —
+        //   any jurisdiction the backend deems eligible is selectable, with its
+        //   real name and real UUID. Nothing outside it ever reaches submit.
+        const options = (response.data || [])
           .filter((j: any) => j.votingEnabled !== false)
-          .map((j: any) => j.jurisdictionId);
+          .map((j: any) => ({ jurisdictionId: j.jurisdictionId, name: j.name }));
 
-        setEligibleJurisdictionIds(eligibleIds);
-
-        // Auto-correct if current selection is invalid
-        const currentId = JURISDICTION_IDS[currentFilters.selectedJurisdiction];
-        if (currentId && !eligibleIds.includes(currentId)) {
-          const homeKey = getKeyFromId(nomineeJurisdictionId);
-          if (homeKey) {
-            setCurrentFilters(prev => ({ ...prev, selectedJurisdiction: homeKey }));
-          }
+        if (options.length === 0) {
+          console.warn('[VotingWizard] Breadcrumb returned no voting-enabled jurisdictions.'); // ★
+          setJurisdictionOptions(mapFallbackOptions);
+          setSelectedJurisdictionId(prev => prev || mapFallbackOptions[0]?.jurisdictionId || '');
+          return;
         }
+
+        setJurisdictionOptions(options);
+        setSelectedJurisdictionId(prev =>
+          options.some((o: { jurisdictionId: string }) => o.jurisdictionId === prev)
+            ? prev
+            : (options.find((o: { jurisdictionId: string }) => o.jurisdictionId === nomineeJurisdictionId)?.jurisdictionId
+              || options[0].jurisdictionId)
+        );
       } catch (err) {
         console.error('Failed to fetch eligible jurisdictions:', err);
-        // Fallback logic for known jurisdictions
-        const homeKey = getKeyFromId(nomineeJurisdictionId);
-        let fallbackIds: string[] = [];
-        if (homeKey === 'downtown-harlem' || homeKey === 'uptown-harlem') {
-          fallbackIds = [JURISDICTION_IDS[homeKey], JURISDICTION_IDS['harlem']];
-        } else if (homeKey === 'harlem') {
-          fallbackIds = [JURISDICTION_IDS['harlem']];
-        } else {
-          fallbackIds = Object.values(JURISDICTION_IDS);
-        }
-        setEligibleJurisdictionIds(fallbackIds);
+        setJurisdictionOptions(mapFallbackOptions);
+        setSelectedJurisdictionId(prev =>
+          mapFallbackOptions.some(o => o.jurisdictionId === prev)
+            ? prev
+            : mapFallbackOptions[0]?.jurisdictionId || ''
+        );
       } finally {
         setIsFetchingJurisdictions(false);
       }
@@ -493,18 +510,57 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
     }
 
     setSubmitting(true);
+
+    // ★ ironclad (ported from web): resolve every ID up front — real UUIDs
+    //   first, bootstrap map as fallback — and refuse to send a doomed
+    //   request. Each missing piece gets its own named message instead of a
+    //   mystery failure downstream.
+    const genreId =
+      (selectedNominee as any).genreId
+      || GENRE_IDS[currentFilters.selectedGenre]
+      || GENRE_IDS[(currentFilters.selectedGenre || '').toLowerCase()];
+    const jurisdictionId = selectedJurisdictionId;
+    const intervalId = INTERVAL_IDS[currentFilters.selectedInterval];
+
+    const missing =
+      (!genreId && 'genre') || (!jurisdictionId && 'jurisdiction') || (!intervalId && 'interval');
+    if (missing) {
+      console.error(`[VotingWizard] Vote blocked — unresolved ${missing}:`, { // ★ checklist: logging
+        genreId, jurisdictionId, intervalId, filters: currentFilters, nominee: selectedNominee,
+      });
+      setVoteResult({
+        status: 'error',
+        message: 'Vote Not Sent',
+        details: `We couldn't identify this vote's ${missing}. Please close and reopen the wizard — if it keeps happening, contact support.`,
+      });
+      setSubmitting(false);
+      return;
+    }
+
     try {
       const voteData = {
         userId,
         targetType: currentFilters.selectedType,
         targetId: selectedNominee.id,
-        genreId: GENRE_IDS[currentFilters.selectedGenre],
-        jurisdictionId: JURISDICTION_IDS[currentFilters.selectedJurisdiction],
-        intervalId: INTERVAL_IDS[currentFilters.selectedInterval],
-        voteDate: new Date().toISOString().split('T')[0],
+        genreId,
+        jurisdictionId,
+        intervalId,
+        // ★ ironclad: voteDate removed — the server stamps the date in the
+        //   platform timezone. The old client-side UTC date rolled to
+        //   "tomorrow" after ~8pm New York time, causing phantom duplicate
+        //   rejections and window mismatches.
       };
 
-      console.log('=== VOTE DATA BEING SENT ===', JSON.stringify(voteData, null, 2));
+      if (!user?.phoneVerified) {
+        setVoteResult({
+          status: 'ineligible',
+          message: 'Phone Not Verified',
+          details: 'Verify your phone number to vote.',
+        });
+        setSubmitting(false);
+        return;
+      }
+
       await axiosInstance.post('/v1/vote/submit', voteData);
 
       // Animate to result with a brief delay for dramatic effect
@@ -521,13 +577,51 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
         }).start();
       });
     } catch (err: any) {
-      const status = err.response?.status;
-      if (status === 409) {
-        setVoteResult({ status: 'duplicate', message: 'Already Voted', details: 'You have already cast a vote in this category for this interval.' });
+      const resp = err.response;
+      const status = resp?.status;
+      const data = resp?.data;
+      // ★ ironclad: the backend now always sends {code, message} JSON, but we
+      //   also accept legacy plain-string bodies so no message is ever lost.
+      const serverMsg =
+        (data && typeof data === 'object' && (data.message || data.error))
+        || (typeof data === 'string' && data.trim() ? data.trim() : '');
+
+      console.error('Vote submission failed:', { status, serverMsg, data, err }); // ★ checklist: logging
+
+      if (!resp) {
+        // ★ ironclad: ONLY a request that never reached the server is called a
+        //   connection problem. Every server response shows the server's words.
+        setVoteResult({
+          status: 'network',
+          message: 'Connection Failed',
+          details: 'We could not reach the server. Check your connection and try again — your vote was not counted.',
+        });
+      } else if (status === 409) {
+        setVoteResult({
+          status: 'duplicate',
+          message: 'Already Voted',
+          details: serverMsg || 'You have already cast a vote in this category for this interval.',
+        });
       } else if (status === 403) {
-        setVoteResult({ status: 'ineligible', message: 'Vote Rejected', details: 'You are not eligible to vote in this jurisdiction.' });
+        setVoteResult({
+          status: 'ineligible',
+          message: 'Vote Rejected',
+          details: serverMsg || 'You are not eligible to cast this vote.',
+        });
+      } else if (status >= 400 && status < 500) {
+        setVoteResult({
+          status: 'error',
+          message: 'Vote Rejected',
+          details: serverMsg || `The server rejected this vote (code ${status}). Please close the wizard and try again.`,
+        });
       } else {
-        setVoteResult({ status: 'network', message: 'Connection Failed', details: 'We could not reach the server.' });
+        setVoteResult({
+          status: 'error',
+          message: 'Server Error',
+          details: serverMsg
+            ? `${serverMsg} — your vote was not counted.`
+            : `Something went wrong on our end (code ${status}). Your vote was not counted — please try again.`,
+        });
       }
     } finally {
       setSubmitting(false);
@@ -576,7 +670,7 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
               </View>
               <View style={styles.metaItem}>
                 <Text style={styles.metaLabel}>Jurisdiction</Text>
-                <Text style={styles.metaValue}>{formatText(currentFilters.selectedJurisdiction)}</Text>
+                <Text style={styles.metaValue}>{selectedJurisdictionName}</Text>
               </View>
               <View style={styles.metaItem}>
                 <Text style={styles.metaLabel}>Genre</Text>
@@ -649,12 +743,13 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
           onValueChange={(val) => setCurrentFilters(prev => ({ ...prev, selectedInterval: val }))}
         />
 
-        {/* Jurisdiction — Selectable, filtered to eligible */}
+        {/* Jurisdiction — Selectable, options ARE the API's voting-enabled
+            breadcrumb; the value is the real UUID (no slug re-mapping). */}
         <Text style={styles.filterLabel}>Jurisdiction</Text>
         <PremiumPicker
-          options={jurisdictionOptions}
-          selectedValue={currentFilters.selectedJurisdiction}
-          onValueChange={(val) => setCurrentFilters(prev => ({ ...prev, selectedJurisdiction: val }))}
+          options={pickerJurisdictionOptions}
+          selectedValue={selectedJurisdictionId}
+          onValueChange={(val) => setSelectedJurisdictionId(val)}
           loading={isFetchingJurisdictions}
           disabled={isFetchingJurisdictions}
         />
