@@ -119,20 +119,68 @@ const VoteAwardsScreen: React.FC = () => {
   const [showVoteWizard, setShowVoteWizard] = useState(false);
   const [selectedNominee, setSelectedNominee] = useState<any>(null);
 
-  const [countdown, setCountdown] = useState({ hours: 0, minutes: 0, seconds: 0 });
+  const [countdown, setCountdown] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  const [lastWinner, setLastWinner] = useState<{
+    id: string; name: string; artistName: string | null; imageUrl: string | null; awardDate: string | null;
+  } | null>(null);
+  const [winnerLoading, setWinnerLoading] = useState(false);
 
-  // ── Countdown timer ──
+  // ── New York time helpers (shared by countdown + winner lookback) ──
+  const getNewYorkNow = () => {
+    const nyString = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    return new Date(nyString);
+  };
+
+  // ── Countdown timer — follows the selected poll interval (web parity).
+  //    The old version was hardcoded to next-midnight with [] deps, so
+  //    Week/Month/Quarter/Year showed a daily countdown and never recalced
+  //    when the toggle changed.
   useEffect(() => {
+    const getPollEndDate = (interval: string) => {
+      const now = getNewYorkNow();
+      const end = new Date(now);
+
+      if (interval === 'daily') {
+        end.setDate(end.getDate() + 1);
+        end.setHours(0, 0, 0, 0);
+        return end;
+      }
+      if (interval === 'weekly') {
+        const day = end.getDay();
+        const daysUntilMonday = day === 0 ? 1 : 8 - day;
+        end.setDate(end.getDate() + daysUntilMonday);
+        end.setHours(0, 0, 0, 0);
+        return end;
+      }
+      if (interval === 'monthly') {
+        end.setMonth(end.getMonth() + 1, 1);
+        end.setHours(0, 0, 0, 0);
+        return end;
+      }
+      if (interval === 'quarterly') {
+        const currentQuarter = Math.floor(end.getMonth() / 3);
+        const nextQuarterStartMonth = (currentQuarter + 1) * 3;
+        if (nextQuarterStartMonth >= 12) end.setFullYear(end.getFullYear() + 1, 0, 1);
+        else end.setMonth(nextQuarterStartMonth, 1);
+        end.setHours(0, 0, 0, 0);
+        return end;
+      }
+      if (interval === 'annual') {
+        end.setFullYear(end.getFullYear() + 1, 0, 1);
+        end.setHours(0, 0, 0, 0);
+        return end;
+      }
+      end.setDate(end.getDate() + 1);
+      end.setHours(0, 0, 0, 0);
+      return end;
+    };
+
     const calcTimeLeft = () => {
-      const now = new Date();
-      const estString = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
-      const estNow = new Date(estString);
-      const nextMidnight = new Date(estString);
-      nextMidnight.setDate(nextMidnight.getDate() + 1);
-      nextMidnight.setHours(0, 0, 0, 0);
-      const diff = nextMidnight.getTime() - estNow.getTime();
+      const now = getNewYorkNow();
+      const diff = Math.max(0, getPollEndDate(selectedInterval).getTime() - now.getTime());
       return {
+        days: Math.floor(diff / (1000 * 60 * 60 * 24)),
         hours: Math.floor((diff / (1000 * 60 * 60)) % 24),
         minutes: Math.floor((diff / (1000 * 60)) % 60),
         seconds: Math.floor((diff / 1000) % 60),
@@ -141,7 +189,7 @@ const VoteAwardsScreen: React.FC = () => {
     setCountdown(calcTimeLeft());
     const timer = setInterval(() => setCountdown(calcTimeLeft()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [selectedInterval]);
 
   // ── Track ad view ──
   useEffect(() => {
@@ -194,6 +242,113 @@ const VoteAwardsScreen: React.FC = () => {
 
   const filteredNominees = nominees.filter(n => searchQuery.length === 0 || n.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
+  // ── Last-winner lookup (web parity) ──────────────────────────────────
+  // Wide lookback per cadence: the backend filters by intervalId and returns
+  // newest-first, so we surface the MOST RECENT winner instead of demanding
+  // an award dated one exact day (which blanked the card on any cron drift).
+  const getWinnerLookbackWindow = (interval: string) => {
+    const end = getNewYorkNow();
+    end.setHours(0, 0, 0, 0);
+    const lookbackDays: Record<string, number> =
+      { daily: 30, weekly: 90, monthly: 400, quarterly: 500, annual: 800 };
+    const start = new Date(end);
+    start.setDate(start.getDate() - (lookbackDays[interval] ?? 30));
+    start.setHours(0, 0, 0, 0);
+    return { startDate: start, endDate: end };
+  };
+
+  const toApiDate = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const formatAwardDate = (dateString: string | null) => {
+    if (!dateString) return '';
+    const date = new Date(`${dateString}T00:00:00`);
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+  };
+
+  // Winner field extraction — same fallback chains as web VoteAwards.
+  const getWinnerImage = (award: any): string | null => {
+    const imagePath = selectedType === 'artist'
+      ? (award?.winner?.photoUrl || award?.artist?.photoUrl || award?.user?.photoUrl || award?.target?.photoUrl)
+      : (award?.song?.artworkUrl || award?.winner?.artworkUrl || award?.target?.artworkUrl);
+    return imagePath ? (getMediaUrl(imagePath) || null) : null;
+  };
+  const getWinnerName = (award: any): string => {
+    if (selectedType === 'artist') {
+      return award?.winner?.username || award?.artist?.username || award?.user?.username
+        || award?.target?.username || 'Unknown Artist';
+    }
+    return award?.song?.title || award?.winner?.title || award?.target?.title || 'Unknown Song';
+  };
+  const getWinnerArtistName = (award: any): string | null => {
+    if (selectedType === 'artist') return null;
+    return award?.song?.artist?.username || award?.winner?.artist?.username
+      || award?.target?.artist?.username || 'Unknown Artist';
+  };
+  const getWinnerTargetId = (award: any): string | undefined => {
+    if (selectedType === 'artist') {
+      return award?.winner?.userId || award?.artist?.userId || award?.user?.userId
+        || award?.target?.userId || award?.targetId;
+    }
+    return award?.song?.songId || award?.winner?.songId || award?.target?.songId || award?.targetId;
+  };
+
+  // ── Fetch last winner whenever any filter changes ──
+  useEffect(() => {
+    const fetchLastWinner = async () => {
+      const genreId = GENRE_IDS[selectedGenre];
+      const jurisdictionId = JURISDICTION_IDS[selectedJurisdiction];
+      const intervalId = INTERVAL_IDS[selectedInterval];
+      if (!genreId || !jurisdictionId || !intervalId) { setLastWinner(null); return; }
+
+      setWinnerLoading(true);
+      const { startDate, endDate } = getWinnerLookbackWindow(selectedInterval);
+      try {
+        const res = await axiosInstance.get(
+          `/v1/awards/past?type=${selectedType}`
+          + `&startDate=${toApiDate(startDate)}`
+          + `&endDate=${toApiDate(endDate)}`
+          + `&jurisdictionId=${jurisdictionId}`
+          + `&intervalId=${intervalId}`
+          + `&genreId=${genreId}`
+        );
+
+        // Keep any award with a resolvable target — deliberately NOT filtered
+        // on awardId (web parity: the old filter silently discarded winners).
+        const awards = (res.data || [])
+          .filter((a: any) => getWinnerTargetId(a))
+          .sort((a: any, b: any) =>
+            new Date(b.awardDate || 0).getTime() - new Date(a.awardDate || 0).getTime());
+
+        if (awards.length === 0) { setLastWinner(null); return; }
+        const award = awards[0];
+        setLastWinner({
+          id: getWinnerTargetId(award)!,
+          name: getWinnerName(award),
+          artistName: getWinnerArtistName(award),
+          imageUrl: getWinnerImage(award),
+          awardDate: award.awardDate || null,
+        });
+      } catch (err) {
+        console.error('Failed to fetch last winner:', err);
+        setLastWinner(null);
+      } finally {
+        setWinnerLoading(false);
+      }
+    };
+    fetchLastWinner();
+  }, [selectedGenre, selectedType, selectedInterval, selectedJurisdiction]);
+
+  const handleWinnerClick = () => {
+    if (!lastWinner?.id) return;
+    if (selectedType === 'artist') navigation.navigate('Artist', { artistId: lastWinner.id });
+    else navigation.navigate('Song', { songId: lastWinner.id, type: 'song' });
+  };
+
   // ── Handlers (identical to web) ──
   const handleVoteClick = (nominee: Nominee) => {
     if (!userId) { Alert.alert('Login Required', 'Please log in to vote.'); return; }
@@ -229,6 +384,11 @@ const VoteAwardsScreen: React.FC = () => {
   const typeLabel = TYPES.find(t => t.value === selectedType)?.label || selectedType;
   const intervalLabel = INTERVALS.find(i => i.value === selectedInterval)?.label || selectedInterval;
   const jurisdictionLabel = JURISDICTIONS.find(j => j.value === selectedJurisdiction)?.label || selectedJurisdiction;
+
+  // Distinguish "no eligible content here" from "no winner computed yet" —
+  // when the grid is empty, telling users to "vote to crown the first winner"
+  // is misleading because there is nothing to vote for (web parity).
+  const hasNoEligibleContent = !loading && !error && filteredNominees.length === 0 && searchQuery.length === 0;
 
   const atob = (input: string): string => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
@@ -284,9 +444,12 @@ const VoteAwardsScreen: React.FC = () => {
           <TextInput style={s.searchInput} placeholder={`Search ${selectedType}s...`} placeholderTextColor={C.textMuted} value={searchQuery} onChangeText={setSearchQuery} autoFocus />
         )}
 
-        {/* ── Hero headline + countdown ── */}
+        {/* ── Hero: headline + meta cluster (countdown + last winner) ──
+             Mobile: heroMeta is a ROW — countdown and winner on the SAME
+             level. Wider screens: column on the right (countdown over
+             winner). Mirrors the web hero-meta design. */}
         <View style={s.hero}>
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: IS_MOBILE ? 0 : 1 }}>
             <Text style={s.activePoll}>Active poll</Text>
             <Text style={s.headline}>
               {genreLabel} {typeLabel}{' '}
@@ -294,13 +457,58 @@ const VoteAwardsScreen: React.FC = () => {
             </Text>
             <Text style={s.headline}>in {jurisdictionLabel}</Text>
           </View>
-          <View style={s.countdownWrap}>
-            <View style={s.countdownLabelRow}>
-              <View style={s.liveDot} />
-              <Text style={s.liveText}>LIVE</Text>
-              <Text style={s.countdownLabel}>  Poll ends in</Text>
+
+          <View style={s.heroMeta}>
+            <View style={s.countdownWrap}>
+              <View style={s.countdownLabelRow}>
+                <View style={s.liveDot} />
+                <Text style={s.liveText}>LIVE</Text>
+                <Text style={s.countdownLabel}>  Poll ends in</Text>
+              </View>
+              <Text style={s.countdownTime}>
+                {countdown.days > 0 && <Text style={s.countdownDays}>{countdown.days}D </Text>}
+                {pad(countdown.hours)}:{pad(countdown.minutes)}:{pad(countdown.seconds)}
+              </Text>
             </View>
-            <Text style={s.countdownTime}>{pad(countdown.hours)}:{pad(countdown.minutes)}:{pad(countdown.seconds)}</Text>
+
+            {/* ── Last winner card ── */}
+            <TouchableOpacity
+              style={[s.lastWinner, lastWinner ? s.lastWinnerHas : s.lastWinnerEmptyBox]}
+              onPress={lastWinner ? handleWinnerClick : undefined}
+              activeOpacity={lastWinner ? 0.8 : 1}
+              disabled={!lastWinner}
+              accessibilityRole={lastWinner ? 'button' : 'text'}
+              accessibilityLabel={lastWinner ? `Current winner ${lastWinner.name}` : 'No winner yet'}
+            >
+              <View style={s.lastWinnerCopy}>
+                <View style={s.lastWinnerKickerRow}>
+                  <View style={s.lastWinnerDot} />
+                  <Text style={s.lastWinnerKicker}>{lastWinner ? 'Current' : 'First winner pending'}</Text>
+                </View>
+                {lastWinner ? (
+                  <>
+                    <Text style={s.lastWinnerName} numberOfLines={1}>{lastWinner.name}</Text>
+                    {lastWinner.artistName && (
+                      <Text style={s.lastWinnerArtist} numberOfLines={1}>by {lastWinner.artistName}</Text>
+                    )}
+                    {lastWinner.awardDate && (
+                      <Text style={s.lastWinnerDate}>Won {formatAwardDate(lastWinner.awardDate)}</Text>
+                    )}
+                  </>
+                ) : (
+                  <Text style={s.lastWinnerEmpty}>
+                    {winnerLoading
+                      ? 'Checking recent winners...'
+                      : hasNoEligibleContent
+                        ? `No ${genreLabel} ${selectedType}s in ${jurisdictionLabel} yet.`
+                        : `Vote to crown the first ${typeLabel} of the ${intervalLabel}.`}
+                  </Text>
+                )}
+              </View>
+              {lastWinner?.imageUrl && (
+                <Image source={{ uri: lastWinner.imageUrl }} style={s.lastWinnerThumb} />
+              )}
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -347,7 +555,7 @@ const VoteAwardsScreen: React.FC = () => {
                 </View>
               </View>
             )) : (
-              <Text style={s.emptyText}>{searchQuery ? 'No nominees match your search.' : 'No nominees found for this category yet.'}</Text>
+              <Text style={s.emptyText}>{searchQuery ? 'No nominees match your search.' : `No ${genreLabel} ${selectedType}s in ${jurisdictionLabel} yet.`}</Text>
             )}
           </View>
         )}
@@ -392,16 +600,51 @@ const s = StyleSheet.create({
   searchInput: { backgroundColor: C.surfaceDim, borderWidth: 1, borderColor: C.borderDim, borderRadius: 6, color: C.textWhite, fontSize: 14, paddingVertical: 9, paddingHorizontal: 16, marginBottom: 16 },
 
   // Hero
-  hero: { flexDirection: IS_MOBILE ? 'column' : 'row', justifyContent: 'space-between', alignItems: IS_MOBILE ? 'flex-start' : 'flex-end', marginBottom: 24, gap: 12 },
+  hero: { flexDirection: IS_MOBILE ? 'column' : 'row', justifyContent: 'space-between', alignItems: IS_MOBILE ? 'stretch' : 'flex-start', marginBottom: 24, gap: 12 },
+  // Meta cluster: countdown + last-winner. Mobile = ROW (same level);
+  // wider = column on the right (countdown over winner). Web parity.
+  heroMeta: {
+    flexDirection: IS_MOBILE ? 'row' : 'column',
+    alignItems: IS_MOBILE ? 'center' : 'flex-end',
+    justifyContent: IS_MOBILE ? 'space-between' : 'flex-start',
+    gap: 12,
+    width: IS_MOBILE ? '100%' : undefined,
+  },
   activePoll: { fontSize: 10, letterSpacing: 2.5, textTransform: 'uppercase', color: C.textMuted, fontWeight: '500', marginBottom: 6 },
   headline: { fontSize: IS_MOBILE ? 26 : 34, fontWeight: '700', color: C.textWhite, textTransform: 'uppercase', lineHeight: IS_MOBILE ? 30 : 38, letterSpacing: -0.3 },
   headlineAccent: { color: C.unisBlue, fontStyle: 'italic', fontWeight: '700' },
-  countdownWrap: { alignItems: IS_MOBILE ? 'flex-start' : 'flex-end' },
+  countdownWrap: { alignItems: IS_MOBILE ? 'flex-start' : 'flex-end', flexShrink: 0 },
   countdownLabelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.greenBadge, marginRight: 4 },
   liveText: { color: C.greenBadge, fontSize: 11, fontWeight: '700', letterSpacing: 1.5 },
   countdownLabel: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 2, color: C.textMuted },
-  countdownTime: { fontSize: IS_MOBILE ? 24 : 30, fontWeight: '700', color: C.textWhite, letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  countdownTime: { fontSize: IS_MOBILE ? 20 : 30, fontWeight: '700', color: C.textWhite, letterSpacing: 1, fontVariant: ['tabular-nums'] },
+  countdownDays: { color: C.unisBlue, fontStyle: 'italic', fontWeight: '700' },
+
+  // Last winner card (web .va-last-winner parity)
+  lastWinner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: IS_MOBILE ? 1 : undefined,
+    minWidth: 0,
+    maxWidth: IS_MOBILE ? undefined : 320,
+  },
+  lastWinnerHas: { borderColor: 'rgba(22,51,135,0.28)', backgroundColor: 'rgba(255,255,255,0.05)' },
+  lastWinnerEmptyBox: { borderColor: 'rgba(255,255,255,0.08)', backgroundColor: 'rgba(255,255,255,0.035)' },
+  lastWinnerCopy: { flex: 1, minWidth: 0, gap: 2 },
+  lastWinnerKickerRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  lastWinnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.unisBlue },
+  lastWinnerKicker: { fontSize: 8.5, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: C.unisBlue },
+  lastWinnerName: { fontSize: 13, fontWeight: '800', color: C.textWhite, textTransform: 'uppercase', letterSpacing: -0.1 },
+  lastWinnerArtist: { fontSize: 10, color: C.textGray },
+  lastWinnerDate: { fontSize: 10, color: C.textMuted, letterSpacing: 0.3 },
+  lastWinnerEmpty: { fontSize: 10, color: C.textMuted, letterSpacing: 0.3 },
+  lastWinnerThumb: { width: 44, height: 44, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' },
 
   // Grid
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
