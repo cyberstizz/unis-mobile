@@ -1,25 +1,23 @@
 // src/screens/FindScreen.tsx
-// Interactive map-based music discovery — "The Hook Point"
-// Drill down through jurisdictions to find top artists and songs
+// Territory discovery — drill down through jurisdictions to find local artists.
 //
-// FULLY WIRED TO BACKEND:
-//   - /v1/jurisdictions/byName/{name}
-//   - /v1/jurisdictions/{id}/children/detailed
-//   - /v1/jurisdictions/{id}/tops
-//   - /v1/jurisdictions/{id} (single)
-//   - /v1/users/{id}/default-song
-//   - /v1/media/song/{id}/play?userId={userId}
+// The map is src/map/UnisMap.tsx. @maplibre/maplibre-react-native and the
+// CartoDB raster tiles are gone: no tile provider, no API key, no attribution,
+// and nothing fetched from a third party at render time. State outlines ship
+// pre-projected in the bundle; jurisdiction polygons come from our own API and
+// are projected into the same space on arrival.
 //
-// KEY FIXES vs previous version:
-//   1. NO onStartShouldSetResponder — was blocking ScrollView from scrolling past map
-//   2. Camera ref on Camera COMPONENT (not MapView) for flyTo/fitBounds
-//   3. Full page layout preserved — filters → map → pills → results all scroll
-//   4. GeoJSON properties use 1/0 for MapLibre expression compatibility
-//   5. Feature IDs added for press identification
-//   6. ShapeSource hitbox for reliable tap detection
-//   7. US zoom 2.2 to show complete map on mobile
+// Three things that were wrong in the MapLibre version and are fixed here:
+//
+//   1. handlePlay called playMedia() directly, which bypasses PlayChoiceModal.
+//      Every other play surface in the app goes through requestPlay(). It does
+//      now too.
+//   2. US state outlines were fetched from raw.githubusercontent.com on mount.
+//      A core screen had a hard runtime dependency on a third party.
+//   3. Only New York was enterable; every other state produced an Alert. All
+//      states now open one level so a visitor can see their own region mapped.
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,26 +28,20 @@ import {
   ImageBackground,
   ActivityIndicator,
   Dimensions,
-  Alert,
   Animated,
-  Platform,
 } from 'react-native';
-import MapLibreGL from '@maplibre/maplibre-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ChevronLeft } from 'lucide-react-native';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import UnisMap, { MapTerritory } from '../map/UnisMap';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
-// =============================================================================
-// DESIGN TOKENS
-// =============================================================================
 const COLORS = {
   bgBlack: '#000000',
   subtleBlack: '#1a1a1a',
@@ -57,70 +49,38 @@ const COLORS = {
   textGray: '#A9A9A9',
   accentWhite: '#FFFFFF',
   unisBlue: '#163387',
-  unisSilver: '#918f8f',
+  unisBlueBright: '#2E5AAC',
   borderSilver: 'rgba(192, 192, 192, 0.2)',
 };
 
-// CartoDB Dark Tiles (dark basemap — states render as white tiles on top)
-const CARTO_DARK_STYLE = {
-  version: 8,
-  sources: {
-    'carto-dark': {
-      type: 'raster',
-      tiles: [
-        'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
-        'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
-        'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
-      ],
-      tileSize: 256,
-    },
-  },
-  layers: [
-    {
-      id: 'carto-dark-layer',
-      type: 'raster',
-      source: 'carto-dark',
-      minzoom: 0,
-      maxzoom: 22,
-    },
-  ],
-};
-
-const US_STATES_GEOJSON_URL =
-  'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
-
+const ACTIVE_STATES = ['New York'];
 const ACTIVE_JURISDICTIONS = ['Harlem', 'Uptown Harlem', 'Downtown Harlem'];
 const HARLEM_PARENT_CHAIN = [
   'Unis', 'New York', 'New York City Metro', 'New York City',
   'Manhattan', 'Upper Manhattan', 'Harlem', 'Uptown Harlem', 'Downtown Harlem',
 ];
 
+// The web build reads these from idMappings.js, which exports CANONICAL_GENRES
+// precisely so no screen hardcodes a list. src/utils/IdMappings.ts here has no
+// such export yet — worth lifting across, at which point this should import it
+// rather than restate it. Note 'rap', not the legacy 'rap-hiphop' alias.
 const GENRES = [
-  { value: 'rap-hiphop', label: 'Rap' },
+  { value: 'rap', label: 'Rap' },
   { value: 'rock', label: 'Rock' },
   { value: 'pop', label: 'Pop' },
 ];
 
-// Camera positions — zoom 2.2 shows full US on mobile screens
-const US_CENTER: [number, number] = [-98.5795, 39.8283];
-const US_ZOOM = 2.4;
+// KNOWN GAP — the genre control is inert, exactly as on web.
+// /v1/jurisdictions/{id}/tops takes no genre parameter. Genre filtering lives
+// on /v1/vote/leaderboards, which does accept genreId. Until /tops grows the
+// same parameter, changing this pill updates local state and nothing else.
 
-// =============================================================================
-// INTERFACES
-// =============================================================================
-interface NavigationItem {
+const ROOT_CRUMB = { name: 'United States', jurisdictionId: null as string | null, tier: 0 };
+
+interface NavItem {
   name: string;
   jurisdictionId: string | null;
   tier: number;
-}
-
-interface Jurisdiction {
-  jurisdictionId: string;
-  name: string;
-  hasChildren: boolean;
-  polygon?: any;
-  bio?: string;
-  isActive?: boolean;
 }
 
 interface TopResult {
@@ -128,676 +88,416 @@ interface TopResult {
   name?: string;
   title?: string;
   artist?: string;
+  artistId?: string;
   votes: number;
   artwork: string;
   fileUrl?: string;
 }
 
-// =============================================================================
-// HELPERS
-// =============================================================================
-const isInHarlemChain = (name: string) => HARLEM_PARENT_CHAIN.includes(name);
-const isActiveJurisdiction = (name: string) => ACTIVE_JURISDICTIONS.includes(name);
-
-const parsePolygon = (polygon: any): any => {
-  if (!polygon) return null;
+const decodeJwt = (token: string): any | null => {
   try {
-    return typeof polygon === 'string' ? JSON.parse(polygon) : polygon;
-  } catch (e) {
-    console.error('Failed to parse polygon:', e);
+    const part = token.split('.')[1];
+    const json = decodeURIComponent(
+      atob(part.replace(/-/g, '+').replace(/_/g, '/'))
+        .split('')
+        .map((c) => `%${`00${c.charCodeAt(0).toString(16)}`.slice(-2)}`)
+        .join('')
+    );
+    return JSON.parse(json);
+  } catch {
     return null;
   }
 };
 
-// Returns [[sw_lng, sw_lat], [ne_lng, ne_lat]] for MapLibre
-const getBoundsFromPolygon = (polygon: any): [[number, number], [number, number]] | null => {
-  const geometry = parsePolygon(polygon);
-  if (!geometry?.coordinates) return null;
+const isInHarlemChain = (n: string) => HARLEM_PARENT_CHAIN.includes(n);
+const isActiveJurisdiction = (n: string) => ACTIVE_JURISDICTIONS.includes(n);
 
-  // Handle both Polygon and MultiPolygon
-  let allCoords: number[][] = [];
-  if (geometry.type === 'MultiPolygon') {
-    geometry.coordinates.forEach((poly: number[][][]) => {
-      allCoords = allCoords.concat(poly[0]);
-    });
-  } else if (geometry.type === 'Polygon') {
-    allCoords = geometry.coordinates[0];
-  }
-
-  if (!allCoords || allCoords.length === 0) return null;
-
-  const lngs = allCoords.map((c: number[]) => c[0]);
-  const lats = allCoords.map((c: number[]) => c[1]);
-  return [
-    [Math.min(...lngs), Math.min(...lats)], // SW [lng, lat]
-    [Math.max(...lngs), Math.max(...lats)], // NE [lng, lat]
-  ];
-};
-
-// Convert jurisdictions to GeoJSON — uses 1/0 for MapLibre expression compatibility
-const jurisdictionsToGeoJSON = (jurisdictions: Jurisdiction[]) => {
-  const features = jurisdictions
-    .filter(j => j.polygon)
-    .map((j, index) => {
-      const geometry = parsePolygon(j.polygon);
-      if (!geometry) return null;
-      return {
-        type: 'Feature' as const,
-        id: index + 1, // Numeric ID for MapLibre feature identification
-        properties: {
-          jurisdictionId: j.jurisdictionId,
-          name: j.name,
-          hasChildren: j.hasChildren ? 1 : 0,
-          isActive: isActiveJurisdiction(j.name) ? 1 : 0,
-          isInHarlemChain: isInHarlemChain(j.name) ? 1 : 0,
-        },
-        geometry,
-      };
-    })
-    .filter(Boolean);
-
-  return { type: 'FeatureCollection' as const, features };
-};
-
-// Add numeric IDs to US states GeoJSON
-const addFeatureIds = (geojson: any) => {
-  if (!geojson?.features) return geojson;
-  return {
-    ...geojson,
-    features: geojson.features.map((f: any, i: number) => ({
-      ...f,
-      id: i + 1,
-    })),
-  };
-};
-
-// Base64 decode for JWT
-const atob = (input: string): string => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  let str = input.replace(/=+$/, '');
-  let output = '';
-  for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-    buffer = chars.indexOf(buffer) as any;
-    if (buffer === -1) continue;
-    bs = bc % 4 ? bs * 64 + buffer : buffer;
-    if (bc++ % 4) {
-      output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
-    }
-  }
-  return output;
-};
-
-const STATE_NAMES = [
-  'New York', 'California', 'Texas', 'Florida', 'Illinois',
-  'Washington', 'Arizona', 'Colorado', 'Ohio', 'Georgia',
-];
-
-// =============================================================================
-// COMPONENT
-// =============================================================================
 const FindScreen: React.FC = () => {
-  const insets = useSafeAreaInsets();
-  const { playMedia } = usePlayer();
   const navigation = useNavigation<any>();
+  const { requestPlay } = usePlayer();
 
-  // Camera ref on the Camera COMPONENT for programmatic flyTo/fitBounds
-  const cameraRef = useRef<MapLibreGL.Camera>(null);
-
-  const [mapReady, setMapReady] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
-  const [genre, setGenre] = useState('rap-hiphop');
-  const [usGeoData, setUsGeoData] = useState<any>(null);
-  const [hoveredState, setHoveredState] = useState<string | null>(null);
-  const [isAnimating, setIsAnimating] = useState(false);
+  const [genre, setGenre] = useState(GENRES[0].value);
+  const [showGenreDropdown, setShowGenreDropdown] = useState(false);
 
-  // Navigation stack (matches web exactly)
-  const [navigationStack, setNavigationStack] = useState<NavigationItem[]>([
-    { name: 'United States', jurisdictionId: null, tier: 0 },
-  ]);
-  const [currentJurisdictions, setCurrentJurisdictions] = useState<Jurisdiction[]>([]);
-  const [selectedJurisdiction, setSelectedJurisdiction] = useState<Jurisdiction | null>(null);
+  const [navigationStack, setNavigationStack] = useState<NavItem[]>([ROOT_CRUMB]);
+  const [currentJurisdictions, setCurrentJurisdictions] = useState<MapTerritory[]>([]);
+  const [selectedJurisdiction, setSelectedJurisdiction] = useState<any>(null);
+  const [focusState, setFocusState] = useState<string | null>(null);
 
-  // Results
   const [topArtists, setTopArtists] = useState<TopResult[]>([]);
   const [topSongs, setTopSongs] = useState<TopResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [hasSelectedJurisdiction, setHasSelectedJurisdiction] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasSelected, setHasSelected] = useState(false);
 
-  // Jurisdiction polygon GeoJSON for map layer
-  const [jurisdictionGeoJSON, setJurisdictionGeoJSON] = useState<any>(null);
-
-  // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const [showGenreDropdown, setShowGenreDropdown] = useState(false);
-
-  // Derived state
-  const isAtUSLevel = () => navigationStack.length === 1;
-
-  const displayTerritory =
-    hoveredState ||
-    selectedJurisdiction?.name ||
-    (navigationStack.length > 1
-      ? navigationStack[navigationStack.length - 1].name
-      : 'Select a State');
-
-  const showComingSoon =
-    selectedJurisdiction && !isInHarlemChain(selectedJurisdiction.name);
-
-  // ════════════════════════════════════════════
-  // INITIALIZATION
-  // ════════════════════════════════════════════
 
   useEffect(() => {
-    const getUserId = async () => {
+    (async () => {
       try {
         const token = await SecureStore.getItemAsync('token');
-        if (token) {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          setUserId(payload.userId);
-        }
+        if (token) setUserId(decodeJwt(token)?.userId ?? null);
       } catch (err) {
-        console.error('Failed to get userId:', err);
+        console.warn('[FindScreen] token read failed:', err);
       }
-    };
-    getUserId();
+    })();
   }, []);
 
-  useEffect(() => {
-    fetch(US_STATES_GEOJSON_URL)
-      .then(res => res.json())
-      .then(data => setUsGeoData(addFeatureIds(data)))
-      .catch(err => console.error('Failed to load US states:', err));
-  }, []);
+  /* --------------------------------------------------------------- api -- */
 
-  // Update GeoJSON when jurisdictions change
-  useEffect(() => {
-    if (currentJurisdictions.length > 0) {
-      const geoJSON = jurisdictionsToGeoJSON(currentJurisdictions);
-      setJurisdictionGeoJSON(geoJSON.features.length > 0 ? geoJSON : null);
-    } else {
-      setJurisdictionGeoJSON(null);
-    }
-  }, [currentJurisdictions]);
-
-  // ════════════════════════════════════════════
-  // CAMERA HELPERS
-  // Using Camera component ref — cameraRef.current.fitBounds / .setCamera
-  // Matches web's map.flyToBounds / map.flyTo
-  // ════════════════════════════════════════════
-
-  const flyToCenter = (center: [number, number], zoom: number) => {
-    cameraRef.current?.setCamera({
-      centerCoordinate: center,
-      zoomLevel: zoom,
-      animationDuration: 800,
-      animationMode: 'flyTo',
-    });
-  };
-
-  const flyToBounds = (
-    sw: [number, number],
-    ne: [number, number],
-    padding: number = 50
-  ) => {
-    // Camera.fitBounds(ne, sw, padding, duration)
-    cameraRef.current?.fitBounds(ne, sw, [padding, padding], 800);
-  };
-
-  // ════════════════════════════════════════════
-  // API CALLS (matches web FindPage exactly)
-  // ════════════════════════════════════════════
-
-  const fetchChildren = async (jurisdictionId: string): Promise<Jurisdiction[]> => {
+  const fetchChildren = useCallback(async (id: string): Promise<MapTerritory[]> => {
     try {
-      const response = await axiosInstance.get(
-        `/v1/jurisdictions/${jurisdictionId}/children/detailed`
-      );
-      return response.data || [];
-    } catch (err) {
-      console.error('Failed to fetch children/detailed, trying fallback:', err);
+      const res = await axiosInstance.get(`/v1/jurisdictions/${id}/children/detailed`);
+      return res.data || [];
+    } catch {
       try {
-        const fallbackResponse = await axiosInstance.get(
-          `/v1/jurisdictions/${jurisdictionId}/children`
-        );
-        return (fallbackResponse.data || []).map((j: any) => ({
-          ...j,
-          hasChildren: true,
-          isActive: isActiveJurisdiction(j.name),
-        }));
-      } catch (fallbackErr) {
-        console.error('Fallback fetch also failed:', fallbackErr);
+        const fb = await axiosInstance.get(`/v1/jurisdictions/${id}/children`);
+        return (fb.data || []).map((j: any) => ({ ...j, hasChildren: true }));
+      } catch (err) {
+        console.warn('[FindScreen] children fetch failed:', err);
         return [];
       }
     }
-  };
+  }, []);
 
-  const fetchJurisdictionByName = async (name: string): Promise<any[] | null> => {
-    try {
-      const response = await axiosInstance.get(
-        `/v1/jurisdictions/byName/${encodeURIComponent(name)}`
-      );
-      return response.data;
-    } catch (err) {
-      console.error('Failed to fetch jurisdiction by name:', err);
-      return null;
-    }
-  };
-
-  const fetchTopResults = async (jurisdictionName: string) => {
+  const fetchTopsById = useCallback(async (id: string) => {
     setLoading(true);
-    setHasSelectedJurisdiction(true);
+    setError(null);
+    setHasSelected(true);
     fadeAnim.setValue(0);
-
     try {
-      // If not active but in Harlem chain → resolve to Harlem (matches web)
-      let resolvedName = jurisdictionName;
-      if (!isActiveJurisdiction(jurisdictionName) && isInHarlemChain(jurisdictionName)) {
-        resolvedName = 'Harlem';
-      }
+      const res = await axiosInstance.get(`/v1/jurisdictions/${id}/tops`);
+      const raw = res.data || {};
 
-      const jurResponse = await axiosInstance.get(
-        `/v1/jurisdictions/byName/${encodeURIComponent(resolvedName)}`
+      setTopArtists(
+        (raw.topArtists || []).slice(0, 3).map((a: any, i: number) => ({
+          id: a.userId || String(i),
+          name: a.username,
+          votes: a.score || 0,
+          artwork: getMediaUrl(a.photoUrl) || '',
+        }))
       );
-      const jurId = jurResponse.data?.[0]?.jurisdictionId;
-      if (!jurId) throw new Error('Jurisdiction not found');
-
-      const topsResponse = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
-      const rawData = topsResponse.data;
-
-      const artists: TopResult[] = (rawData.topArtists || []).slice(0, 3).map((artist: any, i: number) => ({
-        id: artist.userId || String(i),
-        name: artist.username,
-        votes: artist.score || 0,
-        artwork: getMediaUrl(artist.photoUrl) || `https://picsum.photos/200?random=a${i}`,
-      }));
-
-      const songs: TopResult[] = (rawData.topSongs || []).slice(0, 3).map((song: any, i: number) => ({
-        id: song.songId || String(i),
-        title: song.title,
-        artist: song.artist?.username || 'Unknown',
-        votes: song.score || 0,
-        fileUrl: getMediaUrl(song.fileUrl) || undefined,
-        artwork: getMediaUrl(song.artworkUrl) || `https://picsum.photos/200?random=s${i}`,
-      }));
-
-      setTopArtists(artists);
-      setTopSongs(songs);
+      setTopSongs(
+        (raw.topSongs || []).slice(0, 3).map((s: any, i: number) => ({
+          id: s.songId || String(i),
+          title: s.title,
+          artist: s.artist?.username || 'Unknown',
+          artistId: s.artist?.userId,
+          votes: s.score || 0,
+          fileUrl: getMediaUrl(s.fileUrl),
+          artwork: getMediaUrl(s.artworkUrl) || '',
+        }))
+      );
     } catch (err) {
-      console.error('Fetch tops error:', err);
+      console.warn('[FindScreen] tops fetch failed:', err);
+      setError('Top results are unavailable right now.');
       setTopArtists([]);
       setTopSongs([]);
     } finally {
       setLoading(false);
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 500,
-        useNativeDriver: true,
-      }).start();
+      Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }).start();
     }
-  };
+  }, [fadeAnim]);
 
-  // ════════════════════════════════════════════
-  // EVENT HANDLERS (matches web flow)
-  // ════════════════════════════════════════════
-
-  const handleStatePress = async (stateName: string) => {
-    console.log('[FindScreen] handleStatePress:', stateName);
-
-    if (stateName !== 'New York') {
-      Alert.alert('Coming Soon', `${stateName} coming to Unis soon!`);
-      return;
+  const fetchTopsByName = useCallback(async (name: string) => {
+    const resolved = !isActiveJurisdiction(name) && isInHarlemChain(name) ? 'Harlem' : name;
+    try {
+      const res = await axiosInstance.get(
+        `/v1/jurisdictions/byName/${encodeURIComponent(resolved)}`
+      );
+      const id = res.data?.[0]?.jurisdictionId;
+      if (!id) throw new Error('not found');
+      await fetchTopsById(id);
+    } catch (err) {
+      console.warn('[FindScreen] byName failed:', err);
+      setError('Top results are unavailable right now.');
+      setLoading(false);
     }
+  }, [fetchTopsById]);
 
-    setHoveredState(stateName);
+  /* ------------------------------------------------------ interactions -- */
 
-    flyToBounds([-80.0, 40.5], [-71.8, 45.1], 50);
+  const handleStateSelect = useCallback(
+    async (stateName: string) => {
+      if (focusState === stateName) return;
+      const isLive = ACTIVE_STATES.includes(stateName);
 
-    const nyData = await fetchJurisdictionByName('New York');
-    const jurisdiction = nyData?.[0];
-    if (!jurisdiction) {
-      Alert.alert('Error', 'Failed to load New York data');
-      return;
-    }
+      setLoading(true);
+      setHasSelected(true);
+      setError(null);
 
-    const children = await fetchChildren(jurisdiction.jurisdictionId);
+      try {
+        const res = await axiosInstance.get(
+          `/v1/jurisdictions/byName/${encodeURIComponent(stateName)}`
+        );
+        const jur = res.data?.[0];
+        if (!jur) {
+          setLoading(false);
+          setHasSelected(false);
+          setError(`Unis isn't in ${stateName} yet.`);
+          return;
+        }
 
-    setNavigationStack([
-      { name: 'United States', jurisdictionId: null, tier: 0 },
-      { name: 'New York', jurisdictionId: jurisdiction.jurisdictionId, tier: 2 },
-    ]);
-    setCurrentJurisdictions(children);
-    setSelectedJurisdiction(jurisdiction);
+        // Charts only for live states — a dormant state has nothing to rank,
+        // so asking for its tops is a guaranteed empty round trip.
+        const [children] = await Promise.all([
+          fetchChildren(jur.jurisdictionId),
+          isLive ? fetchTopsById(jur.jurisdictionId) : Promise.resolve(),
+        ]);
 
-    // Fly to NY bounds (matches web: flyToBounds with padding [50, 50])
-    const bounds = getBoundsFromPolygon(jurisdiction.polygon);
-    if (bounds) {
-      flyToBounds(bounds[0], bounds[1], 50);
-    } else {
-      flyToCenter([-75.5, 42.5], 6);
-    }
+        setFocusState(stateName);
+        setNavigationStack([
+          ROOT_CRUMB,
+          { name: stateName, jurisdictionId: jur.jurisdictionId, tier: 2 },
+        ]);
+        setCurrentJurisdictions(children);
+        setSelectedJurisdiction(jur);
 
-    fetchTopResults('New York');
-  };
+        if (!isLive) {
+          setTopArtists([]);
+          setTopSongs([]);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.warn('[FindScreen] state select failed:', err);
+        setError(`${stateName} could not be loaded.`);
+        setLoading(false);
+      }
+    },
+    [focusState, fetchChildren, fetchTopsById]
+  );
 
-  const handleJurisdictionClick = async (jurisdiction: Jurisdiction) => {
-    console.log('[FindScreen] handleJurisdictionClick:', jurisdiction.name);
+  const handleTerritorySelect = useCallback(
+    async (jur: MapTerritory) => {
+      setSelectedJurisdiction(jur);
 
-    setSelectedJurisdiction(jurisdiction);
-    setHoveredState(jurisdiction.name);
+      // Inside a dormant state there is only one level of geometry, so a tap
+      // highlights the region and stops rather than flying into an empty frame.
+      if (!ACTIVE_STATES.includes(focusState || '')) return;
 
-    if (jurisdiction.hasChildren) {
-      const children = await fetchChildren(jurisdiction.jurisdictionId);
+      const resolved =
+        !isActiveJurisdiction(jur.name) && isInHarlemChain(jur.name) ? 'Harlem' : jur.name;
 
-      if (children.length > 0) {
-        setNavigationStack(prev => [
+      const childrenPromise = jur.hasChildren
+        ? fetchChildren(jur.jurisdictionId)
+        : Promise.resolve([] as MapTerritory[]);
+      const topsPromise =
+        resolved === jur.name ? fetchTopsById(jur.jurisdictionId) : fetchTopsByName(jur.name);
+
+      const [children] = await Promise.all([childrenPromise, topsPromise]);
+
+      if (jur.hasChildren && children.length > 0) {
+        setNavigationStack((prev) => [
           ...prev,
           {
-            name: jurisdiction.name,
-            jurisdictionId: jurisdiction.jurisdictionId,
+            name: jur.name,
+            jurisdictionId: jur.jurisdictionId,
             tier: prev[prev.length - 1].tier + 1,
           },
         ]);
         setCurrentJurisdictions(children);
-
-        // Fly to jurisdiction bounds (matches web: padding [30, 30])
-        const bounds = getBoundsFromPolygon(jurisdiction.polygon);
-        if (bounds) {
-          flyToBounds(bounds[0], bounds[1], 30);
-        }
       }
-    }
+    },
+    [focusState, fetchChildren, fetchTopsById, fetchTopsByName]
+  );
 
-    fetchTopResults(jurisdiction.name);
-  };
+  const resetToNational = useCallback(() => {
+    setNavigationStack([ROOT_CRUMB]);
+    setCurrentJurisdictions([]);
+    setSelectedJurisdiction(null);
+    setFocusState(null);
+    setHasSelected(false);
+    setTopArtists([]);
+    setTopSongs([]);
+    setError(null);
+  }, []);
 
-  const handleBack = async () => {
+  const handleBack = useCallback(async () => {
     if (navigationStack.length <= 1) return;
+    const stack = navigationStack.slice(0, -1);
+    const prev = stack[stack.length - 1];
 
-    const newStack = [...navigationStack];
-    newStack.pop();
-    const previousLevel = newStack[newStack.length - 1];
-
-    setNavigationStack(newStack);
-
-    if (previousLevel.tier === 0) {
-      // Back to US
-      setCurrentJurisdictions([]);
-      setSelectedJurisdiction(null);
-      setHoveredState(null);
-      setHasSelectedJurisdiction(false);
-      setTopArtists([]);
-      setTopSongs([]);
-      flyToCenter(US_CENTER, US_ZOOM);
-    } else {
-      // Back to parent jurisdiction
-      const children = await fetchChildren(previousLevel.jurisdictionId!);
-      setCurrentJurisdictions(children);
-
-      try {
-        const response = await axiosInstance.get(
-          `/v1/jurisdictions/${previousLevel.jurisdictionId}`
-        );
-        setSelectedJurisdiction(response.data);
-        const bounds = getBoundsFromPolygon(response.data.polygon);
-        if (bounds) {
-          flyToBounds(bounds[0], bounds[1], 50);
-        }
-      } catch (err) {
-        console.error('Failed to fetch parent jurisdiction:', err);
-      }
-
-      fetchTopResults(previousLevel.name);
+    if (prev.tier === 0) {
+      resetToNational();
+      return;
     }
-  };
 
-  const handleRandom = () => {
-    setIsAnimating(true);
-    let count = 0;
+    setNavigationStack(stack);
+    const [children] = await Promise.all([
+      fetchChildren(prev.jurisdictionId as string),
+      fetchTopsByName(prev.name),
+    ]);
+    setCurrentJurisdictions(children);
 
-    const interval = setInterval(() => {
-      const randomIndex = Math.floor(Math.random() * STATE_NAMES.length);
-      setHoveredState(STATE_NAMES[randomIndex]);
-      count++;
+    try {
+      const res = await axiosInstance.get(`/v1/jurisdictions/${prev.jurisdictionId}`);
+      setSelectedJurisdiction(res.data);
+    } catch (err) {
+      console.warn('[FindScreen] parent fetch failed:', err);
+    }
+  }, [navigationStack, fetchChildren, fetchTopsByName, resetToNational]);
 
-      if (count >= 10) {
-        clearInterval(interval);
-        setIsAnimating(false);
-        const finalState = STATE_NAMES[Math.floor(Math.random() * STATE_NAMES.length)];
-        setHoveredState(null);
-        handleStatePress(finalState);
-      }
-    }, 500);
-  };
+  /* ------------------------------------------------------------ play --- */
 
-  // ════════════════════════════════════════════
-  // PLAYBACK (matches web handlePlay exactly)
-  // ════════════════════════════════════════════
+  // requestPlay, not playMedia. requestPlay routes through PlayChoiceModal
+  // when a queue already exists, which is the standard every other play
+  // surface in the app follows.
+  const handlePlay = useCallback(
+    async (item: TopResult) => {
+      let trackingId: string | null = null;
 
-  const handlePlay = async (item: TopResult) => {
-    let trackingId: string | null = null;
-
-    if (item.fileUrl) {
-      playMedia(
-        {
+      if (item.fileUrl) {
+        requestPlay({
           id: item.id,
           songId: item.id,
           title: item.title || item.name || 'Unknown',
-          artist: item.artist || item.name || 'Unknown',
+          artist: item.artist || item.name,
           url: item.fileUrl,
+          fileUrl: item.fileUrl,
           artwork: item.artwork,
-        } as any,
-        []
-      );
-      trackingId = item.id;
-    } else if (item.id && item.name) {
-      try {
-        const response = await axiosInstance.get(`/v1/users/${item.id}/default-song`);
-        const defaultSong = response.data;
-
-        if (defaultSong?.fileUrl) {
-          playMedia(
-            {
-              id: defaultSong.songId || item.id,
-              songId: defaultSong.songId || item.id,
-              title: defaultSong.title,
-              artist: item.name,
-              url: getMediaUrl(defaultSong.fileUrl)!,
-              artwork: getMediaUrl(defaultSong.artworkUrl) || item.artwork,
-            } as any,
-            []
-          );
-          trackingId = defaultSong.songId;
-        } else {
-          Alert.alert('No Song', 'This artist has no default song yet.');
+          artworkUrl: item.artwork,
+        });
+        trackingId = item.id;
+      } else if (item.id && item.name) {
+        try {
+          const res = await axiosInstance.get(`/v1/users/${item.id}/default-song`);
+          const song = res.data;
+          if (!song?.fileUrl) {
+            setError(`${item.name} has no default song yet.`);
+            return;
+          }
+          const url = getMediaUrl(song.fileUrl) as string;
+          const art = getMediaUrl(song.artworkUrl) || item.artwork;
+          requestPlay({
+            id: song.songId || item.id,
+            songId: song.songId || item.id,
+            title: song.title,
+            artist: item.name,
+            url,
+            fileUrl: url,
+            artwork: art,
+            artworkUrl: art,
+          });
+          trackingId = song.songId;
+        } catch (err) {
+          console.warn('[FindScreen] default song failed:', err);
+          setError('Could not load that artist\u2019s song.');
+          return;
         }
-      } catch (err) {
-        console.error('Default song fetch failed:', err);
-        Alert.alert('Error', 'Could not load artist song.');
-        return;
       }
-    }
 
-    if (trackingId && userId) {
-      try {
-        await axiosInstance.post(`/v1/media/song/${trackingId}/play?userId=${userId}`);
-      } catch (err) {
-        console.error('Failed to track play:', err);
+      if (trackingId && userId) {
+        try {
+          await axiosInstance.post(`/v1/media/song/${trackingId}/play?userId=${userId}`);
+        } catch (err) {
+          console.warn('[FindScreen] play tracking failed:', err);
+        }
       }
-    }
-  };
+    },
+    [requestPlay, userId]
+  );
 
   const handleView = (item: TopResult, type: 'artist' | 'song') => {
-  if (type === 'artist') {
-    navigation.navigate('Home', { screen: 'Artist', params: { artistId: item.id } });
-  } else {
-    navigation.navigate('Home', { screen: 'Song', params: { songId: item.id, type: 'song' } });
-  }
-};
-
-  // ════════════════════════════════════════════
-  // MAP PRESS HANDLERS
-  // These use MapLibre's internal hit testing via ShapeSource.onPress + hitbox
-  // They work inside ScrollView without needing responder overrides
-  // ════════════════════════════════════════════
-
-  const handleMapPress = (event: any) => {
-    console.log('[FindScreen] US states onPress fired');
-    const features = event?.features;
-    if (features && features.length > 0) {
-      const stateName = features[0]?.properties?.name;
-      console.log('[FindScreen] State tapped:', stateName);
-      if (stateName) handleStatePress(stateName);
+    if (type === 'artist') {
+      navigation.navigate('Home', { screen: 'Artist', params: { artistId: item.id } });
+    } else {
+      navigation.navigate('Home', { screen: 'Song', params: { songId: item.id, type: 'song' } });
     }
   };
 
-  const handleJurisdictionMapPress = (event: any) => {
-    console.log('[FindScreen] Jurisdiction onPress fired');
-    const features = event?.features;
-    if (features && features.length > 0) {
-      const jId = features[0]?.properties?.jurisdictionId;
-      console.log('[FindScreen] Jurisdiction tapped:', jId);
-      const jurisdiction = currentJurisdictions.find(j => j.jurisdictionId === jId);
-      if (jurisdiction) handleJurisdictionClick(jurisdiction);
-    }
-  };
+  /* --------------------------------------------------------- derived --- */
 
-  // ════════════════════════════════════════════
-  // RENDER: RESULT CARD (ambient mode)
-  // ════════════════════════════════════════════
+  const mapMode = useMemo<'US' | 'STATE' | 'TERRITORY'>(() => {
+    if (navigationStack.length <= 1) return 'US';
+    if (navigationStack.length === 2) return 'STATE';
+    return 'TERRITORY';
+  }, [navigationStack]);
 
-  const renderResultCard = (item: TopResult, index: number, type: 'artist' | 'song') => {
-    const title = type === 'song' ? item.title : item.name;
-    const subtitle = type === 'song' ? item.artist : `${item.votes} votes`;
+  const atNational = mapMode === 'US';
+  const displayTerritory =
+    selectedJurisdiction?.name ||
+    navigationStack[navigationStack.length - 1]?.name ||
+    'Select a state';
 
-    return (
-      <Animated.View
-        key={item.id}
-        style={[
-          styles.resultCard,
-          {
-            opacity: fadeAnim,
-            transform: [
-              {
-                translateX: fadeAnim.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [-20, 0],
-                }),
-              },
-            ],
-          },
-        ]}
+  const showComingSoon =
+    !!selectedJurisdiction && !isInHarlemChain(selectedJurisdiction.name);
+
+  const renderCard = (item: TopResult, index: number, type: 'artist' | 'song') => (
+    <Animated.View key={item.id} style={[styles.card, { opacity: fadeAnim }]}>
+      {!!item.artwork && (
+        <Image source={{ uri: item.artwork }} style={styles.ambient} blurRadius={40} />
+      )}
+      <LinearGradient
+        colors={['rgba(0,0,0,0.45)', 'rgba(0,0,0,0.12)']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 0 }}
+        style={styles.cardInner}
       >
-        <Image source={{ uri: item.artwork }} style={styles.ambientBg} blurRadius={40} />
-
-        <LinearGradient
-          colors={['rgba(0,0,0,0.4)', 'rgba(0,0,0,0.1)']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-          style={styles.glassContent}
-        >
-          <Text style={styles.rank}>#{index + 1}</Text>
-          <Image source={{ uri: item.artwork }} style={styles.itemArtwork} />
-          <View style={styles.itemInfo}>
-            <Text style={styles.itemTitle} numberOfLines={1}>{title}</Text>
-            <Text style={styles.itemSubtitle} numberOfLines={1}>{subtitle}</Text>
-          </View>
-          <TouchableOpacity style={styles.playButton} onPress={() => handlePlay(item)}>
-            <Text style={styles.playButtonText}>Play</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.viewButton} onPress={() => handleView(item, type)}>
-            <Text style={styles.viewButtonText}>View</Text>
-          </TouchableOpacity>
-        </LinearGradient>
-      </Animated.View>
-    );
-  };
-
-  // ════════════════════════════════════════════
-  // RENDER: JURISDICTION PILL
-  // ════════════════════════════════════════════
-
-  const renderJurisdictionPill = (jurisdiction: Jurisdiction) => {
-    const isSelected = selectedJurisdiction?.jurisdictionId === jurisdiction.jurisdictionId;
-    const inChain = isInHarlemChain(jurisdiction.name);
-    const isActive = isActiveJurisdiction(jurisdiction.name);
-
-    return (
-      <TouchableOpacity
-        key={jurisdiction.jurisdictionId}
-        style={[
-          styles.jurisdictionPill,
-          isSelected && styles.jurisdictionPillSelected,
-          inChain && !isSelected && styles.jurisdictionPillInChain,
-        ]}
-        onPress={() => handleJurisdictionClick(jurisdiction)}
-      >
-        <Text
-          style={[
-            styles.jurisdictionPillText,
-            isSelected && styles.jurisdictionPillTextSelected,
-          ]}
-        >
-          {jurisdiction.name}
-        </Text>
-        {isActive && <Text style={styles.activeBadge}>●</Text>}
-      </TouchableOpacity>
-    );
-  };
-
-  // ════════════════════════════════════════════
-  // MAIN RENDER — full page layout:
-  // Filters → Map → Jurisdiction Pills → Results
-  // Everything inside a single ScrollView
-  // ════════════════════════════════════════════
+        <Text style={styles.rank}>{index + 1}</Text>
+        {!!item.artwork && <Image source={{ uri: item.artwork }} style={styles.art} />}
+        <View style={styles.meta}>
+          <Text style={styles.title} numberOfLines={1}>
+            {type === 'song' ? item.title : item.name}
+          </Text>
+          {type === 'song' && (
+            <Text style={styles.sub} numberOfLines={1}>
+              {item.artist}
+            </Text>
+          )}
+        </View>
+        <TouchableOpacity style={styles.playBtn} onPress={() => handlePlay(item)}>
+          <Text style={styles.playTxt}>Play</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.viewBtn} onPress={() => handleView(item, type)}>
+          <Text style={styles.viewTxt}>View</Text>
+        </TouchableOpacity>
+      </LinearGradient>
+    </Animated.View>
+  );
 
   return (
     <View style={styles.container}>
-      {/* Background */}
       <ImageBackground
         source={require('../../assets/randomrapper.jpeg')}
-        style={styles.backgroundImage}
+        style={StyleSheet.absoluteFill as never}
         resizeMode="cover"
       >
         <LinearGradient
-          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)']}
-          style={styles.backgroundOverlay}
+          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.92)']}
+          style={StyleSheet.absoluteFill as never}
         />
       </ImageBackground>
 
       <ScrollView
-        style={styles.scrollView}
+        style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        nestedScrollEnabled={true}
       >
-        {/* ── FILTERS ── */}
-        <View style={[styles.filtersContainer, { zIndex: 100 }]}>
-          <View style={styles.filterWrapper}>
+        {/* ── filters ── */}
+        <View style={[styles.filters, { zIndex: 100 }]}>
+          <View style={styles.filterWrap}>
             <TouchableOpacity
-              style={[styles.filterButton, showGenreDropdown && styles.filterButtonActive]}
+              style={[styles.filterBtn, showGenreDropdown && styles.filterBtnActive]}
               onPress={() => setShowGenreDropdown(!showGenreDropdown)}
             >
-              <Text style={styles.filterButtonText}>
-                {GENRES.find(g => g.value === genre)?.label || 'Rap'}
+              <Text style={styles.filterTxt}>
+                {GENRES.find((g) => g.value === genre)?.label || 'Rap'}
               </Text>
             </TouchableOpacity>
-
             {showGenreDropdown && (
-              <View style={styles.filterDropdown}>
-                {GENRES.map(g => (
+              <View style={styles.dropdown}>
+                {GENRES.map((g) => (
                   <TouchableOpacity
                     key={g.value}
-                    style={[styles.filterOption, genre === g.value && styles.filterOptionActive]}
+                    style={[styles.option, genre === g.value && styles.optionActive]}
                     onPress={() => {
                       setGenre(g.value);
                       setShowGenreDropdown(false);
                     }}
                   >
                     <Text
-                      style={[
-                        styles.filterOptionText,
-                        genre === g.value && styles.filterOptionTextActive,
-                      ]}
+                      style={[styles.optionTxt, genre === g.value && styles.optionTxtActive]}
                     >
                       {g.label}
                     </Text>
@@ -806,419 +506,255 @@ const FindScreen: React.FC = () => {
               </View>
             )}
           </View>
-
-          <TouchableOpacity
-            style={[styles.randomButton, isAnimating && styles.randomButtonDisabled]}
-            onPress={handleRandom}
-            disabled={isAnimating || loading}
-          >
-            <Text style={styles.randomButtonText}>
-              {isAnimating ? 'Spinning...' : 'Random'}
-            </Text>
-          </TouchableOpacity>
         </View>
 
-        {/* ── MAP SECTION ── */}
+        {/* ── map ── */}
         <View style={styles.mapSection}>
-          <Text style={styles.territoryName}>{displayTerritory}</Text>
+          <Text style={styles.territory} numberOfLines={1}>
+            {displayTerritory}
+          </Text>
 
-          {!isAtUSLevel() && (
+          {!atNational && (
             <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
-              <ChevronLeft size={16} color={COLORS.unisBlue} />
-              <Text style={styles.backBtnText}>Back</Text>
+              <ChevronLeft size={15} color={COLORS.unisBlue} />
+              <Text style={styles.backTxt}>Back</Text>
             </TouchableOpacity>
           )}
 
-          <View style={styles.mapContainer}>
-            <MapLibreGL.MapView
-              style={styles.map}
-              styleJSON={JSON.stringify(CARTO_DARK_STYLE)}
-              logoEnabled={false}
-              attributionEnabled={false}
-              compassEnabled={false}
-              scrollEnabled={false}
-              pitchEnabled={false}
-              rotateEnabled={false}
-              zoomEnabled={false}
-              onDidFinishLoadingMap={() => {
-                console.log('[FindScreen] Map loaded');
-                setMapReady(true);
-              }}
-            >
-              <MapLibreGL.Camera
-                ref={cameraRef}
-                defaultSettings={{
-                  centerCoordinate: US_CENTER,
-                  zoomLevel: US_ZOOM,
-                }}
-              />
-
-              {/* US States — white tiles on dark basemap */}
-              {usGeoData && isAtUSLevel() && (
-                <MapLibreGL.ShapeSource
-                  id="us-states"
-                  shape={usGeoData}
-                  onPress={handleMapPress}
-                  hitbox={{ width: 20, height: 20 }}
-                >
-                  <MapLibreGL.FillLayer
-                    id="states-fill"
-                    style={{
-                      fillColor: '#EAEAEC',
-                      fillOpacity: 1,
-                    }}
-                  />
-                  <MapLibreGL.LineLayer
-                    id="states-border"
-                    style={{
-                      lineColor: '#999',
-                      lineWidth: 1,
-                    }}
-                  />
-                </MapLibreGL.ShapeSource>
-              )}
-
-              {/* Jurisdiction polygons — color-coded by activity */}
-              {!isAtUSLevel() && jurisdictionGeoJSON && (
-                <MapLibreGL.ShapeSource
-                  id="jurisdictions"
-                  shape={jurisdictionGeoJSON}
-                  onPress={handleJurisdictionMapPress}
-                  hitbox={{ width: 20, height: 20 }}
-                >
-                  <MapLibreGL.FillLayer
-                    id="jurisdictions-fill"
-                    style={{
-                      fillColor: [
-                        'case',
-                        ['==', ['get', 'isActive'], 1],
-                        '#2E5AAC',
-                        ['==', ['get', 'isInHarlemChain'], 1],
-                          '#1a3d8f',
-                          '#163387',                  
-
-                      ],
-                      fillOpacity: 0.7,
-                    }}
-                  />
-                  <MapLibreGL.LineLayer
-                    id="jurisdictions-border"
-                    style={{
-                      lineColor: [
-                        'case',
-                        ['any',
-                          ['==', ['get', 'isActive'], 1],
-                          ['==', ['get', 'isInHarlemChain'], 1],
-                        ],
-                        '#FFFFFF',
-                        '#999',
-                      ],
-                      lineWidth: 1,
-                    }}
-                  />
-                  <MapLibreGL.SymbolLayer
-                    id="jurisdictions-labels"
-                    style={{
-                      textField: ['get', 'name'],
-                      textSize: 12,
-                      textColor: '#FFFFFF',
-                      textHaloColor: 'rgba(0,0,0,0.7)',
-                      textHaloWidth: 1,
-                      textAllowOverlap: true,
-                    }}
-                  />
-                </MapLibreGL.ShapeSource>
-              )}
-            </MapLibreGL.MapView>
-
-            {/* Loading overlay */}
-            {!mapReady && (
-              <View style={styles.mapLoadingOverlay}>
-                <ActivityIndicator size="large" color={COLORS.unisBlue} />
-                <Text style={styles.mapLoadingText}>Loading map...</Text>
-              </View>
-            )}
+          <View style={styles.mapBox}>
+            <UnisMap
+              mode={mapMode}
+              focusState={focusState}
+              territories={currentJurisdictions}
+              selectedId={selectedJurisdiction?.jurisdictionId || null}
+              liveStates={ACTIVE_STATES}
+              liveTerritories={ACTIVE_JURISDICTIONS}
+              primary={COLORS.unisBlue}
+              primaryBright={COLORS.unisBlueBright}
+              onStateSelect={handleStateSelect}
+              onTerritorySelect={handleTerritorySelect}
+            />
           </View>
 
-          {/* Jurisdiction pills below map */}
-          {!isAtUSLevel() && currentJurisdictions.length > 0 && (
-            <View style={styles.jurisdictionList}>
-              <Text style={styles.jurisdictionListTitle}>Tap a region to explore:</Text>
-              <View style={styles.jurisdictionPills}>
-                {currentJurisdictions.map(renderJurisdictionPill)}
+          <View style={styles.key}>
+            <View style={styles.keyItem}>
+              <View style={[styles.keyDot, { backgroundColor: COLORS.unisBlue }]} />
+              <Text style={styles.keyTxt}>Live on Unis</Text>
+            </View>
+            <View style={styles.keyItem}>
+              <View style={[styles.keyDot, styles.keyDotDark]} />
+              <Text style={styles.keyTxt}>Not open yet</Text>
+            </View>
+          </View>
+
+          {/* The rail is the reliable way in on a phone. Small states are hard
+              to hit accurately with a thumb, and a tap that lands on the wrong
+              one is worse than a list. */}
+          {currentJurisdictions.length > 0 && (
+            <View style={styles.rail}>
+              <Text style={styles.railTitle}>
+                Regions in {navigationStack[navigationStack.length - 1]?.name}
+              </Text>
+              <View style={styles.pills}>
+                {currentJurisdictions.map((j) => {
+                  const sel = selectedJurisdiction?.jurisdictionId === j.jurisdictionId;
+                  return (
+                    <TouchableOpacity
+                      key={j.jurisdictionId}
+                      style={[styles.pill, sel && styles.pillSel]}
+                      onPress={() => handleTerritorySelect(j)}
+                    >
+                      <Text style={[styles.pillTxt, sel && styles.pillTxtSel]}>{j.name}</Text>
+                      {isActiveJurisdiction(j.name) && <Text style={styles.liveDot}>●</Text>}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             </View>
           )}
         </View>
 
-        {/* ── RESULTS SECTION ── */}
-        {hasSelectedJurisdiction && (
-          <View style={styles.resultsSection}>
+        {!!error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorTxt}>{error}</Text>
+          </View>
+        )}
+
+        {/* ── results ── */}
+        {hasSelected && (
+          <View style={styles.results}>
             {showComingSoon ? (
-              <View style={styles.comingSoonContainer}>
-                <Text style={styles.comingSoonTitle}>{selectedJurisdiction?.name}</Text>
-                <Text style={styles.comingSoonText}>
-                  Coming soon to Unis! Join the waitlist to be notified when this area launches.
+              <View style={styles.soon}>
+                <Text style={styles.soonTitle}>{selectedJurisdiction?.name}</Text>
+                <Text style={styles.soonTxt}>
+                  No charts here yet. Join the waitlist and we'll tell you the day it opens.
                 </Text>
               </View>
             ) : loading ? (
-              <View style={styles.loadingContainer}>
+              <View style={styles.loading}>
                 <ActivityIndicator size="large" color={COLORS.unisBlue} />
-                <Text style={styles.loadingText}>Loading top results...</Text>
               </View>
             ) : (
               <>
-                {/* Top Songs */}
-                <View style={styles.resultsColumn}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      const name = selectedJurisdiction?.name || 'Harlem';
-                      navigation.navigate('Jurisdiction', { jurisdictionName: name });
-                    }}
-                  >
-                    <Text style={styles.resultsTitle}>
-                      Top Songs in <Text style={{ color: COLORS.unisBlue }}>{displayTerritory}</Text>
-                    </Text>
-                  </TouchableOpacity>
-                  <View style={styles.resultsList}>
-                    {topSongs.length > 0 ? (
-                      topSongs.map((song, i) => renderResultCard(song, i, 'song'))
-                    ) : (
-                      <Text style={styles.noResultsText}>No songs yet</Text>
-                    )}
-                  </View>
+                <View style={styles.column}>
+                  <Text style={styles.colTitle}>Top songs in {displayTerritory}</Text>
+                  {topSongs.length > 0 ? (
+                    topSongs.map((s, i) => renderCard(s, i, 'song'))
+                  ) : (
+                    <Text style={styles.empty}>No songs charted here yet.</Text>
+                  )}
                 </View>
 
-                {/* Top Artists */}
-                <View style={styles.resultsColumn}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      const name = selectedJurisdiction?.name || 'Harlem';
-                      navigation.navigate('Jurisdiction', { jurisdictionName: name });
-                    }}
-                  >
-                    <Text style={styles.resultsTitle}>
-                      Top Artists in <Text style={{ color: COLORS.unisBlue }}>{displayTerritory}</Text>
-                    </Text>                  
-                  </TouchableOpacity>
-                  <View style={styles.resultsList}>
-                    {topArtists.length > 0 ? (
-                      topArtists.map((artist, i) => renderResultCard(artist, i, 'artist'))
-                    ) : (
-                      <Text style={styles.noResultsText}>No artists yet</Text>
-                    )}
-                  </View>
+                <View style={styles.column}>
+                  <Text style={styles.colTitle}>Top artists in {displayTerritory}</Text>
+                  {topArtists.length > 0 ? (
+                    topArtists.map((a, i) => renderCard(a, i, 'artist'))
+                  ) : (
+                    <Text style={styles.empty}>No artists charted here yet.</Text>
+                  )}
                 </View>
               </>
             )}
           </View>
         )}
 
-        {/* Bottom padding for MiniPlayer */}
         <View style={{ height: 120 }} />
       </ScrollView>
     </View>
   );
 };
 
-// =============================================================================
-// STYLES
-// =============================================================================
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bgBlack },
-  backgroundImage: { ...StyleSheet.absoluteFillObject },
-  backgroundOverlay: { ...StyleSheet.absoluteFillObject },
-  scrollView: { flex: 1 },
-  scrollContent: {
-    paddingTop: 20,
-    paddingHorizontal: 10,
-  },
+  scroll: { flex: 1 },
+  scrollContent: { paddingTop: 20, paddingHorizontal: 12 },
 
-  // Filters
-  filtersContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 10,
-    marginBottom: 20,
-  },
-  filterWrapper: { position: 'relative' },
-  filterButton: {
-    paddingVertical: 10,
+  filters: { flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 18 },
+  filterWrap: { position: 'relative' },
+  filterBtn: {
+    paddingVertical: 9,
     paddingHorizontal: 20,
     backgroundColor: COLORS.bgBlack,
     borderWidth: 1,
     borderColor: COLORS.borderSilver,
-    borderRadius: 8,
+    borderRadius: 999,
     minWidth: 100,
   },
-  filterButtonActive: {
-    borderColor: COLORS.unisBlue,
-    backgroundColor: 'rgba(22, 51, 135, 0.1)',
-  },
-  filterButtonText: { color: COLORS.textSilver, fontSize: 14, textAlign: 'center' },
-  filterDropdown: {
+  filterBtnActive: { borderColor: COLORS.unisBlue },
+  filterTxt: { color: COLORS.textSilver, fontSize: 13, textAlign: 'center' },
+  dropdown: {
     position: 'absolute',
-    top: 44,
+    top: 42,
     left: 0,
     right: 0,
     backgroundColor: COLORS.subtleBlack,
-    borderRadius: 8,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: COLORS.borderSilver,
     overflow: 'hidden',
     zIndex: 1000,
     elevation: 10,
   },
-  filterOption: { paddingVertical: 10, paddingHorizontal: 15 },
-  filterOptionActive: { backgroundColor: 'rgba(22, 51, 135, 0.2)' },
-  filterOptionText: { color: COLORS.textSilver, fontSize: 14 },
-  filterOptionTextActive: { color: COLORS.unisBlue },
-  randomButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: COLORS.bgBlack,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    borderRadius: 8,
-    minWidth: 100,
-  },
-  randomButtonDisabled: { opacity: 0.5 },
-  randomButtonText: { color: COLORS.textSilver, fontSize: 14, textAlign: 'center' },
+  option: { paddingVertical: 10, paddingHorizontal: 15 },
+  optionActive: { backgroundColor: 'rgba(22,51,135,0.25)' },
+  optionTxt: { color: COLORS.textSilver, fontSize: 13 },
+  optionTxtActive: { color: COLORS.accentWhite },
 
-  // Map section
-  mapSection: {
-    alignSelf: 'center',
-    width: '100%',
-    maxWidth: 900,
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: COLORS.textSilver,
-    paddingTop: 10,
-  },
-  territoryName: {
-    color: COLORS.unisBlue,
-    fontSize: IS_MOBILE ? 24 : 30,
+  mapSection: { width: '100%', alignItems: 'center' },
+  territory: {
+    color: COLORS.accentWhite,
+    fontSize: IS_MOBILE ? 22 : 30,
     fontFamily: 'BitcountGridDouble',
     textAlign: 'center',
-    marginBottom: 5,
+    marginBottom: 8,
+    maxWidth: '100%',
   },
   backBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 5,
-    paddingHorizontal: 15,
+    paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: COLORS.unisBlue,
-    borderRadius: 8,
+    borderRadius: 999,
     marginBottom: 10,
   },
-  backBtnText: { color: COLORS.unisBlue, fontSize: 12, marginLeft: 4 },
-  mapContainer: {
-    width: '100%',
-    height: IS_MOBILE ? 280 : 380,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 0.5,
-    borderColor: COLORS.textSilver,
-    backgroundColor: COLORS.subtleBlack,
-  },
-  map: { flex: 1 },
-  mapLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: COLORS.subtleBlack,
-  },
-  mapLoadingText: { color: COLORS.textGray, marginTop: 10, fontSize: 14 },
+  backTxt: { color: COLORS.unisBlue, fontSize: 12, marginLeft: 4 },
+  mapBox: { width: '100%', aspectRatio: 4 / 3 },
 
-  // Jurisdiction pills
-  jurisdictionList: {
-    width: '100%',
-    marginTop: 15,
-    paddingHorizontal: 10,
-  },
-  jurisdictionListTitle: {
-    color: COLORS.textGray,
-    fontSize: 12,
-    textAlign: 'center',
-    marginBottom: 10,
-  },
-  jurisdictionPills: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  jurisdictionPill: {
-    backgroundColor: 'rgba(22, 51, 135, 0.2)',
+  key: { flexDirection: 'row', gap: 14, marginTop: 10 },
+  keyItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  keyDot: { width: 8, height: 8, borderRadius: 4 },
+  keyDotDark: {
+    backgroundColor: '#151822',
     borderWidth: 1,
-    borderColor: 'rgba(22, 51, 135, 0.5)',
-    borderRadius: 20,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  keyTxt: { color: '#8b8f9e', fontSize: 10 },
+
+  rail: { width: '100%', marginTop: 16 },
+  railTitle: { color: '#7d818f', fontSize: 11, marginBottom: 8, letterSpacing: 1 },
+  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  pill: {
+    backgroundColor: 'rgba(22,51,135,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(22,51,135,0.45)',
+    borderRadius: 999,
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 15,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  jurisdictionPillSelected: {
-    backgroundColor: COLORS.unisBlue,
-    borderColor: COLORS.unisBlue,
-  },
-  jurisdictionPillInChain: {
-    borderColor: 'rgba(46, 90, 172, 0.7)',
-  },
-  jurisdictionPillText: { color: COLORS.textSilver, fontSize: 13 },
-  jurisdictionPillTextSelected: { color: COLORS.accentWhite },
-  activeBadge: { color: '#4CAF50', fontSize: 10 },
+  pillSel: { backgroundColor: COLORS.unisBlue, borderColor: COLORS.unisBlue },
+  pillTxt: { color: COLORS.textSilver, fontSize: 13 },
+  pillTxtSel: { color: COLORS.accentWhite },
+  liveDot: { color: '#4CAF50', fontSize: 9 },
 
-  // Results
-  resultsSection: {
-    width: '100%',
-    maxWidth: 1000,
-    alignSelf: 'center',
-    marginTop: 20,
-    gap: 20,
-    paddingHorizontal: 6,
+  errorBox: {
+    marginTop: 14,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,107,107,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,107,0.28)',
   },
-  resultsColumn: { width: '100%' },
-  resultsTitle: {
-    color: COLORS.textSilver,
-    fontSize: IS_MOBILE ? 18 : 22,
-    fontWeight: '300',
+  errorTxt: { color: '#ff9b9b', fontSize: 12 },
+
+  results: { width: '100%', marginTop: 22, gap: 22 },
+  column: { width: '100%' },
+  colTitle: {
+    color: COLORS.textGray,
+    fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 2,
-    marginBottom: 15,
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 4,
+    marginBottom: 12,
   },
-  resultsList: { gap: 12 },
-  loadingContainer: { alignItems: 'center', paddingVertical: 40 },
-  loadingText: { color: COLORS.textGray, marginTop: 10 },
-  noResultsText: { color: COLORS.textGray, textAlign: 'center', paddingVertical: 20 },
+  loading: { alignItems: 'center', paddingVertical: 40 },
+  empty: { color: '#7d818f', fontSize: 12, paddingVertical: 16, textAlign: 'center' },
 
-  // Coming soon
-  comingSoonContainer: {
+  soon: {
     width: '100%',
     alignItems: 'center',
-    padding: 20,
-    marginBottom: 10,
-    backgroundColor: 'rgba(22, 51, 135, 0.1)',
-    borderRadius: 8,
+    padding: 24,
+    backgroundColor: 'rgba(22,51,135,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(22,51,135,0.28)',
+    borderRadius: 14,
   },
-  comingSoonTitle: { color: COLORS.unisBlue, fontSize: 24, marginBottom: 10 },
-  comingSoonText: { color: '#888', textAlign: 'center' },
+  soonTitle: { color: COLORS.unisBlueBright, fontSize: 22, marginBottom: 8, fontWeight: '600' },
+  soonTxt: { color: '#8b8f9e', textAlign: 'center', fontSize: 13 },
 
-  // Result card
-  resultCard: {
+  card: {
     position: 'relative',
     borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    backgroundColor: 'rgba(20, 20, 20, 0.6)',
+    borderColor: 'rgba(255,255,255,0.1)',
+    backgroundColor: 'rgba(20,20,20,0.6)',
+    marginBottom: 12,
   },
-  ambientBg: {
+  ambient: {
     position: 'absolute',
     top: -50,
     left: -50,
@@ -1226,58 +762,28 @@ const styles = StyleSheet.create({
     height: 300,
     opacity: 0.3,
   },
-  glassContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: IS_MOBILE ? 10 : 15,
-    gap: IS_MOBILE ? 10 : 15,
-  },
-  rank: {
-    fontSize: 20,
-    color: 'rgba(255, 255, 255, 0.4)',
-    minWidth: 30,
-  },
-  itemArtwork: {
-    width: IS_MOBILE ? 45 : 60,
-    height: IS_MOBILE ? 45 : 60,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  itemInfo: { flex: 1, minWidth: 0 },
-  itemTitle: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 14 : 16,
-    fontWeight: '500',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 4,
-  },
-  itemSubtitle: {
-    color: COLORS.textSilver,
-    fontSize: IS_MOBILE ? 12 : 14,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
-  playButton: {
-    paddingVertical: IS_MOBILE ? 6 : 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 18,
+  cardInner: { flexDirection: 'row', alignItems: 'center', padding: 10, gap: 10 },
+  rank: { fontSize: 13, color: 'rgba(255,255,255,0.32)', minWidth: 18, textAlign: 'center' },
+  art: { width: 45, height: 45, borderRadius: 8 },
+  meta: { flex: 1, minWidth: 0 },
+  title: { color: COLORS.accentWhite, fontSize: 14, fontWeight: '500' },
+  sub: { color: COLORS.textSilver, fontSize: 12 },
+  playBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 14,
     backgroundColor: COLORS.unisBlue,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 50,
+    borderRadius: 999,
   },
-  playButtonText: { color: COLORS.textSilver, fontSize: IS_MOBILE ? 11 : 12, fontWeight: '600' },
-  viewButton: {
-    paddingVertical: IS_MOBILE ? 6 : 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 18,
+  playTxt: { color: COLORS.accentWhite, fontSize: 11, fontWeight: '600' },
+  viewBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 14,
     backgroundColor: COLORS.bgBlack,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 50,
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 999,
   },
-  viewButtonText: { color: COLORS.textSilver, fontSize: IS_MOBILE ? 11 : 12, fontWeight: '600' },
+  viewTxt: { color: COLORS.textSilver, fontSize: 11, fontWeight: '600' },
 });
 
 export default FindScreen;
