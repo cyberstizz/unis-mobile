@@ -39,6 +39,11 @@ import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import UnisMap, { MapTerritory } from '../map/UnisMap';
 
+// Local fallback art. The original screen pointed at picsum.photos, which is a
+// third-party network request per missing image — on cellular, for a
+// placeholder. A bundled asset costs nothing and works offline.
+const FALLBACK_ART = require('../../assets/randomrapper.jpeg');
+
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 
@@ -175,7 +180,7 @@ const FindScreen: React.FC = () => {
           id: a.userId || String(i),
           name: a.username,
           votes: a.score || 0,
-          artwork: getMediaUrl(a.photoUrl) || '',
+          artwork: getMediaUrl(a.photoUrl) || '',   // '' => <Image> falls back below
         }))
       );
       setTopSongs(
@@ -425,9 +430,11 @@ const FindScreen: React.FC = () => {
 
   const renderCard = (item: TopResult, index: number, type: 'artist' | 'song') => (
     <Animated.View key={item.id} style={[styles.card, { opacity: fadeAnim }]}>
-      {!!item.artwork && (
-        <Image source={{ uri: item.artwork }} style={styles.ambient} blurRadius={40} />
-      )}
+      <Image
+        source={item.artwork ? { uri: item.artwork } : FALLBACK_ART}
+        style={styles.ambient}
+        blurRadius={40}
+      />
       <LinearGradient
         colors={['rgba(0,0,0,0.45)', 'rgba(0,0,0,0.12)']}
         start={{ x: 0, y: 0 }}
@@ -435,7 +442,11 @@ const FindScreen: React.FC = () => {
         style={styles.cardInner}
       >
         <Text style={styles.rank}>{index + 1}</Text>
-        {!!item.artwork && <Image source={{ uri: item.artwork }} style={styles.art} />}
+        <Image
+          source={item.artwork ? { uri: item.artwork } : FALLBACK_ART}
+          defaultSource={FALLBACK_ART}
+          style={styles.art}
+        />
         <View style={styles.meta}>
           <Text style={styles.title} numberOfLines={1}>
             {type === 'song' ? item.title : item.name}
