@@ -1,4 +1,35 @@
-import React, { useState } from 'react';
+// ============================================================================
+// Milestonesscreen.tsx — the Unis award archive, mobile.
+//
+// Port of the web MilestonesPage. One job: pull up a CLOSED award period and
+// show who took it, with receipts.
+//
+// Four things were wrong in the previous version and are fixed here:
+//
+//   1. It called /v1/awards/past. The current contract is
+//      /v1/awards/period-leaderboard, which returns the ranked tally as well as
+//      the winner — the tally is the whole point of the redesigned page.
+//   2. maxDate was computed once from "yesterday" and never revisited when the
+//      interval changed, so picking a daily date and switching to Annual asked
+//      the server for the CURRENT year. That is not a display bug: the backend
+//      auto-populates a missing Award on read, so the request persists a winner
+//      computed from partial data and locks the cron out of recomputing it.
+//   3. It hardcoded unisBlue '#163387' and ignored the user's theme entirely.
+//   4. handlePlay called playMedia() directly, bypassing PlayChoiceModal — so a
+//      play started here never counted toward the artist's points.
+//
+// PERIOD SAFETY (see utils/periodBounds.ts)
+//   Three layers here, plus AwardService.isPeriodClosed on the backend as the
+//   authority: interval-aware maxDate, re-anchoring on interval change, and a
+//   refusal in loadPeriod() even if the first two are bypassed.
+//
+// COMPONENT SCOPE
+//   Sub-components live at module scope. Declared inside the screen body they
+//   get a fresh identity each render and React remounts whole subtrees on every
+//   keystroke — it reads as a flicker.
+// ============================================================================
+
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,1070 +37,934 @@ import {
   ScrollView,
   Image,
   TouchableOpacity,
-  Dimensions,
   ActivityIndicator,
   ImageBackground,
-  Modal,
-  FlatList,
-  Pressable,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
-import { usePlayer } from '../context/PlayerContext';
+import { usePlayer, type MediaItem } from '../context/PlayerContext';
+import { useAuth } from '../context/AuthContext';
 import IntervalDatePicker from '../components/IntervalDatePicker';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import axiosInstance from '../services/axiosInstance';
+import buildUrl from '../utils/buildUrl';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
+import {
+  getPeriodRange,
+  isPeriodComplete,
+  getLastCompletedPeriodEnd,
+  clampToCompletedPeriod,
+  formatPeriodLabel,
+  formatPeriodRange,
+  getPeriodCloseLabel,
+  type Interval,
+} from '../utils/periodBounds';
 
-// ============================================================================
-// COLORS & SIZES (matches web SCSS variables)
-// ============================================================================
-const COLORS = {
-  bgBlack: '#000000',
-  subtleBlack: '#1a1a1a',
-  textSilver: '#C0C0C0',
-  textGray: '#A9A9A9',
-  accentWhite: '#FFFFFF',
-  unisBlue: '#163387',
-  unisSilver: '#918f8f',
-  borderSilver: 'rgba(192, 192, 192, 0.3)',
-  borderSilverSolid: '#C0C0C0',
-  electricBlue: '#4facfe',
-  gradientPurple: '#667eea',
-  gradientPink: '#f5576c',
+const LOG = '[Milestones]';
+const MIN_DATE = '2025-10-26';
+
+// ─── Theme ───────────────────────────────────────────────────────────────────
+const THEME_HEX: Record<string, string> = {
+  blue: '#163387',
+  orange: '#C44B0A',
+  red: '#B51C24',
+  green: '#0F7A3E',
+  purple: '#4A1A8C',
+  yellow: '#C49A0A',
+  dianna: '#C49A0A',
+};
+const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
+
+/** Mix a hex toward white — the readable accent for text on dark. */
+const lighten = (hex: string, amt = 70): string => {
+  const n = parseInt(hex.replace('#', ''), 16);
+  const r = Math.min(255, ((n >> 16) & 255) + amt);
+  const g = Math.min(255, ((n >> 8) & 255) + amt);
+  const b = Math.min(255, (n & 255) + amt);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
 };
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 768;
+const alpha = (hex: string, a: number): string => {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+};
 
-// ============================================================================
-// FILTER OPTIONS
-// ============================================================================
-const LOCATION_OPTIONS = [
-  { label: 'Downtown Harlem', value: 'downtown-harlem' },
-  { label: 'Uptown Harlem', value: 'uptown-harlem' },
-  { label: 'Harlem (All)', value: 'harlem' },
+const INK = '#f6f7f9';
+const INK_2 = 'rgba(246,247,249,0.62)';
+const INK_3 = 'rgba(246,247,249,0.38)';
+const PLATE = 'rgba(255,255,255,0.028)';
+const ETCH = 'rgba(255,255,255,0.075)';
+const ETCH_STRONG = 'rgba(255,255,255,0.14)';
+
+// ─── Options ─────────────────────────────────────────────────────────────────
+const JURISDICTIONS = [
+  { value: 'downtown-harlem', label: 'Downtown' },
+  { value: 'uptown-harlem', label: 'Uptown' },
+  { value: 'harlem', label: 'All Harlem' },
 ];
 
-const GENRE_OPTIONS = [
-  { label: 'Rap', value: 'rap' },
-  { label: 'Rock', value: 'rock' },
-  { label: 'Pop', value: 'pop' },
+const GENRES = [
+  { value: 'rap', label: 'Rap' },
+  { value: 'rock', label: 'Rock' },
+  { value: 'pop', label: 'Pop' },
 ];
 
-const CATEGORY_OPTIONS = [
-  { label: 'Artist', value: 'artist' },
-  { label: 'Song', value: 'song' },
+const CATEGORIES: { value: 'song' | 'artist'; label: string }[] = [
+  { value: 'song', label: 'Songs' },
+  { value: 'artist', label: 'Artists' },
 ];
 
-const INTERVAL_OPTIONS = [
-  { label: 'Daily', value: 'daily' },
-  { label: 'Weekly', value: 'weekly' },
-  { label: 'Monthly', value: 'monthly' },
-  { label: 'Quarterly', value: 'quarterly' },
-  { label: 'Midterm', value: 'midterm' },
-  { label: 'Annual', value: 'annual' },
+const INTERVAL_OPTIONS: { value: Interval; label: string }[] = [
+  { value: 'daily', label: 'Day' },
+  { value: 'weekly', label: 'Week' },
+  { value: 'monthly', label: 'Month' },
+  { value: 'quarterly', label: 'Quarter' },
+  { value: 'midterm', label: 'Half' },
+  { value: 'annual', label: 'Year' },
 ];
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-const formatLocation = (loc: string): string => {
-  return loc
-    .split('-')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
-    .toUpperCase();
+const INTERVAL_TITLE: Record<string, string> = {
+  daily: 'of the Day',
+  weekly: 'of the Week',
+  monthly: 'of the Month',
+  quarterly: 'of the Quarter',
+  midterm: 'of the Half',
+  annual: 'of the Year',
 };
 
-const formatGenre = (g: string): string => {
-  return g.toUpperCase();
+const JURISDICTION_LABEL: Record<string, string> = {
+  'downtown-harlem': 'Downtown Harlem',
+  'uptown-harlem': 'Uptown Harlem',
+  harlem: 'Harlem',
 };
 
-const formatCategory = (cat: string): string => {
-  return cat.toUpperCase();
+const TIEBREAKERS: Record<string, (n: number) => string> = {
+  PLAYS: (n) => `Tie broken on plays${n ? ` between ${n}` : ''}`,
+  LIKES: (n) => `Tie broken on likes${n ? ` between ${n}` : ''}`,
+  SCORE: (n) => `Tie broken on lifetime score${n ? ` between ${n}` : ''}`,
+  SENIORITY: (n) => `Tie broken on seniority${n ? ` between ${n}` : ''}`,
+  FALLBACK: () => 'Decided on engagement — no votes cast',
 };
 
-const getIntervalText = (int: string): string => {
-  const intervalMap: { [key: string]: string } = {
-    daily: 'OF THE DAY',
-    weekly: 'OF THE WEEK',
-    monthly: 'OF THE MONTH',
-    quarterly: 'OF THE QUARTER',
-    midterm: 'OF THE MIDTERM',
-    annual: 'OF THE YEAR',
-  };
-  return intervalMap[int] || 'OF THE DAY';
-};
+const formatNumber = (n: number | string): string => (Number(n) || 0).toLocaleString('en-US');
 
-const formatDateDisplay = (dateString: string, intervalType: string): string => {
-  if (!dateString) return '';
-
-  const [year, month, day] = dateString.split('-').map(Number);
-  const date = new Date(year, month - 1, day);
-
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const months = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
-  ];
-
-  switch (intervalType) {
-    case 'daily':
-      return `${days[date.getDay()]}, ${months[month - 1]} ${day}, ${year}`;
-
-    case 'weekly': {
-      const dayOfWeek = date.getDay();
-      const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      const monday = new Date(year, month - 1, day - daysToMonday);
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 6);
-      return `Week of ${months[monday.getMonth()]} ${monday.getDate()} - ${sunday.getDate()}, ${monday.getFullYear()}`;
-    }
-
-    case 'monthly':
-      return `${months[month - 1]} ${year}`;
-
-    case 'quarterly': {
-      const q = Math.floor((month - 1) / 3) + 1;
-      return `Q${q} ${year}`;
-    }
-
-    case 'midterm': {
-      const h = month <= 6 ? 1 : 2;
-      return `${h === 1 ? 'First' : 'Second'} Half of ${year}`;
-    }
-
-    case 'annual':
-      return `Year ${year}`;
-
-    default:
-      return `${months[month - 1]} ${day}, ${year}`;
-  }
-};
-
-const getDateRangeForInterval = (
-  selectedDate: string,
-  intervalType: string
-): { startDate: string; endDate: string } => {
-  if (!selectedDate) return { startDate: '', endDate: '' };
-
-  const [year, month, day] = selectedDate.split('-').map(Number);
-  const startDate = new Date(year, month - 1, day);
-  const endDate = new Date(year, month - 1, day);
-
-  switch (intervalType) {
-    case 'daily':
-      break;
-    case 'weekly': {
-      const dayOfWeek = startDate.getDay();
-      const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      startDate.setDate(startDate.getDate() - daysToMonday);
-      endDate.setDate(startDate.getDate() + 6);
-      break;
-    }
-    case 'monthly':
-      startDate.setDate(1);
-      endDate.setDate(new Date(year, month, 0).getDate());
-      break;
-    case 'quarterly': {
-      const quarterStartMonth = Math.floor((month - 1) / 3) * 3;
-      startDate.setMonth(quarterStartMonth);
-      startDate.setDate(1);
-      endDate.setMonth(quarterStartMonth + 2);
-      endDate.setDate(new Date(year, quarterStartMonth + 3, 0).getDate());
-      break;
-    }
-    case 'midterm':
-      if (month <= 6) {
-        startDate.setMonth(0);
-        startDate.setDate(1);
-        endDate.setMonth(5);
-        endDate.setDate(30);
-      } else {
-        startDate.setMonth(6);
-        startDate.setDate(1);
-        endDate.setMonth(11);
-        endDate.setDate(31);
-      }
-      break;
-    case 'annual':
-      startDate.setMonth(0);
-      startDate.setDate(1);
-      endDate.setMonth(11);
-      endDate.setDate(31);
-      break;
-  }
-
-  const formatDate = (d: Date): string => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${dd}`;
-  };
-
-  return {
-    startDate: formatDate(startDate),
-    endDate: formatDate(endDate),
-  };
-};
-
-// ============================================================================
-// INTERFACES
-// ============================================================================
-interface MilestoneItem {
+interface Entry {
   rank: number;
   id: string;
-  targetType: string;
+  targetType: 'song' | 'artist';
   title: string;
   artist: string;
-  jurisdiction: string;
+  artistId: string | null;
+  fileUrl: string | null;
+  artwork: string | null;
   votes: number;
   weightedPoints: number;
   playsCount: number;
   likesCount: number;
-  artwork: string | null;
-  determinationMethod: string;
+  determinationMethod: string | null;
   tiedCandidatesCount: number;
-  caption?: string;
 }
 
-interface DisplayedContext {
-  location: string;
+interface Shown {
+  jurisdiction: string;
   genre: string;
   category: string;
-  interval: string;
+  interval: Interval;
   selectedDate: string;
+  empty: boolean;
 }
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
-const MilestonesScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
-  const { playMedia } = usePlayer();
-
-  // Filter state
-  const [location, setLocation] = useState('downtown-harlem');
-  const [genre, setGenre] = useState('rap');
-  const [category, setCategory] = useState<'artist' | 'song'>('artist');
-  const [interval, setInterval] = useState<'daily' | 'weekly' | 'monthly' | 'quarterly' | 'midterm' | 'annual'>('daily');
-  const [selectedDate, setSelectedDate] = useState<string>('');
-
-  // Display state (frozen when View is clicked)
-  const [displayedContext, setDisplayedContext] = useState<DisplayedContext | null>(null);
-
-  // Results state
-  const [results, setResults] = useState<MilestoneItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Dropdown state
-  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
-
-  // Fallback image
-  const fallbackImage = require('../../assets/randomrapper.jpeg');
-
-  // Max/Min dates as strings (YYYY-MM-DD)
-  const getMaxDate = (): string => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    if (interval === 'annual') {
-      const lastYear = new Date().getFullYear() - 1;
-      return `${lastYear}-12-31`;
-    }
-
-    const year = yesterday.getFullYear();
-    const month = String(yesterday.getMonth() + 1).padStart(2, '0');
-    const day = String(yesterday.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  };
-
-  const minDate = '2025-10-26';
-
-  // ============================================================================
-  // HELPER: Generate winner caption (fallback if backend doesn't provide one)
-  // ============================================================================
-  const generateWinnerCaption = (award: any): string => {
-    const method = award.determinationMethod;
-    if (!method || method === 'WEIGHTED_VOTES') {
-      return `Winner with ${award.weightedPoints || 0} points!`;
-    }
-    return 'Winner!';
-  };
-
-  // ============================================================================
-  // CUSTOM DROPDOWN COMPONENT
-  // ============================================================================
-  const CustomDropdown = ({
-    id,
-    value,
-    options,
-    onSelect,
-  }: {
-    id: string;
-    value: string;
-    options: { label: string; value: string }[];
-    onSelect: (value: string) => void;
-  }) => {
-    const selectedOption = options.find((opt) => opt.value === value);
-    const isOpen = activeDropdown === id;
-
-    return (
-      <View style={styles.dropdownWrapper}>
+// ─── Segmented control ───────────────────────────────────────────────────────
+// Replaces the dropdowns. Small option counts read better as visible choices,
+// and it kills the form feel. Wraps rather than scrolling sideways so nothing
+// can run off the edge of a narrow phone.
+const Segmented = <T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  accent,
+}: {
+  label: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  accent: string;
+}) => (
+  <View style={styles.segmented} accessibilityRole="radiogroup" accessibilityLabel={label}>
+    {options.map((opt) => {
+      const active = opt.value === value;
+      return (
         <TouchableOpacity
-          style={styles.dropdownButton}
-          onPress={() => setActiveDropdown(isOpen ? null : id)}
-          activeOpacity={0.7}
+          key={opt.value}
+          style={[
+            styles.seg,
+            active && { backgroundColor: accent },
+          ]}
+          onPress={() => onChange(opt.value)}
+          accessibilityRole="radio"
+          accessibilityState={{ selected: active }}
+          accessibilityLabel={`${label}: ${opt.label}`}
+          activeOpacity={0.8}
         >
-          <Text style={styles.dropdownButtonText}>
-            {selectedOption?.label || 'Select...'}
+          <Text style={[styles.segText, active && styles.segTextOn]} numberOfLines={1}>
+            {opt.label}
           </Text>
-          <ChevronDown size={18} color={COLORS.accentWhite} />
         </TouchableOpacity>
-
-        <Modal
-          visible={isOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setActiveDropdown(null)}
-        >
-          <Pressable
-            style={styles.modalOverlay}
-            onPress={() => setActiveDropdown(null)}
-          >
-            <View style={styles.dropdownModal}>
-              <FlatList
-                data={options}
-                keyExtractor={(item) => item.value}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.dropdownOption,
-                      item.value === value && styles.dropdownOptionSelected,
-                    ]}
-                    onPress={() => {
-                      onSelect(item.value);
-                      setActiveDropdown(null);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownOptionText,
-                        item.value === value && styles.dropdownOptionTextSelected,
-                      ]}
-                    >
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              />
-            </View>
-          </Pressable>
-        </Modal>
-      </View>
-    );
-  };
-
-  // ============================================================================
-  // FETCH MILESTONES — REAL API
-  // ============================================================================
-  const handleView = async () => {
-    if (!selectedDate) {
-      setError('Please select a date.');
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-    setResults([]);
-
-    try {
-      const jurId = JURISDICTION_IDS[location];
-      const genreId = GENRE_IDS[genre];
-      const intervalId = INTERVAL_IDS[interval];
-      const type = category;
-
-      if (!jurId) throw new Error('Invalid location');
-      if (!genreId) throw new Error('Invalid genre');
-      if (!intervalId) throw new Error('Invalid interval');
-
-      const { startDate, endDate } = getDateRangeForInterval(selectedDate, interval);
-
-      console.log('Milestones API params:', { type, startDate, endDate, jurId, genreId, intervalId });
-
-      const response = await axiosInstance.get(
-        `/v1/awards/past?type=${type}&startDate=${startDate}&endDate=${endDate}&jurisdictionId=${jurId}&genreId=${genreId}&intervalId=${intervalId}`
       );
+    })}
+  </View>
+);
 
-      const rawResults = response.data;
+// ─── One row of the tally ────────────────────────────────────────────────────
+// Bar width encodes share of the period's points, so margin of victory is
+// legible without reading a number. An entry with no points shows a blank
+// points cell — a zero reads as a figure worth comparing, a blank reads as
+// "nothing scored". When nothing in the period scored, the rail is dropped.
+const TallyRow = ({
+  entry,
+  share,
+  showBar,
+  accent,
+  accentLight,
+  onOpen,
+  onPlay,
+}: {
+  entry: Entry;
+  share: number;
+  showBar: boolean;
+  accent: string;
+  accentLight: string;
+  onOpen: (e: Entry) => void;
+  onPlay: (e: Entry) => void;
+}) => {
+  const hasPoints = entry.weightedPoints > 0;
+  const isWinner = entry.rank === 1;
+  const canPlay = entry.targetType === 'song' && !!entry.fileUrl;
 
-      if (!rawResults || rawResults.length === 0) {
-        setError('No awards found for this date. Try a different date.');
-        setResults([]);
-        return;
-      }
-
-      // Normalize API response — matches web version's mapping exactly
-      const normalized: MilestoneItem[] = rawResults.map((award: any, i: number) => {
-        let title: string;
-        let artist: string;
-        let artwork: string | null;
-
-        if (award.targetType === 'artist') {
-          title = award.user?.username || 'Unknown Artist';
-          artist = award.user?.username || 'Unknown Artist';
-          artwork = award.user?.photoUrl
-            ? getMediaUrl(award.user.photoUrl) || null
-            : null;
-        } else {
-          title = award.song?.title || 'Unknown Song';
-          artist = award.song?.artist?.username || 'Unknown Artist';
-          artwork = award.song?.artworkUrl
-            ? getMediaUrl(award.song.artworkUrl) || null
-            : null;
-        }
-
-        return {
-          rank: i + 1,
-          id: award.targetId,
-          targetType: award.targetType,
-          title,
-          artist,
-          jurisdiction: award.jurisdiction?.name || location,
-          votes: award.votesCount || 0,
-          weightedPoints: award.weightedPoints || 0,
-          playsCount: award.playsCount || 0,
-          likesCount: award.likesCount || 0,
-          artwork,
-          determinationMethod: award.determinationMethod,
-          tiedCandidatesCount: award.tiedCandidatesCount || 0,
-          caption: award.caption || generateWinnerCaption(award),
-        };
-      });
-
-      setResults(normalized);
-
-      // Freeze the displayed context so caption doesn't change until next search
-      setDisplayedContext({
-        location,
-        genre,
-        category,
-        interval,
-        selectedDate,
-      });
-    } catch (err: any) {
-      console.error('Milestones fetch error:', err);
-      setError(err.message || 'Failed to load milestones. Please try again.');
-      setResults([]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ============================================================================
-  // DETERMINATION BADGE
-  // ============================================================================
-  const getDeterminationBadge = (
-    method: string,
-    tiedCount: number,
-    weightedPoints: number,
-    playsCount: number,
-    likesCount: number
-  ) => {
-    if (!method) return null;
-
-    const badgeStyles: { [key: string]: any } = {
-      WEIGHTED_VOTES: { bg: ['#667eea', '#764ba2'], text: `${weightedPoints} pts` },
-      PLAYS: { bg: ['#4facfe', '#00f2fe'], text: `${tiedCount}-way tie • ${playsCount} plays` },
-      LIKES: { bg: ['#fa709a', '#fee140'], text: `${tiedCount}-way tie • ${likesCount} likes` },
-      SCORE: { bg: ['#a8edea', '#fed6e3'], text: 'Tie • by score', darkText: true },
-      SENIORITY: { bg: ['#d299c2', '#fef9d7'], text: 'Tie • by seniority', darkText: true },
-      FALLBACK: { bg: ['rgba(255,255,255,0.2)', 'rgba(255,255,255,0.1)'], text: 'No votes' },
-    };
-
-    const badge = badgeStyles[method];
-    if (!badge) return null;
-
-    return (
-      <LinearGradient
-        colors={badge.bg}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.badge}
+  return (
+    <View style={styles.tallyRow}>
+      <TouchableOpacity
+        style={styles.tallyMain}
+        onPress={() => onOpen(entry)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${entry.title}${entry.targetType === 'song' ? ` by ${entry.artist}` : ''}, ranked ${entry.rank}`}
+        activeOpacity={0.7}
       >
-        <Text style={[styles.badgeText, badge.darkText && styles.badgeTextDark]}>
-          {badge.text}
-        </Text>
-      </LinearGradient>
-    );
-  };
+        <Text style={[styles.tallyRank, isWinner && { color: accentLight }]}>{entry.rank}</Text>
 
-  // ============================================================================
-  // RENDER CAPTION
-  // ============================================================================
-  const renderCaption = () => {
-    if (!displayedContext || results.length === 0) return null;
+        {entry.artwork ? (
+          <Image source={{ uri: entry.artwork }} style={styles.tallyArt} />
+        ) : (
+          <View style={[styles.tallyArt, styles.tallyArtEmpty]} />
+        )}
 
-    const locationText = formatLocation(displayedContext.location);
-    const genreText = formatGenre(displayedContext.genre);
-    const categoryText = formatCategory(displayedContext.category);
-    const intervalText = getIntervalText(displayedContext.interval);
-    const dateText = formatDateDisplay(displayedContext.selectedDate, displayedContext.interval);
-
-    return (
-      <View style={styles.captionContainer}>
-        <Text style={styles.captionTop}>
-          {locationText} {genreText}
-        </Text>
-        <Text style={styles.dramaticEffect}>
-          {categoryText} {intervalText}
-        </Text>
-        <Text style={styles.milestoneDate}>{dateText}</Text>
-      </View>
-    );
-  };
-
-  // ============================================================================
-  // RENDER WINNER HIGHLIGHT
-  // ============================================================================
-  const renderWinnerHighlight = () => {
-    if (results.length === 0) return null;
-
-    const winner = results[0];
-    const winnerArtwork = winner.artwork ? { uri: winner.artwork } : fallbackImage;
-
-    return (
-      <View style={styles.winnerHighlight}>
-        {/* Ambient Glow Background */}
-        <Image source={winnerArtwork} style={styles.ambientGlow} blurRadius={80} />
-
-        {/* Glass Content */}
-        <View style={styles.winnerContentGlass}>
-          {/* Header */}
-          <View style={styles.winnerHeader}>
-            <Text style={styles.winnerTitle}>{winner.title}</Text>
-            <Text style={styles.winnerArtist}>{winner.artist}</Text>
-            <Text style={styles.winnerJurisdiction}>{winner.jurisdiction}</Text>
-          </View>
-
-          {/* Artwork */}
-          <View style={styles.winnerArtworkWrapper}>
-            <Image source={winnerArtwork} style={styles.winnerArtwork} />
-          </View>
-
-          {/* Stats */}
-          <View style={styles.winnerStatsContainer}>
-            <View style={styles.winnerStats}>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{winner.weightedPoints}</Text>
-                <Text style={styles.statLabel}>points</Text>
-              </View>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{winner.votes}</Text>
-                <Text style={styles.statLabel}>votes</Text>
-              </View>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{winner.playsCount}</Text>
-                <Text style={styles.statLabel}>plays</Text>
-              </View>
-              <View style={styles.stat}>
-                <Text style={styles.statValue}>{winner.likesCount}</Text>
-                <Text style={styles.statLabel}>likes</Text>
-              </View>
+        <View style={styles.tallyText}>
+          <Text
+            style={[styles.tallyTitle, isWinner && styles.tallyTitleWinner]}
+            numberOfLines={1}
+          >
+            {entry.title}
+          </Text>
+          {entry.targetType === 'song' && (
+            <Text style={styles.tallyArtist} numberOfLines={1}>{entry.artist}</Text>
+          )}
+          {showBar && (
+            <View style={styles.tallyBar}>
+              {hasPoints && (
+                <View
+                  style={[
+                    styles.tallyFill,
+                    {
+                      width: `${share}%`,
+                      backgroundColor: isWinner ? accent : 'rgba(255,255,255,0.2)',
+                    },
+                  ]}
+                />
+              )}
             </View>
-
-            {getDeterminationBadge(
-              winner.determinationMethod,
-              winner.tiedCandidatesCount,
-              winner.weightedPoints,
-              winner.playsCount,
-              winner.likesCount
-            )}
-
-            {winner.caption && (
-              <Text style={styles.winnerCaption}>"{winner.caption}"</Text>
-            )}
-          </View>
-        </View>
-      </View>
-    );
-  };
-
-  // ============================================================================
-  // RENDER RESULT ITEM
-  // ============================================================================
-  const renderResultItem = (item: MilestoneItem) => {
-    const itemArtwork = item.artwork ? { uri: item.artwork } : fallbackImage;
-
-    return (
-      <View key={`${item.id}-${item.rank}`} style={styles.resultItem}>
-        <Text style={styles.rank}>#{item.rank}</Text>
-        <Image source={itemArtwork} style={styles.itemArtwork} />
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemTitle} numberOfLines={1}>
-            {item.title}
-          </Text>
-          <Text style={styles.itemArtist} numberOfLines={1}>
-            {item.artist}
-          </Text>
-        </View>
-        <View style={styles.itemStats}>
-          <Text style={styles.points}>{item.weightedPoints} pts</Text>
-          {getDeterminationBadge(
-            item.determinationMethod,
-            item.tiedCandidatesCount,
-            item.weightedPoints,
-            item.playsCount,
-            item.likesCount
           )}
         </View>
-      </View>
-    );
-  };
 
-  // ============================================================================
-  // MAIN RENDER
-  // ============================================================================
-  return (
-    <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-      <LinearGradient
-        colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)', COLORS.bgBlack]}
-        style={styles.gradientOverlay}
-      >
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
+        <Text style={[styles.tallyPoints, isWinner && { color: accentLight }]}>
+          {hasPoints ? formatNumber(entry.weightedPoints) : ''}
+        </Text>
+      </TouchableOpacity>
+
+      {canPlay && (
+        <TouchableOpacity
+          style={styles.tallyPlay}
+          onPress={() => onPlay(entry)}
+          accessibilityRole="button"
+          accessibilityLabel={`Play ${entry.title}`}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          activeOpacity={0.7}
         >
-          {/* Filter Card */}
-          <View style={styles.filterCard}>
-            <View style={styles.filterControls}>
-              <CustomDropdown
-                id="location"
-                value={location}
-                options={LOCATION_OPTIONS}
-                onSelect={setLocation}
-              />
-              <CustomDropdown
-                id="genre"
-                value={genre}
-                options={GENRE_OPTIONS}
-                onSelect={setGenre}
-              />
-              <CustomDropdown
-                id="category"
-                value={category}
-                options={CATEGORY_OPTIONS}
-                onSelect={(val) => setCategory(val as 'artist' | 'song')}
-              />
-              <CustomDropdown
-                id="interval"
-                value={interval}
-                options={INTERVAL_OPTIONS}
-                onSelect={setInterval}
-              />
-
-              {/* Interval-Aware Date Picker */}
-              <IntervalDatePicker
-                interval={interval}
-                value={selectedDate}
-                onChange={setSelectedDate}
-                maxDate={getMaxDate()}
-                minDate={minDate}
-              />
-
-              {/* View Button */}
-              <TouchableOpacity
-                style={[styles.viewButton, isLoading && styles.viewButtonDisabled]}
-                onPress={handleView}
-                disabled={isLoading}
-              >
-                <Text style={styles.viewButtonText}>
-                  {isLoading ? 'Loading…' : 'View'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Caption */}
-          {renderCaption()}
-
-          {/* Winner Highlight */}
-          {renderWinnerHighlight()}
-
-          {/* Results Section */}
-          <View style={styles.resultsSection}>
-            {isLoading ? (
-              <View style={styles.messageContainer}>
-                <ActivityIndicator size="large" color={COLORS.unisBlue} />
-                <Text style={styles.messageText}>Loading milestones…</Text>
-              </View>
-            ) : error ? (
-              <View style={styles.messageContainer}>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : results.length > 1 ? (
-              <View style={styles.resultsList}>
-                {results.slice(1).map(renderResultItem)}
-              </View>
-            ) : results.length === 0 ? (
-              <View style={styles.messageContainer}>
-                <Text style={styles.messageText}>
-                  Select criteria and date, then tap 'View' to see past winners.
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          {/* Bottom spacing for player */}
-          <View style={{ height: 120 }} />
-        </ScrollView>
-      </LinearGradient>
-    </ImageBackground>
+          <Text style={styles.tallyPlayGlyph}>▶</Text>
+        </TouchableOpacity>
+      )}
+    </View>
   );
 };
 
-// ============================================================================
-// STYLES (converted from milestonesPage.scss)
-// ============================================================================
+// ─── The screen ──────────────────────────────────────────────────────────────
+const MilestonesScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
+  const { requestPlay } = usePlayer();
+  const { theme } = useAuth();
+
+  const accent = getThemeHex(theme);
+  const accentLight = useMemo(() => lighten(accent), [accent]);
+
+  const [jurisdiction, setJurisdiction] = useState('downtown-harlem');
+  const [genre, setGenre] = useState('rap');
+  const [category, setCategory] = useState<'song' | 'artist'>('song');
+  const [interval, setIntervalState] = useState<Interval>('daily');
+  const [selectedDate, setSelectedDate] = useState<string>(() => getLastCompletedPeriodEnd('daily'));
+
+  // Frozen at the moment of a successful fetch, so the headline can never
+  // describe a period other than the one on screen.
+  const [shown, setShown] = useState<Shown | null>(null);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [totalVotes, setTotalVotes] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const maxDate = useMemo(() => getLastCompletedPeriodEnd(interval), [interval]);
+  const periodOpen = selectedDate ? !isPeriodComplete(selectedDate, interval) : false;
+
+  // Switching interval re-anchors the date. Without this the old selection
+  // carries across and silently resolves to an unfinished period.
+  const handleIntervalChange = useCallback((next: Interval) => {
+    setIntervalState(next);
+    setSelectedDate((prev) => {
+      const clamped = clampToCompletedPeriod(prev, next);
+      if (clamped !== prev) {
+        console.info(`${LOG} interval → ${next}: re-anchored date ${prev} → ${clamped} (previous selection fell in an open period)`);
+      }
+      return clamped;
+    });
+  }, []);
+
+  const jumpToLastClosed = useCallback(() => {
+    const end = getLastCompletedPeriodEnd(interval);
+    setSelectedDate(end);
+    setError(null);
+    console.info(`${LOG} jumped to last closed ${interval} period: ${end}`);
+  }, [interval]);
+
+  const loadPeriod = useCallback(async () => {
+    if (!selectedDate) {
+      setError('Pick a period first.');
+      return;
+    }
+
+    // Layer 3. The picker should never surface an open period, but stale state
+    // must not be allowed to trigger a write.
+    if (!isPeriodComplete(selectedDate, interval)) {
+      console.warn(`${LOG} blocked request for open period: ${interval} ${selectedDate}`);
+      setError(null);
+      return;
+    }
+
+    const jurId = JURISDICTION_IDS[jurisdiction];
+    const genreId = GENRE_IDS[genre];
+    const intervalId = INTERVAL_IDS[interval];
+
+    if (!jurId || !genreId || !intervalId) {
+      console.error(`${LOG} id mapping miss`, { jurisdiction, genre, interval, jurId, genreId, intervalId });
+      setError('That combination is not available yet.');
+      return;
+    }
+
+    const { startDate, endDate } = getPeriodRange(selectedDate, interval);
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      console.info(`${LOG} fetching ${category} ${interval} ${startDate}..${endDate} · ${jurisdiction}/${genre}`);
+
+      const response = await axiosInstance.get(
+        `/v1/awards/period-leaderboard?type=${category}&startDate=${startDate}&endDate=${endDate}` +
+        `&jurisdictionId=${jurId}&genreId=${genreId}&intervalId=${intervalId}&limit=5`
+      );
+
+      // Two shapes supported: the current { winner, leaderboard, totalVotes }
+      // and a bare Award array from the older /past contract.
+      const payload = response.data || {};
+      const rows: any[] = Array.isArray(payload)
+        ? payload
+        : payload.leaderboard?.length
+          ? payload.leaderboard
+          : [payload.winner].filter(Boolean);
+
+      if (!rows.length) {
+        console.info(`${LOG} no awards for ${interval} ${startDate}..${endDate}`);
+        setEntries([]);
+        setTotalVotes(0);
+        setShown({ jurisdiction, genre, category, interval, selectedDate, empty: true });
+        return;
+      }
+
+      const normalized: Entry[] = rows.map((row, i) => {
+        const isArtist = (row.targetType || category) === 'artist';
+        const rawArt = isArtist
+          ? (row.user?.photoUrl || row.artwork)
+          : (row.song?.artworkUrl || row.artwork);
+
+        return {
+          rank: row.rank || i + 1,
+          id: row.targetId,
+          targetType: isArtist ? 'artist' : 'song',
+          title: isArtist
+            ? (row.user?.username || row.title || 'Unknown artist')
+            : (row.song?.title || row.title || 'Unknown song'),
+          artist: isArtist
+            ? (row.user?.username || row.artist || '')
+            : (row.song?.artist?.username || row.artist || 'Unknown artist'),
+          artistId: row.artistId || row.song?.artist?.userId || null,
+          fileUrl: buildUrl(row.fileUrl || row.song?.fileUrl),
+          artwork: buildUrl(rawArt),
+          votes: Number(row.votes ?? row.votesCount ?? 0),
+          weightedPoints: Number(row.weightedPoints || 0),
+          playsCount: Number(row.playsCount || 0),
+          likesCount: Number(row.likesCount || 0),
+          determinationMethod: row.determinationMethod || null,
+          tiedCandidatesCount: row.tiedCandidatesCount || 0,
+        };
+      });
+
+      setEntries(normalized);
+      setTotalVotes(
+        Array.isArray(payload)
+          ? normalized.reduce((sum, e) => sum + e.votes, 0)
+          : (payload.totalVotes ?? normalized.reduce((sum, e) => sum + e.votes, 0))
+      );
+      setShown({ jurisdiction, genre, category, interval, selectedDate, empty: false });
+      console.info(`${LOG} loaded ${normalized.length} ${category} entries · winner "${normalized[0].title}"`);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      console.error(`${LOG} fetch failed (${status || 'network'})`, err?.message || err);
+      setEntries([]);
+      setShown(null);
+      setError(
+        status === 404
+          ? 'Nothing was awarded for that period.'
+          : 'The archive did not respond. Try again in a moment.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedDate, interval, jurisdiction, genre, category]);
+
+  const openEntry = useCallback((entry: Entry) => {
+    if (!entry?.id) return;
+    if (entry.targetType === 'artist') navigation.navigate('Artist', { artistId: entry.id });
+    else navigation.navigate('Song', { songId: entry.id });
+  }, [navigation]);
+
+  // Every play routes through requestPlay so PlayChoiceModal appears and the
+  // play is counted to the artist. The previous version called playMedia()
+  // directly and neither happened.
+  const playEntry = useCallback((entry: Entry) => {
+    if (!entry?.fileUrl) {
+      console.warn(`${LOG} play unavailable for "${entry?.title}" — no file url`);
+      return;
+    }
+    console.info(`${LOG} play requested: "${entry.title}"`);
+    const item: MediaItem = {
+      id: entry.id,
+      songId: entry.id,
+      title: entry.title,
+      artist: entry.artist,
+      url: entry.fileUrl,
+      fileUrl: entry.fileUrl,
+      artwork: entry.artwork || undefined,
+      artworkUrl: entry.artwork || undefined,
+    };
+    requestPlay(item);
+  }, [requestPlay]);
+
+  const winner = entries[0] || null;
+  const maxPoints = entries.reduce((m, e) => Math.max(m, e.weightedPoints), 0);
+  const tiebreak = winner?.determinationMethod && TIEBREAKERS[winner.determinationMethod]
+    ? TIEBREAKERS[winner.determinationMethod](winner.tiedCandidatesCount)
+    : null;
+
+  // Only surface figures that actually happened. A row of zeroes invites the
+  // reader to compare nothing against nothing.
+  const figures = winner
+    ? [
+        { key: 'points', label: 'Points', value: winner.weightedPoints, lead: true },
+        { key: 'votes', label: 'Votes', value: winner.votes, lead: false },
+        { key: 'plays', label: 'Plays', value: winner.playsCount, lead: false },
+        { key: 'likes', label: 'Likes', value: winner.likesCount, lead: false },
+      ].filter((f) => f.value > 0)
+    : [];
+
+  const intervalLabel = INTERVAL_OPTIONS.find((o) => o.value === interval)?.label.toLowerCase() || 'period';
+
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+    >
+      {/* ── Masthead ────────────────────────────────────────────────────── */}
+      <View style={styles.masthead}>
+        <Text style={[styles.eyebrow, { color: accentLight }]}>THE RECORD</Text>
+        <Text style={styles.wordmark}>Milestones</Text>
+        <Text style={styles.lede}>Every closed period, and who took it.</Text>
+      </View>
+
+      {/* ── Controls ────────────────────────────────────────────────────── */}
+      <View style={styles.controls}>
+        <Segmented label="Jurisdiction" options={JURISDICTIONS} value={jurisdiction} onChange={setJurisdiction} accent={accent} />
+
+        <View style={styles.controlPair}>
+          <View style={styles.controlHalf}>
+            <Segmented label="Genre" options={GENRES} value={genre} onChange={setGenre} accent={accent} />
+          </View>
+          <View style={styles.controlHalf}>
+            <Segmented label="Category" options={CATEGORIES} value={category} onChange={setCategory} accent={accent} />
+          </View>
+        </View>
+
+        <View style={[styles.controlDivider, { borderTopColor: ETCH }]}>
+          <Segmented label="Interval" options={INTERVAL_OPTIONS} value={interval} onChange={handleIntervalChange} accent={accent} />
+        </View>
+
+        <View style={styles.periodRow}>
+          <View style={styles.periodPicker}>
+            <IntervalDatePicker
+              interval={interval}
+              value={selectedDate}
+              onChange={setSelectedDate}
+              maxDate={maxDate}
+              minDate={MIN_DATE}
+              accent={accent}
+            />
+          </View>
+          {!!selectedDate && !periodOpen && (
+            <Text style={styles.periodRange}>{formatPeriodRange(selectedDate, interval)}</Text>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={[
+            styles.submit,
+            { backgroundColor: accent, borderColor: alpha(accent, 0.6) },
+            (isLoading || periodOpen || !selectedDate) && styles.submitOff,
+          ]}
+          onPress={loadPeriod}
+          disabled={isLoading || periodOpen || !selectedDate}
+          accessibilityRole="button"
+          accessibilityLabel="Show winner"
+          accessibilityState={{ disabled: isLoading || periodOpen || !selectedDate, busy: isLoading }}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.submitText}>{isLoading ? 'Loading' : 'Show winner'}</Text>
+        </TouchableOpacity>
+
+        {/* Open period: direction, not an error. */}
+        {periodOpen && (
+          <View
+            style={[styles.notice, { backgroundColor: alpha(accent, 0.1), borderColor: alpha(accent, 0.3) }]}
+            accessibilityLiveRegion="polite"
+          >
+            <Text style={styles.noticeTitle}>
+              This {interval === 'daily' ? 'day' : intervalLabel} is still running.
+            </Text>
+            <Text style={styles.noticeBody}>
+              Results are final after {getPeriodCloseLabel(selectedDate, interval)}. Votes, plays and likes are still landing until then.
+            </Text>
+            <TouchableOpacity
+              style={[styles.noticeAction, { borderColor: alpha(accent, 0.5) }]}
+              onPress={jumpToLastClosed}
+              accessibilityRole="button"
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.noticeActionText, { color: accentLight }]}>
+                Go to {formatPeriodLabel(getLastCompletedPeriodEnd(interval), interval)}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      {/* ── Result ──────────────────────────────────────────────────────── */}
+      {isLoading && (
+        <View style={styles.loading} accessibilityLiveRegion="polite">
+          <ActivityIndicator size="large" color={accentLight} />
+          <Text style={styles.loadingText}>Loading the archive</Text>
+        </View>
+      )}
+
+      {!isLoading && !!error && (
+        <View style={[styles.message, styles.messageError]} accessibilityLiveRegion="assertive">
+          <Text style={styles.messageErrorText}>{error}</Text>
+        </View>
+      )}
+
+      {!isLoading && !error && shown?.empty && (
+        <View style={styles.message}>
+          <Text style={styles.messageText}>
+            No award was recorded for {formatPeriodLabel(shown.selectedDate, shown.interval)} in {JURISDICTION_LABEL[shown.jurisdiction]}. Try another period or genre.
+          </Text>
+        </View>
+      )}
+
+      {!isLoading && !error && winner && shown && !shown.empty && (
+        <View>
+          {/* Headline */}
+          <View style={styles.headline}>
+            <Text style={[styles.headlineKicker, { color: accentLight }]}>
+              {JURISDICTION_LABEL[shown.jurisdiction].toUpperCase()} · {(GENRES.find((g) => g.value === shown.genre)?.label || '').toUpperCase()}
+            </Text>
+            <Text style={styles.headlineTitle}>
+              {shown.category === 'artist' ? 'Artist' : 'Song'} {INTERVAL_TITLE[shown.interval]}
+            </Text>
+            <Text style={styles.headlinePeriod}>
+              {formatPeriodLabel(shown.selectedDate, shown.interval)}
+            </Text>
+          </View>
+
+          {/* Plate — the engraved record */}
+          <View style={styles.plate}>
+            {!!winner.artwork && (
+              <ImageBackground
+                source={{ uri: winner.artwork }}
+                style={StyleSheet.absoluteFill}
+                imageStyle={styles.plateGlow}
+                blurRadius={40}
+              />
+            )}
+
+            <View style={styles.plateInner}>
+              {winner.artwork ? (
+                <Image source={{ uri: winner.artwork }} style={styles.plateArt} />
+              ) : (
+                <View style={[styles.plateArt, styles.tallyArtEmpty]} />
+              )}
+
+              <View style={[styles.crown, { backgroundColor: accent }]}>
+                <Text style={styles.crownText}>WINNER</Text>
+              </View>
+
+              <Text style={styles.plateName}>{winner.title}</Text>
+              {shown.category === 'song' && <Text style={styles.plateBy}>{winner.artist}</Text>}
+
+              {figures.length > 0 ? (
+                <View style={[styles.figures, { borderTopColor: ETCH }]}>
+                  {figures.map((f) => (
+                    <View key={f.key} style={styles.figure}>
+                      <Text style={styles.figureLabel}>{f.label.toUpperCase()}</Text>
+                      <Text style={[styles.figureValue, f.lead && { fontSize: 22, color: accentLight }]}>
+                        {formatNumber(f.value)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                // Nothing scored at all. The determination line takes the
+                // figures' place rather than sitting under a row of zeroes.
+                <View style={[styles.figuresEmpty, { borderTopColor: ETCH }]}>
+                  <Text style={styles.figuresEmptyText}>
+                    {tiebreak || 'No engagement recorded for this period'}
+                  </Text>
+                </View>
+              )}
+
+              {!!tiebreak && figures.length > 0 && (
+                <Text style={styles.plateNote}>{tiebreak}</Text>
+              )}
+
+              <View style={styles.plateActions}>
+                {shown.category === 'song' && !!winner.fileUrl && (
+                  <TouchableOpacity
+                    style={[styles.action, styles.actionPrimary, { backgroundColor: accent, borderColor: alpha(accent, 0.6) }]}
+                    onPress={() => playEntry(winner)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Play ${winner.title}`}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.actionText}>▶  Play</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.action}
+                  onPress={() => openEntry(winner)}
+                  accessibilityRole="button"
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.actionText}>
+                    {shown.category === 'artist' ? 'View artist' : 'View song'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          {/* Tally — the signature */}
+          <View style={styles.tally}>
+            <View style={[styles.tallyHead, { borderBottomColor: ETCH }]}>
+              <Text style={styles.tallyHeading}>THE TALLY</Text>
+              <Text style={styles.tallyMeta}>
+                {totalVotes > 0 ? `${formatNumber(totalVotes)} votes cast` : 'Decided on engagement'}
+              </Text>
+            </View>
+
+            {entries.map((entry) => (
+              <TallyRow
+                key={entry.id || String(entry.rank)}
+                entry={entry}
+                showBar={maxPoints > 0}
+                share={maxPoints > 0 && entry.weightedPoints > 0
+                  ? Math.max(4, (entry.weightedPoints / maxPoints) * 100)
+                  : 0}
+                accent={accent}
+                accentLight={accentLight}
+                onOpen={openEntry}
+                onPlay={playEntry}
+              />
+            ))}
+
+            {entries.length === 1 && (
+              <Text style={styles.tallySolo}>
+                One entry qualified in this category for this period.
+              </Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      {!isLoading && !error && !shown && !periodOpen && (
+        <View style={[styles.invite, { borderColor: ETCH_STRONG }]}>
+          <Text style={styles.inviteText}>
+            Pick a jurisdiction, genre and period, then show the winner.
+          </Text>
+        </View>
+      )}
+    </ScrollView>
+  );
+};
+
 const styles = StyleSheet.create({
-  // Background & Layout
-  backgroundImage: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-  },
-  gradientOverlay: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingTop: IS_MOBILE ? 20 : 40,
-    paddingHorizontal: IS_MOBILE ? 12 : 20,
-    paddingBottom: 20,
-    alignItems: 'center',
-  },
+  screen: { flex: 1, backgroundColor: '#08090e' },
+  content: { paddingHorizontal: 14, paddingTop: 20, paddingBottom: 120 },
 
-  // Filter Card
-  filterCard: {
-    backgroundColor: 'rgba(22, 51, 135, 0.8)',
-    borderRadius: 12,
-    padding: IS_MOBILE ? 16 : 20,
-    width: '100%',
-    maxWidth: 900,
-    marginBottom: 20,
+  // Masthead
+  masthead: { marginBottom: 20 },
+  eyebrow: { fontSize: 10, fontWeight: '600', letterSpacing: 2.2, marginBottom: 8 },
+  wordmark: { fontSize: 34, fontWeight: '600', letterSpacing: -1, color: INK, lineHeight: 36 },
+  lede: { marginTop: 8, fontSize: 13, color: INK_2 },
+
+  // Controls
+  controls: {
+    padding: 12,
+    marginBottom: 22,
+    backgroundColor: PLATE,
     borderWidth: 1,
-    borderColor: COLORS.borderSilverSolid,
+    borderColor: ETCH,
+    borderRadius: 14,
   },
-  filterControls: {
-    flexDirection: IS_MOBILE ? 'column' : 'row',
+  controlPair: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  controlHalf: { flex: 1 },
+  controlDivider: { marginTop: 12, paddingTop: 12, borderTopWidth: 1 },
+
+  segmented: {
+    flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: IS_MOBILE ? 12 : 15,
+    padding: 3,
+    gap: 2,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: ETCH,
+    borderRadius: 9,
   },
+  seg: {
+    flexGrow: 1,
+    flexBasis: '30%',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 7,
+    alignItems: 'center',
+  },
+  segText: { fontSize: 12, fontWeight: '500', color: INK_3 },
+  segTextOn: { color: INK, fontWeight: '600' },
 
-  // Custom Dropdown
-  dropdownWrapper: {
-    width: IS_MOBILE ? '100%' : 'auto',
-    minWidth: IS_MOBILE ? undefined : 140,
-  },
-  dropdownButton: {
-    backgroundColor: COLORS.bgBlack,
-    borderRadius: IS_MOBILE ? 12 : 50,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
+  periodRow: { marginTop: 12, gap: 6 },
+  periodPicker: { width: '100%' },
+  periodRange: { fontSize: 11, color: INK_3, textAlign: 'center' },
+
+  submit: {
+    marginTop: 10,
     paddingVertical: 12,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dropdownButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: 14,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  dropdownModal: {
-    backgroundColor: COLORS.subtleBlack,
-    borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.unisBlue,
-    width: '80%',
-    maxWidth: 300,
-    maxHeight: 300,
-    overflow: 'hidden',
+    borderRadius: 10,
+    alignItems: 'center',
   },
-  dropdownOption: {
-    paddingVertical: 14,
+  submitOff: { opacity: 0.38 },
+  submitText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+
+  notice: { marginTop: 12, padding: 14, borderWidth: 1, borderRadius: 10 },
+  noticeTitle: { fontSize: 13, fontWeight: '600', color: INK, marginBottom: 4 },
+  noticeBody: { fontSize: 12, lineHeight: 18, color: INK_2 },
+  noticeAction: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingVertical: 7,
+    paddingHorizontal: 13,
+    borderWidth: 1,
+    borderRadius: 7,
+  },
+  noticeActionText: { fontSize: 12, fontWeight: '600' },
+
+  // States
+  loading: { paddingVertical: 60, alignItems: 'center', gap: 12 },
+  loadingText: { fontSize: 13, color: INK_3 },
+
+  message: {
+    padding: 22,
+    backgroundColor: PLATE,
+    borderWidth: 1,
+    borderColor: ETCH,
+    borderRadius: 14,
+  },
+  messageText: { fontSize: 13, lineHeight: 20, color: INK_2, textAlign: 'center' },
+  messageError: { borderColor: 'rgba(255,120,120,0.28)', backgroundColor: 'rgba(255,90,90,0.06)' },
+  messageErrorText: { fontSize: 13, color: '#ffb4b4', textAlign: 'center' },
+
+  invite: {
+    paddingVertical: 40,
     paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(192, 192, 192, 0.1)',
-  },
-  dropdownOptionSelected: {
-    backgroundColor: COLORS.unisBlue,
-  },
-  dropdownOptionText: {
-    color: COLORS.textSilver,
-    fontSize: 15,
-    textAlign: 'center',
-  },
-  dropdownOptionTextSelected: {
-    color: COLORS.accentWhite,
-    fontWeight: '600',
-  },
-
-  // View Button
-  viewButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: COLORS.textSilver,
-    borderRadius: 50,
-    width: IS_MOBILE ? '100%' : 'auto',
-    alignItems: 'center',
+    borderStyle: 'dashed',
+    borderRadius: 14,
   },
-  viewButtonDisabled: {
-    opacity: 0.5,
-  },
-  viewButtonText: {
-    color: COLORS.textSilver,
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
+  inviteText: { fontSize: 13, color: INK_3, textAlign: 'center' },
 
-  // Caption
-  captionContainer: {
-    marginVertical: 20,
-    alignItems: 'center',
-  },
-  captionTop: {
-    fontSize: 14,
-    color: COLORS.textGray,
-    textTransform: 'uppercase',
-    letterSpacing: 3,
-    marginBottom: 5,
-  },
-  dramaticEffect: {
-    fontSize: IS_MOBILE ? 24 : 32,
-    fontWeight: '800',
-    color: COLORS.accentWhite,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginVertical: 5,
-    textAlign: 'center',
-  },
-  milestoneDate: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: COLORS.electricBlue,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginTop: 8,
-    paddingVertical: 5,
-    paddingHorizontal: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(79, 172, 254, 0.3)',
-  },
+  // Headline
+  headline: { marginBottom: 14 },
+  headlineKicker: { fontSize: 10, fontWeight: '600', letterSpacing: 2, marginBottom: 6 },
+  headlineTitle: { fontSize: 22, fontWeight: '600', letterSpacing: -0.4, color: INK },
+  headlinePeriod: { marginTop: 4, fontSize: 13, color: INK_2 },
 
-  // Winner Highlight
-  winnerHighlight: {
-    width: '100%',
-    maxWidth: 900,
-    borderRadius: 20,
+  // Plate
+  plate: {
     overflow: 'hidden',
-    marginBottom: 30,
+    backgroundColor: PLATE,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: ETCH_STRONG,
+    borderRadius: 14,
   },
-  ambientGlow: {
-    position: 'absolute',
-    top: -100,
-    left: -100,
-    right: -100,
-    bottom: -100,
-    opacity: 0.5,
-  },
-  winnerContentGlass: {
-    backgroundColor: 'rgba(10, 10, 10, 0.65)',
-    padding: IS_MOBILE ? 20 : 30,
-    alignItems: 'center',
-  },
-  winnerHeader: {
-    alignItems: 'center',
-    marginBottom: 15,
-  },
-  winnerTitle: {
-    fontSize: IS_MOBILE ? 28 : 40,
-    color: COLORS.accentWhite,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-  winnerArtist: {
-    fontSize: IS_MOBILE ? 18 : 24,
-    color: COLORS.textSilver,
-    marginTop: 5,
-  },
-  winnerJurisdiction: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.6)',
-    textTransform: 'uppercase',
-    letterSpacing: 2,
-    marginTop: 5,
-  },
-  winnerArtworkWrapper: {
-    marginVertical: 20,
-    borderRadius: 12,
-    overflow: 'hidden',
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 15 },
-    shadowOpacity: 0.6,
-    shadowRadius: 35,
-  },
-  winnerArtwork: {
-    width: IS_MOBILE ? 250 : 350,
-    height: IS_MOBILE ? 250 : 350,
-    borderRadius: 12,
-  },
-  winnerStatsContainer: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  winnerStats: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: IS_MOBILE ? 16 : 32,
-    marginBottom: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    paddingVertical: 15,
-    paddingHorizontal: IS_MOBILE ? 15 : 30,
-    borderRadius: 50,
+  plateGlow: { opacity: 0.28, transform: [{ scale: 1.4 }] },
+  plateInner: { padding: 18 },
+  plateArt: {
+    width: 148,
+    height: 148,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: ETCH_STRONG,
+    marginBottom: 14,
   },
-  stat: {
-    alignItems: 'center',
+  crown: {
+    alignSelf: 'flex-start',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 5,
+    marginBottom: 10,
   },
-  statValue: {
-    fontSize: IS_MOBILE ? 18 : 22,
-    fontWeight: 'bold',
-    color: COLORS.accentWhite,
-  },
-  statLabel: {
-    fontSize: 10,
-    textTransform: 'uppercase',
-    color: 'rgba(255, 255, 255, 0.6)',
-    letterSpacing: 1,
-    marginTop: 2,
-  },
-  winnerCaption: {
-    fontSize: IS_MOBILE ? 16 : 18,
-    fontStyle: 'italic',
-    color: 'rgba(255, 255, 255, 0.8)',
-    marginTop: 15,
-    textAlign: 'center',
-  },
+  crownText: { fontSize: 9, fontWeight: '700', letterSpacing: 1.8, color: '#fff' },
+  plateName: { fontSize: 30, fontWeight: '400', lineHeight: 33, letterSpacing: -0.5, color: INK },
+  plateBy: { marginTop: 6, fontSize: 14, color: INK_2 },
 
-  // Badge
-  badge: {
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    marginTop: 10,
-  },
-  badgeText: {
-    color: COLORS.accentWhite,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  badgeTextDark: {
-    color: '#333',
-  },
-
-  // Results Section
-  resultsSection: {
-    width: '100%',
-    maxWidth: 900,
-  },
-  resultsList: {
-    gap: 15,
-  },
-  resultItem: {
-    backgroundColor: 'rgba(20, 20, 20, 0.8)',
-    borderRadius: 12,
-    padding: IS_MOBILE ? 12 : 20,
+  figures: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 15,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    flexWrap: 'wrap',
+    marginTop: 18,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    gap: 10,
   },
-  rank: {
-    fontSize: IS_MOBILE ? 20 : 28,
-    fontWeight: 'bold',
-    color: '#444',
-    width: IS_MOBILE ? 35 : 50,
-    textAlign: 'center',
-  },
-  itemArtwork: {
-    width: IS_MOBILE ? 50 : 60,
-    height: IS_MOBILE ? 50 : 60,
-    borderRadius: 8,
-  },
-  itemInfo: {
+  figure: { flexGrow: 1, flexBasis: '20%', minWidth: 58 },
+  figureLabel: { fontSize: 8, fontWeight: '600', letterSpacing: 1, color: INK_3, marginBottom: 4 },
+  figureValue: { fontSize: 15, fontWeight: '600', color: INK_2 },
+
+  figuresEmpty: { marginTop: 18, paddingTop: 14, borderTopWidth: 1 },
+  figuresEmptyText: { fontSize: 13, lineHeight: 20, color: INK_3 },
+
+  plateNote: { marginTop: 12, fontSize: 11, color: INK_3 },
+
+  plateActions: { flexDirection: 'row', gap: 8, marginTop: 16 },
+  action: {
     flex: 1,
-  },
-  itemTitle: {
-    fontSize: IS_MOBILE ? 14 : 18,
-    fontWeight: 'bold',
-    color: COLORS.textSilver,
-  },
-  itemArtist: {
-    fontSize: IS_MOBILE ? 12 : 14,
-    color: COLORS.textGray,
-    marginTop: 2,
-  },
-  itemStats: {
-    alignItems: 'flex-end',
-  },
-  points: {
-    fontWeight: 'bold',
-    color: COLORS.gradientPurple,
-    fontSize: IS_MOBILE ? 12 : 14,
-  },
-
-  // Messages
-  messageContainer: {
-    padding: 20,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: ETCH_STRONG,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     alignItems: 'center',
   },
-  messageText: {
-    color: COLORS.textGray,
-    fontSize: 14,
-    fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 10,
+  actionPrimary: {},
+  actionText: { fontSize: 13, fontWeight: '600', color: INK },
+
+  // Tally
+  tally: {
+    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    paddingBottom: 8,
+    backgroundColor: PLATE,
+    borderWidth: 1,
+    borderColor: ETCH,
+    borderRadius: 14,
   },
-  errorText: {
-    color: '#ff6b6b',
-    fontSize: 14,
-    textAlign: 'center',
+  tallyHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    marginBottom: 2,
   },
+  tallyHeading: { fontSize: 10, fontWeight: '700', letterSpacing: 2, color: INK_2 },
+  tallyMeta: { fontSize: 11, color: INK_3 },
+
+  tallyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: ETCH,
+  },
+  tallyMain: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10 },
+  tallyRank: { width: 18, textAlign: 'center', fontSize: 12, fontWeight: '600', color: INK_3 },
+  tallyArt: { width: 38, height: 38, borderRadius: 6, borderWidth: 1, borderColor: ETCH },
+  tallyArtEmpty: { backgroundColor: 'rgba(255,255,255,0.05)' },
+  tallyText: { flex: 1, minWidth: 0 },
+  tallyTitle: { fontSize: 13, fontWeight: '500', color: INK_2 },
+  tallyTitleWinner: { color: INK, fontWeight: '600' },
+  tallyArtist: { fontSize: 11, color: INK_3, marginTop: 1 },
+  tallyBar: {
+    height: 4,
+    marginTop: 6,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    overflow: 'hidden',
+  },
+  tallyFill: { height: '100%', borderRadius: 2 },
+  tallyPoints: { minWidth: 52, textAlign: 'right', fontSize: 13, fontWeight: '600', color: INK_2 },
+  tallyPlay: {
+    width: 30,
+    height: 30,
+    marginLeft: 6,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: ETCH,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tallyPlayGlyph: { fontSize: 10, color: INK_2, marginLeft: 2 },
+
+  tallySolo: { marginVertical: 12, fontSize: 11, textAlign: 'center', color: INK_3 },
 });
 
 export default MilestonesScreen;
