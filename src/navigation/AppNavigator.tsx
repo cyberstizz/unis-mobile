@@ -17,6 +17,7 @@ import FeedScreen from '../screens/FeedScreen';
 import HomeScreen from '../screens/HomeScreen';
 import VoteAwardsScreen from '../screens/VoteAwardsScreen';
 import FindScreen from '../screens/FindScreen';
+import DiscoverScreen from '../screens/DiscoverScreen';
 import SongScreen from '../screens/SongScreen';
 import ArtistScreen from '../screens/ArtistScreen';
 import LeaderboardsScreen from '../screens/Leaderboardsscreen';
@@ -41,6 +42,7 @@ export type RootStackParamList = {
   Artist: { artistId: string };
   VoteAwards: undefined;
   Find: undefined;
+  Discover: undefined;
   Leaderboards: undefined;
   Earnings: undefined;
   Milestones: undefined;
@@ -54,6 +56,7 @@ export type DrawerParamList = {
   Home: undefined;
   Vote: undefined;
   Find: undefined;
+  Discover: undefined;
   Leaderboards: undefined;
   Settings: undefined;
   Earnings: undefined;
@@ -110,6 +113,9 @@ const VoteAwardsWithHeader = () => (
 );
 const FindScreenWithHeader = () => (
   <LayoutWrapper><FindScreen /></LayoutWrapper>
+);
+const DiscoverScreenWithHeader = () => (
+  <LayoutWrapper><DiscoverScreen /></LayoutWrapper>
 );
 const LeaderboardsWithHeader = () => (
   <LayoutWrapper><LeaderboardsScreen /></LayoutWrapper>
@@ -196,6 +202,7 @@ console.log('USER OBJECT:', JSON.stringify(user, null, 2));
           <Drawer.Screen name="Home" component={MainStackWithHeader} />
           <Drawer.Screen name="Vote" component={VoteAwardsWithHeader} />
           <Drawer.Screen name="Find" component={FindScreenWithHeader} />
+          <Drawer.Screen name="Discover" component={DiscoverScreenWithHeader} />
           <Drawer.Screen name="Leaderboards" component={LeaderboardsWithHeader} />
           <Drawer.Screen name="Settings" component={SettingsScreen} />
           <Drawer.Screen name="Earnings" component={EarningsScreenWithHeader} />
