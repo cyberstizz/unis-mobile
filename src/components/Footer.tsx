@@ -42,10 +42,22 @@ const Footer: React.FC = () => {
 
   const handleLinkPress = (link: FooterLink) => {
     if (link.url) {
-      Linking.openURL(link.url);
-    } else if (link.route) {
+      Linking.openURL(link.url).catch((err) =>
+        console.warn('[Footer] failed to open external url', link.url, err),
+      );
+      return;
+    }
+    if (!link.route) return;
+
+    // The legal screens (Privacy/Terms/Cookie/ReportInfringement) are not yet
+    // registered in the navigator. Guard the navigate call so a tap logs and
+    // no-ops instead of throwing the redbox "route not handled" error. Once the
+    // screens are added to AppNavigator this starts working with no change here.
+    try {
       // @ts-ignore - navigation typing
       navigation.navigate(link.route);
+    } catch (err) {
+      console.warn('[Footer] route not registered yet:', link.route, err);
     }
   };
 

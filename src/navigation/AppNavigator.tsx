@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { usePlayer } from '../context/PlayerContext';
 import { View, StyleSheet, Dimensions, ActivityIndicator, Text } from 'react-native';
 import { createDrawerNavigator } from '@react-navigation/drawer';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -30,7 +29,7 @@ import MessagesScreen from '../screens/MessagesScreen';
 
 // Components
 import CustomDrawer from '../components/CustomDrawer';
-import Header from '../components/Header';
+import Layout from '../components/Layout';
 import DrawerTrigger from '../components/DrawerTrigger';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -93,19 +92,11 @@ const MainStack = () => {
   );
 };
 
-// Layout wrapper that includes Header
-const LayoutWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { currentMedia } = usePlayer();
-  
-  return (
-    <View style={styles.layout}>
-      <Header />
-      <View style={[styles.content, currentMedia && { paddingBottom: 90 }]}>
-        {children}
-      </View>
-    </View>
-  );
-};
+// Layout wrapper now lives in ../components/Layout.tsx (extracted for reuse and
+// to keep this navigator focused on routing). The wrappers below compose it.
+const LayoutWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <Layout>{children}</Layout>
+);
 
 // Wrapped screens with Header
 const MainStackWithHeader = () => (
@@ -241,13 +232,6 @@ const AppNavigator = () => {
 
 const styles = StyleSheet.create({
   navigatorContainer: {
-    flex: 1,
-  },
-  layout: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  content: {
     flex: 1,
   },
   loadingContainer: {
