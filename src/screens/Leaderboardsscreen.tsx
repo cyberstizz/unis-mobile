@@ -1,4 +1,47 @@
-import React, { useState, useEffect } from 'react';
+// ============================================================================
+// Leaderboardsscreen.tsx — the live board, mobile.
+//
+// Port of the redesigned web LeaderboardsPage. One job: show who is ahead
+// right now in a given scope, and by how much.
+//
+// Six things were wrong in the previous version and are fixed here:
+//
+//   1. The "Harlem-wide" option had value 'harlem-wide', but JURISDICTION_IDS
+//      only has 'harlem'. The lookup returned undefined, so every Harlem-wide
+//      request went out as jurisdictionId=undefined. Broken since it shipped.
+//   2. handlePlay called playMedia() directly, bypassing PlayChoiceModal — so
+//      a play started here never went through the queue-choice flow.
+//   3. It POSTed /v1/media/song/{id}/play at press time. See PLAY TRACKING.
+//   4. It hand-rolled an atob() polyfill and parsed the JWT to get userId,
+//      purely to feed (3). Both are gone with it.
+//   5. It hardcoded unisBlue '#163387' and ignored the user's theme entirely.
+//   6. It used getMediaUrl instead of the shared buildUrl, so private R2 URLs
+//      were never rewritten to the public host and filenames with spaces
+//      were never encoded.
+//
+// PLAY TRACKING — deliberately absent from this screen.
+//   PlayerContext owns play tracking. The old press-time POST recorded plays
+//   the user never listened to (requestPlay can end in PlayChoiceModal being
+//   cancelled) and won the backend's 30-minute cooldown race, causing the
+//   player's own legitimate POST to be silently rejected. Plays feed award
+//   scoring, so this screen was able to move rankings with taps alone. Every
+//   track handed to requestPlay carries source: 'leaderboards'.
+//
+// DESIGN
+//   Sibling of Milestonesscreen, deliberately not a copy. Milestones is the
+//   archive: closed periods, settled, bars measuring share of the period.
+//   This is the live board, so the question is margin — the leader gets a
+//   plate with an explicit gap readout, and every chase bar is measured
+//   against the leader rather than the total. A row at 90% is visibly within
+//   reach; a row at 12% is not.
+//
+// COMPONENT SCOPE
+//   Sub-components live at module scope. Declared inside the screen body they
+//   get a fresh identity each render and React remounts whole subtrees on
+//   every state change — it reads as a flicker.
+// ============================================================================
+
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,745 +49,765 @@ import {
   ScrollView,
   Image,
   TouchableOpacity,
-  Dimensions,
   ActivityIndicator,
   ImageBackground,
-  Modal,
-  FlatList,
-  Pressable,
-  Alert,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ChevronDown } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
-import * as SecureStore from 'expo-secure-store';
-import { usePlayer } from '../context/PlayerContext';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
+import { usePlayer, type MediaItem } from '../context/PlayerContext';
+import { useAuth } from '../context/AuthContext';
+import axiosInstance from '../services/axiosInstance';
+import buildUrl from '../utils/buildUrl';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
 
-// ============================================================================
-// COLORS & SIZES (matches web SCSS variables)
-// ============================================================================
-const COLORS = {
-  bgBlack: '#000000',
-  subtleBlack: '#1a1a1a',
-  textSilver: '#C0C0C0',
-  textGray: '#A9A9A9',
-  accentWhite: '#FFFFFF',
-  unisBlue: '#163387',
-  unisSilver: '#918f8f',
-  borderSilver: 'rgba(192, 192, 192, 0.3)',
-  borderSilverSolid: '#C0C0C0',
+const LOG = '[Leaderboards]';
+
+// ─── Theme ───────────────────────────────────────────────────────────────────
+const THEME_HEX: Record<string, string> = {
+  blue: '#163387',
+  orange: '#C44B0A',
+  red: '#B51C24',
+  green: '#0F7A3E',
+  purple: '#4A1A8C',
+  yellow: '#C49A0A',
+  dianna: '#C49A0A',
+};
+const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
+
+/** Mix a hex toward white — the readable accent for text on dark. */
+const lighten = (hex: string, amt = 70): string => {
+  const n = parseInt(hex.replace('#', ''), 16);
+  const r = Math.min(255, ((n >> 16) & 255) + amt);
+  const g = Math.min(255, ((n >> 8) & 255) + amt);
+  const b = Math.min(255, (n & 255) + amt);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
 };
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 768;
+const alpha = (hex: string, a: number): string => {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+};
 
-// ============================================================================
-// FILTER OPTIONS
-// ============================================================================
-const LOCATION_OPTIONS = [
-  { label: 'Downtown Harlem', value: 'downtown-harlem' },
-  { label: 'Uptown Harlem', value: 'uptown-harlem' },
-  { label: 'Harlem-wide', value: 'harlem-wide' },
+const INK = '#f6f7f9';
+const INK_2 = 'rgba(246,247,249,0.62)';
+const INK_3 = 'rgba(246,247,249,0.38)';
+const PLATE = 'rgba(255,255,255,0.028)';
+const PLATE_LIFT = 'rgba(255,255,255,0.05)';
+const ETCH = 'rgba(255,255,255,0.075)';
+const ETCH_STRONG = 'rgba(255,255,255,0.14)';
+
+// ─── Options ─────────────────────────────────────────────────────────────────
+// Values are KEYS INTO JURISDICTION_IDS / GENRE_IDS / INTERVAL_IDS. Changing a
+// value here without changing IdMappings.ts sends `undefined` to the backend —
+// that is exactly what 'harlem-wide' was doing.
+const JURISDICTIONS = [
+  { value: 'downtown-harlem', label: 'Downtown' },
+  { value: 'uptown-harlem', label: 'Uptown' },
+  { value: 'harlem', label: 'All Harlem' },
 ];
 
-const GENRE_OPTIONS = [
-  { label: 'Rap', value: 'rap' },
-  { label: 'Rock', value: 'rock' },
-  { label: 'Pop', value: 'pop' },
+const GENRES = [
+  { value: 'rap', label: 'Rap' },
+  { value: 'rock', label: 'Rock' },
+  { value: 'pop', label: 'Pop' },
 ];
 
-const CATEGORY_OPTIONS = [
-  { label: 'Artist', value: 'artist' },
-  { label: 'Song', value: 'song' },
+const CATEGORIES: { value: 'artist' | 'song'; label: string }[] = [
+  { value: 'artist', label: 'Artists' },
+  { value: 'song', label: 'Songs' },
 ];
 
 const INTERVAL_OPTIONS = [
-  { label: 'Today', value: 'daily' },
-  { label: 'Week', value: 'weekly' },
-  { label: 'Month', value: 'monthly' },
-  { label: 'Quarter', value: 'quarterly' },
-  { label: 'Midterm', value: 'midterm' },
-  { label: 'Annual', value: 'annual' },
+  { value: 'daily', label: 'Today' },
+  { value: 'weekly', label: 'Week' },
+  { value: 'monthly', label: 'Month' },
+  { value: 'quarterly', label: 'Quarter' },
+  { value: 'midterm', label: 'Half' },
+  { value: 'annual', label: 'Year' },
 ];
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-// Base64 decode for token parsing
-const atob = (input: string): string => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  let str = input.replace(/=+$/, '');
-  let output = '';
-  if (str.length % 4 === 1) throw new Error('Invalid base64 string');
-  for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-    buffer = chars.indexOf(buffer);
-    if (buffer === -1) continue;
-    bs = bc % 4 ? bs * 64 + buffer : buffer;
-    if (bc++ % 4) output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
-  }
-  return output;
+const JURISDICTION_LABEL: Record<string, string> = {
+  'downtown-harlem': 'Downtown Harlem',
+  'uptown-harlem': 'Uptown Harlem',
+  harlem: 'Harlem',
 };
 
-// ============================================================================
-// RESULT ITEM INTERFACE
-// ============================================================================
-interface LeaderboardItem {
+const GENRE_LABEL: Record<string, string> = { rap: 'Rap', rock: 'Rock', pop: 'Pop' };
+
+const formatNumber = (n: number | string): string => (Number(n) || 0).toLocaleString('en-US');
+
+interface Entry {
   id: string;
   type: 'artist' | 'song';
   rank: number;
-  name?: string;
   title: string;
   artist: string;
+  artistId: string | null;
   votes: number;
   artwork: string | null;
-  fileUrl?: string | null;
+  fileUrl: string | null;
 }
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
-const LeaderboardsScreen: React.FC = () => {
-  const navigation = useNavigation<any>();
-  const { playMedia } = usePlayer();
-
-  // Filter state
-  const [location, setLocation] = useState('downtown-harlem');
-  const [genre, setGenre] = useState('rap');
-  const [category, setCategory] = useState<'artist' | 'song'>('artist');
-  const [interval, setInterval] = useState('daily');
-
-  // Results state
-  const [results, setResults] = useState<LeaderboardItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-
-  // Fallback image
-  const fallbackImage = require('../../assets/randomrapper.jpeg');
-
-  // ============================================================================
-  // EXTRACT USER ID FROM TOKEN
-  // ============================================================================
-  useEffect(() => {
-    const extractUserId = async () => {
-      try {
-        const token = await SecureStore.getItemAsync('token');
-        if (token) {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          setUserId(payload.userId);
-        }
-      } catch (err) {
-        console.error('Failed to get userId from token:', err);
-      }
-    };
-    extractUserId();
-  }, []);
-
-  // ============================================================================
-  // FETCH LEADERBOARDS — REAL API
-  // ============================================================================
-  const handleViewCurrent = async () => {
-    setIsLoading(true);
-    setError(null);
-    setResults([]);
-
-    try {
-      const jurId = JURISDICTION_IDS[location];
-      const genreId = GENRE_IDS[genre];
-      const intervalId = INTERVAL_IDS[interval];
-      const type = category;
-
-      if (!jurId) throw new Error('Invalid location');
-      if (!genreId) throw new Error('Invalid genre');
-      if (!intervalId) throw new Error('Invalid interval');
-
-      console.log('Fetching leaderboards:', { jurId, genreId, type, intervalId });
-
-      const response = await axiosInstance.get(
-        `/v1/vote/leaderboards?jurisdictionId=${jurId}&genreId=${genreId}&targetType=${type}&intervalId=${intervalId}&limit=50`
-      );
-
-      const rawResults = response.data;
-      console.log('Raw leaderboard results:', rawResults);
-
-      if (!rawResults || rawResults.length === 0) {
-        setError('No results found for this combination. Try different filters.');
-        return;
-      }
-
-      // Normalize — matches web version's mapping exactly
-      const normalized: LeaderboardItem[] = rawResults.map((item: any, i: number) => {
-        if (type === 'artist') {
-          return {
-            id: item.targetId,
-            type: 'artist' as const,
-            rank: item.rank || i + 1,
-            name: item.name || 'Unknown Artist',
-            title: item.name || 'Unknown Artist',
-            artist: item.name || 'Unknown Artist',
-            votes: item.votes || 0,
-            artwork: item.artwork ? getMediaUrl(item.artwork) || null : null,
-            fileUrl: null,
-          };
-        } else {
-          return {
-            id: item.targetId,
-            type: 'song' as const,
-            rank: item.rank || i + 1,
-            title: item.name || 'Unknown Song',
-            artist: item.artist || 'Unknown',
-            votes: item.votes || 0,
-            fileUrl: item.fileUrl ? getMediaUrl(item.fileUrl) || null : null,
-            artwork: item.artwork ? getMediaUrl(item.artwork) || null : null,
-          };
-        }
-      });
-
-      console.log('Normalized results:', normalized);
-      setResults(normalized);
-    } catch (err: any) {
-      console.error('Leaderboards fetch error:', err);
-      setError(
-        `Failed to load leaderboards: ${err.response?.data?.message || err.message}`
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // ============================================================================
-  // PLAY HANDLER — REAL API
-  // ============================================================================
-  const handlePlay = async (item: LeaderboardItem) => {
-    let trackingId: string | null = null;
-
-    // Song with fileUrl — play directly
-    if (item.fileUrl) {
-      console.log('Playing song directly:', item.title);
-
-      playMedia(
-        {
-          type: 'song',
-          url: item.fileUrl,
-          title: item.title,
-          artist: item.artist,
-          artwork: item.artwork,
-        } as any,
-        []
-      );
-
-      trackingId = item.id;
-    }
-    // Artist — fetch default song
-    else if (item.type === 'artist' && item.id) {
-      console.log('Fetching default song for artist:', item.name);
-
-      try {
-        const response = await axiosInstance.get(
-          `/v1/users/${item.id}/default-song`
-        );
-        const defaultSong = response.data;
-
-        if (defaultSong && defaultSong.fileUrl) {
-          const fullUrl = getMediaUrl(defaultSong.fileUrl);
-
-          playMedia(
-            {
-              type: 'song',
-              url: fullUrl,
-              title: defaultSong.title,
-              artist: item.name || item.artist,
-              artwork: getMediaUrl(defaultSong.artworkUrl) || item.artwork,
-            } as any,
-            []
-          );
-
-          trackingId = defaultSong.songId;
-        } else {
-          Alert.alert('Unavailable', `${item.name} has no default song`);
-          return;
-        }
-      } catch (err) {
-        console.error('Default song fetch failed:', err);
-        Alert.alert('Error', "Could not load artist's song");
-        return;
-      }
-    } else {
-      Alert.alert('Unavailable', 'This track is not available for playback');
-      return;
-    }
-
-    // Track the play
-    if (trackingId && userId) {
-      try {
-        await axiosInstance.post(
-          `/v1/media/song/${trackingId}/play?userId=${userId}`
-        );
-        console.log('Play tracked for:', trackingId);
-      } catch (err) {
-        console.error('Failed to track play:', err);
-      }
-    }
-  };
-
-  // ============================================================================
-  // NAVIGATION HANDLERS
-  // ============================================================================
-  const handleArtistView = (id: string) => {
-    navigation.navigate('Artist', { artistId: id });
-  };
-
-  const handleSongView = (id: string) => {
-    navigation.navigate('Song', { songId: id });
-  };
-
-  // ============================================================================
-  // CUSTOM DROPDOWN COMPONENT
-  // ============================================================================
-  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
-
-  const CustomDropdown = ({
-    id,
-    value,
-    options,
-    onSelect,
-  }: {
-    id: string;
-    value: string;
-    options: { label: string; value: string }[];
-    onSelect: (value: string) => void;
-  }) => {
-    const selectedOption = options.find((opt) => opt.value === value);
-    const isOpen = activeDropdown === id;
-
-    return (
-      <View style={styles.dropdownWrapper}>
+// ─── Segmented control ───────────────────────────────────────────────────────
+// Replaces the modal dropdowns. Small option counts read better as visible
+// choices, and it kills the form feel. Wraps rather than scrolling sideways so
+// nothing can run off the edge of a narrow phone.
+const Segmented = <T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  accent,
+}: {
+  label: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+  accent: string;
+}) => (
+  <View style={styles.segmented} accessibilityRole="radiogroup" accessibilityLabel={label}>
+    {options.map((opt) => {
+      const active = opt.value === value;
+      return (
         <TouchableOpacity
-          style={styles.dropdownButton}
-          onPress={() => setActiveDropdown(isOpen ? null : id)}
-          activeOpacity={0.7}
+          key={opt.value}
+          style={[styles.seg, active && { backgroundColor: accent }]}
+          onPress={() => onChange(opt.value)}
+          accessibilityRole="radio"
+          accessibilityState={{ selected: active }}
+          accessibilityLabel={`${label}: ${opt.label}`}
+          activeOpacity={0.8}
         >
-          <Text style={styles.dropdownButtonText}>
-            {selectedOption?.label || 'Select...'}
+          <Text style={[styles.segText, active && styles.segTextOn]} numberOfLines={1}>
+            {opt.label}
           </Text>
-          <ChevronDown size={18} color={COLORS.accentWhite} />
         </TouchableOpacity>
+      );
+    })}
+  </View>
+);
 
-        <Modal
-          visible={isOpen}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setActiveDropdown(null)}
-        >
-          <Pressable
-            style={styles.modalOverlay}
-            onPress={() => setActiveDropdown(null)}
-          >
-            <View style={styles.dropdownModal}>
-              <FlatList
-                data={options}
-                keyExtractor={(item) => item.value}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.dropdownOption,
-                      item.value === value && styles.dropdownOptionSelected,
-                    ]}
-                    onPress={() => {
-                      onSelect(item.value);
-                      setActiveDropdown(null);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.dropdownOptionText,
-                        item.value === value && styles.dropdownOptionTextSelected,
-                      ]}
-                    >
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              />
-            </View>
-          </Pressable>
-        </Modal>
-      </View>
-    );
-  };
+// ─── One row of the chase ────────────────────────────────────────────────────
+// Bar width is share of the LEADER's points, not of the total. On a live board
+// the useful question is how close the chase is. An entry with no points shows
+// a blank points cell — a zero reads as a figure worth comparing, a blank reads
+// as "nothing scored yet".
+const ChaseRow = ({
+  entry,
+  share,
+  accent,
+  accentLight,
+  onOpen,
+  onPlay,
+}: {
+  entry: Entry;
+  share: number;
+  accent: string;
+  accentLight: string;
+  onOpen: (e: Entry) => void;
+  onPlay: (e: Entry) => void;
+}) => {
+  const hasPoints = entry.votes > 0;
 
-  // ============================================================================
-  // RENDER RESULT ITEM
-  // ============================================================================
-  const renderResultItem = (item: LeaderboardItem) => {
-    const itemArtwork = item.artwork ? { uri: item.artwork } : fallbackImage;
+  return (
+    <View style={styles.chaseRow}>
+      <TouchableOpacity
+        style={styles.chaseMain}
+        onPress={() => onOpen(entry)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${entry.title}${
+          entry.type === 'song' ? ` by ${entry.artist}` : ''
+        }, ranked ${entry.rank}`}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.chaseRank}>{entry.rank}</Text>
 
-    return (
-      <View key={`${item.type}-${item.id}-${item.rank}`} style={styles.resultItem}>
-        {/* Rank */}
-        <Text style={styles.rank}>#{item.rank}</Text>
+        {entry.artwork ? (
+          <Image source={{ uri: entry.artwork }} style={styles.chaseArt} />
+        ) : (
+          <View style={[styles.chaseArt, styles.chaseArtEmpty]} />
+        )}
 
-        {/* Artwork */}
-        <Image source={itemArtwork} style={styles.itemArtwork} />
-
-        {/* Info */}
-        <View style={styles.itemInfo}>
-          <Text style={styles.itemTitle} numberOfLines={1}>
-            {item.title}
+        <View style={styles.chaseText}>
+          <Text style={styles.chaseTitle} numberOfLines={1}>
+            {entry.title}
           </Text>
-          {item.type === 'song' && (
-            <Text style={styles.itemArtist} numberOfLines={1}>
-              {item.artist}
+          {entry.type === 'song' && (
+            <Text style={styles.chaseArtist} numberOfLines={1}>
+              {entry.artist}
             </Text>
           )}
-        </View>
-
-        {/* Actions */}
-        <View style={styles.resultActions}>
-          <TouchableOpacity
-            style={styles.listenButton}
-            onPress={() => handlePlay(item)}
-          >
-            <Text style={styles.listenButtonText}>Listen</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.viewButton}
-            onPress={() =>
-              item.type === 'artist'
-                ? handleArtistView(item.id)
-                : handleSongView(item.id)
-            }
-          >
-            <Text style={styles.viewButtonText}>
-              {item.type === 'artist' ? 'View' : 'View Song'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  };
-
-  // ============================================================================
-  // MAIN RENDER
-  // ============================================================================
-  return (
-    <ImageBackground source={fallbackImage} style={styles.backgroundImage} blurRadius={20}>
-      <LinearGradient
-        colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)', COLORS.bgBlack]}
-        style={styles.gradientOverlay}
-      >
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Filter Card */}
-          <View style={styles.filterCard}>
-            <View style={styles.filterControls}>
-              <CustomDropdown
-                id="location"
-                value={location}
-                options={LOCATION_OPTIONS}
-                onSelect={setLocation}
+          <View style={styles.chaseBar}>
+            {hasPoints && (
+              <View
+                style={[styles.chaseFill, { width: `${share}%`, backgroundColor: accent }]}
               />
-              <CustomDropdown
-                id="genre"
-                value={genre}
-                options={GENRE_OPTIONS}
-                onSelect={setGenre}
-              />
-              <CustomDropdown
-                id="category"
-                value={category}
-                options={CATEGORY_OPTIONS}
-                onSelect={(val) => setCategory(val as 'artist' | 'song')}
-              />
-              <CustomDropdown
-                id="interval"
-                value={interval}
-                options={INTERVAL_OPTIONS}
-                onSelect={setInterval}
-              />
-
-              <TouchableOpacity
-                style={[styles.viewCurrentButton, isLoading && styles.viewCurrentButtonDisabled]}
-                onPress={handleViewCurrent}
-                disabled={isLoading}
-              >
-                <Text style={styles.viewCurrentButtonText}>
-                  {isLoading ? 'Loading...' : 'View Current'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Results Section */}
-          <View style={styles.resultsSection}>
-            {isLoading ? (
-              <View style={styles.messageContainer}>
-                <ActivityIndicator size="large" color={COLORS.unisBlue} />
-                <Text style={styles.messageText}>Loading leaderboards...</Text>
-              </View>
-            ) : error ? (
-              <View style={styles.messageContainer}>
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : results.length > 0 ? (
-              <View style={styles.resultsList}>
-                {results.map(renderResultItem)}
-              </View>
-            ) : (
-              <View style={styles.messageContainer}>
-                <Text style={styles.messageText}>
-                  Select criteria and tap 'View Current' to see ongoing leaderboards.
-                </Text>
-              </View>
             )}
           </View>
+        </View>
 
-          {/* Bottom spacing for player */}
-          <View style={{ height: 120 }} />
-        </ScrollView>
-      </LinearGradient>
-    </ImageBackground>
+        <Text style={styles.chasePoints}>{hasPoints ? formatNumber(entry.votes) : ''}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.chasePlay, { borderColor: alpha(accentLight, 0.4) }]}
+        onPress={() => onPlay(entry)}
+        accessibilityRole="button"
+        accessibilityLabel={`Listen to ${entry.title}`}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.chasePlayIcon, { color: accentLight }]}>▶</Text>
+      </TouchableOpacity>
+    </View>
   );
 };
 
-// ============================================================================
-// STYLES (converted from leaderboardsPage.scss)
-// ============================================================================
+// ─── Screen ──────────────────────────────────────────────────────────────────
+const Leaderboardsscreen: React.FC = () => {
+  const navigation = useNavigation<any>();
+  const { requestPlay } = usePlayer();
+  const { theme } = useAuth();
+
+  const accent = getThemeHex(theme);
+  const accentLight = useMemo(() => lighten(accent), [accent]);
+
+  const [jurisdiction, setJurisdiction] = useState('downtown-harlem');
+  const [genre, setGenre] = useState('rap');
+  const [category, setCategory] = useState<'artist' | 'song'>('artist');
+  const [intervalKey, setIntervalKey] = useState('daily');
+
+  const [results, setResults] = useState<Entry[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+
+  // ── Fetch ──────────────────────────────────────────────────────────────────
+  const loadStandings = useCallback(async () => {
+    const jurId = JURISDICTION_IDS[jurisdiction];
+    const genreId = GENRE_IDS[genre];
+    const intervalId = INTERVAL_IDS[intervalKey];
+
+    // Guard the exact failure the old screen shipped with: a control value
+    // that has no entry in IdMappings silently became `undefined` in the URL.
+    if (!jurId || !genreId || !intervalId) {
+      console.error(LOG, 'unmapped filter', { jurisdiction, genre, intervalKey });
+      setError('That combination is unavailable right now.');
+      setHasSearched(true);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setResults([]);
+    setHasSearched(true);
+
+    try {
+      const response = await axiosInstance.get(
+        `/v1/vote/leaderboards?jurisdictionId=${jurId}&genreId=${genreId}` +
+          `&targetType=${category}&intervalId=${intervalId}&limit=50`,
+      );
+      const raw = response.data;
+
+      if (!Array.isArray(raw) || raw.length === 0) {
+        setError('Nothing has scored in this scope yet. Try a wider area or a longer period.');
+        return;
+      }
+
+      const normalized: Entry[] = raw.map((item: any, i: number) => {
+        if (category === 'artist') {
+          return {
+            id: item.targetId,
+            type: 'artist',
+            rank: item.rank || i + 1,
+            title: item.name || 'Unknown Artist',
+            artist: item.name || 'Unknown Artist',
+            artistId: item.targetId,
+            votes: item.votes || 0,
+            artwork: item.artwork ? buildUrl(item.artwork) : null,
+            fileUrl: null,
+          };
+        }
+        return {
+          id: item.targetId,
+          type: 'song',
+          rank: item.rank || i + 1,
+          title: item.name || 'Unknown Song',
+          artist: item.artist || 'Unknown',
+          artistId: null,
+          votes: item.votes || 0,
+          artwork: item.artwork ? buildUrl(item.artwork) : null,
+          fileUrl: item.fileUrl ? buildUrl(item.fileUrl) : null,
+        };
+      });
+
+      setResults(normalized);
+    } catch (err) {
+      console.error(LOG, 'fetch failed', err);
+      setError("Couldn't load the standings. Check your connection and try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [jurisdiction, genre, category, intervalKey]);
+
+  // ── Play ───────────────────────────────────────────────────────────────────
+  const handlePlay = useCallback(
+    async (entry: Entry) => {
+      // Song row with a real file → play it.
+      if (entry.fileUrl) {
+        const media: MediaItem = {
+          type: 'song',
+          id: entry.id,
+          songId: entry.id,
+          url: entry.fileUrl,
+          fileUrl: entry.fileUrl,
+          title: entry.title,
+          artist: entry.artist,
+          artistId: entry.artistId ?? undefined,
+          artwork: entry.artwork ?? undefined,
+          artworkUrl: entry.artwork ?? undefined,
+          source: 'leaderboards',
+        } as MediaItem;
+        requestPlay(media);
+        return;
+      }
+
+      // Artist row → fetch their default song, then play it.
+      if (entry.type === 'artist' && entry.id) {
+        try {
+          const res = await axiosInstance.get(`/v1/users/${entry.id}/default-song`);
+          const song = res.data;
+          if (!song?.fileUrl) return; // nothing playable — do nothing
+
+          const url = buildUrl(song.fileUrl);
+          const art = buildUrl(song.artworkUrl) || entry.artwork;
+          if (!url) return;
+
+          requestPlay({
+            type: 'song',
+            id: song.songId,
+            songId: song.songId,
+            url,
+            fileUrl: url,
+            title: song.title,
+            artist: entry.title,
+            artistId: entry.id,
+            artwork: art ?? undefined,
+            artworkUrl: art ?? undefined,
+            source: 'leaderboards',
+          } as MediaItem);
+        } catch (err) {
+          console.error(LOG, 'default song fetch failed', err);
+        }
+      }
+    },
+    [requestPlay],
+  );
+
+  const handleOpen = useCallback(
+    (entry: Entry) => {
+      if (entry.type === 'artist') navigation.navigate('Artist', { artistId: entry.id });
+      else navigation.navigate('Song', { songId: entry.id });
+    },
+    [navigation],
+  );
+
+  // ── Derived: leader, chase, margin ─────────────────────────────────────────
+  const leader = results[0] || null;
+  const runnerUp = results[1] || null;
+  const chase = results.slice(1);
+
+  const marginLabel = useMemo(() => {
+    if (!leader) return null;
+    if (!runnerUp) return 'Uncontested so far';
+    if (leader.votes === runnerUp.votes) return `Tied with ${runnerUp.title}`;
+    const gap = leader.votes - runnerUp.votes;
+    return `Ahead by ${formatNumber(gap)} ${gap === 1 ? 'point' : 'points'}`;
+  }, [leader, runnerUp]);
+
+  const scopeLabel = `${JURISDICTION_LABEL[jurisdiction] || ''} · ${GENRE_LABEL[genre] || ''}`;
+
+  return (
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* ── Masthead ── */}
+        <View style={styles.masthead}>
+          <Text style={[styles.eyebrow, { color: accentLight }]}>LIVE STANDINGS</Text>
+          <Text style={styles.wordmark}>Leaderboards</Text>
+          <Text style={styles.lede}>Who's ahead right now, and by how much.</Text>
+        </View>
+
+        {/* ── Controls ── */}
+        <View style={styles.controls}>
+          <Segmented
+            label="Jurisdiction"
+            options={JURISDICTIONS}
+            value={jurisdiction}
+            onChange={setJurisdiction}
+            accent={accent}
+          />
+          <Segmented
+            label="Genre"
+            options={GENRES}
+            value={genre}
+            onChange={setGenre}
+            accent={accent}
+          />
+          <Segmented
+            label="Category"
+            options={CATEGORIES}
+            value={category}
+            onChange={setCategory}
+            accent={accent}
+          />
+          <View style={styles.controlDivider} />
+          <Segmented
+            label="Time period"
+            options={INTERVAL_OPTIONS}
+            value={intervalKey}
+            onChange={setIntervalKey}
+            accent={accent}
+          />
+
+          <TouchableOpacity
+            style={[
+              styles.submit,
+              { backgroundColor: accent, borderColor: alpha(accentLight, 0.5) },
+              isLoading && styles.submitOff,
+            ]}
+            onPress={loadStandings}
+            disabled={isLoading}
+            accessibilityRole="button"
+            accessibilityLabel="Show standings"
+            activeOpacity={0.85}
+          >
+            <Text style={styles.submitText}>{isLoading ? 'Loading' : 'Show standings'}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Results ── */}
+        {isLoading ? (
+          <View style={styles.state}>
+            <ActivityIndicator size="large" color={accentLight} />
+            <Text style={styles.stateBody}>Counting the votes and plays…</Text>
+          </View>
+        ) : error ? (
+          <View style={styles.state} accessibilityLiveRegion="polite">
+            <Text style={styles.stateTitle}>No standings yet</Text>
+            <Text style={styles.stateBody}>{error}</Text>
+          </View>
+        ) : leader ? (
+          <>
+            {/* Leader plate */}
+            <View style={[styles.plate, { borderColor: alpha(accentLight, 0.28) }]}>
+              {leader.artwork && (
+                <ImageBackground
+                  source={{ uri: leader.artwork }}
+                  style={StyleSheet.absoluteFill}
+                  imageStyle={styles.plateGlow}
+                  blurRadius={40}
+                />
+              )}
+              <View style={styles.plateScrim} />
+
+              <View style={styles.plateInner}>
+                <Text style={[styles.plateEyebrow, { color: accentLight }]} numberOfLines={1}>
+                  LEADING · {scopeLabel.toUpperCase()}
+                </Text>
+
+                <View style={styles.plateHead}>
+                  {leader.artwork ? (
+                    <Image source={{ uri: leader.artwork }} style={styles.plateArt} />
+                  ) : (
+                    <View style={[styles.plateArt, styles.chaseArtEmpty]} />
+                  )}
+
+                  <View style={styles.plateHeadText}>
+                    <Text style={styles.plateTitle} numberOfLines={2}>
+                      {leader.title}
+                    </Text>
+                    {leader.type === 'song' && (
+                      <Text style={styles.plateArtist} numberOfLines={1}>
+                        {leader.artist}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.plateTally}>
+                  <View style={styles.plateScore}>
+                    <Text style={styles.plateFigure}>{formatNumber(leader.votes)}</Text>
+                    <Text style={styles.plateUnit}>POINTS</Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.marginPill,
+                      { borderColor: alpha(accentLight, 0.45), backgroundColor: alpha(accent, 0.3) },
+                    ]}
+                  >
+                    <Text style={styles.marginText} numberOfLines={1}>
+                      {marginLabel}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.plateActions}>
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnPrimary, { backgroundColor: accent }]}
+                    onPress={() => handlePlay(leader)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Listen to ${leader.title}`}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.btnText}>Listen</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.btn}
+                    onPress={() => handleOpen(leader)}
+                    accessibilityRole="button"
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.btnText}>
+                      {leader.type === 'artist' ? 'View artist' : 'View song'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            {/* Chase rail */}
+            {chase.length > 0 && (
+              <View style={styles.chase}>
+                <View style={styles.chaseHead}>
+                  <Text style={styles.chaseHeading}>The chase</Text>
+                  <Text style={styles.chaseMeta}>Bars measured against the leader</Text>
+                </View>
+
+                {chase.map((entry) => (
+                  <ChaseRow
+                    key={`${entry.type}-${entry.id}`}
+                    entry={entry}
+                    share={
+                      leader.votes > 0
+                        ? Math.max(2, Math.round((entry.votes / leader.votes) * 100))
+                        : 0
+                    }
+                    accent={accent}
+                    accentLight={accentLight}
+                    onOpen={handleOpen}
+                    onPlay={handlePlay}
+                  />
+                ))}
+              </View>
+            )}
+          </>
+        ) : (
+          <View style={styles.state}>
+            <Text style={styles.stateTitle}>{hasSearched ? 'No standings yet' : 'Pick a scope'}</Text>
+            <Text style={styles.stateBody}>
+              Choose an area, genre and period, then show the standings.
+            </Text>
+          </View>
+        )}
+      </ScrollView>
+    </View>
+  );
+};
+
 const styles = StyleSheet.create({
-  // Background & Layout
-  backgroundImage: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-  },
-  gradientOverlay: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingTop: IS_MOBILE ? 20 : 40,
-    paddingHorizontal: IS_MOBILE ? 12 : 20,
-    paddingBottom: 20,
-    alignItems: 'center',
-  },
+  screen: { flex: 1, backgroundColor: '#08090e' },
+  content: { paddingHorizontal: 14, paddingTop: 20, paddingBottom: 120 },
 
-  // Filter Card
-  filterCard: {
-    backgroundColor: COLORS.unisBlue,
-    borderRadius: 12,
-    padding: IS_MOBILE ? 16 : 20,
-    width: '100%',
-    maxWidth: 900,
-    marginBottom: 20,
-  },
-  filterControls: {
-    flexDirection: IS_MOBILE ? 'column' : 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: IS_MOBILE ? 12 : 15,
-  },
+  // Masthead
+  masthead: { marginBottom: 20 },
+  eyebrow: { fontSize: 10, fontWeight: '600', letterSpacing: 2.2, marginBottom: 8 },
+  wordmark: { fontSize: 34, fontWeight: '600', letterSpacing: -1, color: INK, lineHeight: 36 },
+  lede: { marginTop: 8, fontSize: 13, color: INK_2 },
 
-  // Custom Dropdown
-  dropdownWrapper: {
-    width: IS_MOBILE ? '100%' : 'auto',
-    minWidth: IS_MOBILE ? undefined : 150,
-    zIndex: 1,
-  },
-  dropdownButton: {
-    backgroundColor: COLORS.bgBlack,
-    borderRadius: IS_MOBILE ? 12 : 50,
+  // Controls
+  controls: {
+    padding: 12,
+    marginBottom: 22,
+    backgroundColor: PLATE,
     borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderColor: ETCH,
+    borderRadius: 14,
+  },
+  controlDivider: { height: 1, backgroundColor: ETCH, marginVertical: 8 },
+
+  segmented: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dropdownButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: 14,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  dropdownModal: {
-    backgroundColor: COLORS.subtleBlack,
-    borderRadius: 12,
+    flexWrap: 'wrap',
+    padding: 3,
+    marginBottom: 8,
+    backgroundColor: 'rgba(255,255,255,0.03)',
     borderWidth: 1,
-    borderColor: COLORS.unisBlue,
-    width: '80%',
-    maxWidth: 300,
-    maxHeight: 300,
+    borderColor: ETCH,
+    borderRadius: 9,
+  },
+  seg: {
+    flexGrow: 1,
+    flexBasis: 'auto',
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    borderRadius: 7,
+    alignItems: 'center',
+  },
+  segText: { fontSize: 12.5, fontWeight: '500', color: INK_3 },
+  segTextOn: { color: '#fff', fontWeight: '600' },
+
+  submit: {
+    marginTop: 4,
+    paddingVertical: 13,
+    borderRadius: 9,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  submitOff: { opacity: 0.55 },
+  submitText: { color: '#fff', fontSize: 13.5, fontWeight: '700', letterSpacing: 0.2 },
+
+  // States
+  state: {
+    padding: 34,
+    alignItems: 'center',
+    backgroundColor: PLATE,
+    borderWidth: 1,
+    borderColor: ETCH,
+    borderRadius: 14,
+  },
+  stateTitle: { fontSize: 15, fontWeight: '600', color: INK },
+  stateBody: { marginTop: 8, fontSize: 12.5, lineHeight: 19, color: INK_3, textAlign: 'center' },
+
+  // Leader plate
+  plate: {
+    position: 'relative',
+    overflow: 'hidden',
+    marginBottom: 20,
+    backgroundColor: PLATE_LIFT,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  plateGlow: { opacity: 0.3, transform: [{ scale: 1.4 }] },
+  plateScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(7,9,15,0.82)' },
+  plateInner: { padding: 18 },
+  plateEyebrow: { fontSize: 9.5, fontWeight: '700', letterSpacing: 1.6, marginBottom: 12 },
+
+  plateHead: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  plateArt: {
+    width: 92,
+    height: 92,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: ETCH_STRONG,
+  },
+  plateHeadText: { flex: 1, minWidth: 0 },
+  plateTitle: { fontSize: 22, fontWeight: '700', letterSpacing: -0.5, color: INK, lineHeight: 26 },
+  plateArtist: { marginTop: 4, fontSize: 14, fontStyle: 'italic', color: INK_2 },
+
+  plateTally: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: ETCH,
+  },
+  plateScore: { flexDirection: 'row', alignItems: 'baseline', gap: 7 },
+  plateFigure: { fontSize: 30, fontWeight: '800', letterSpacing: -1, color: INK },
+  plateUnit: { fontSize: 9.5, fontWeight: '700', letterSpacing: 1.4, color: INK_3 },
+
+  marginPill: {
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  marginText: { fontSize: 11.5, fontWeight: '500', color: INK },
+
+  plateActions: { flexDirection: 'row', gap: 9, marginTop: 16 },
+  btn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: ETCH_STRONG,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+  },
+  btnPrimary: { borderColor: 'transparent' },
+  btnText: { fontSize: 12.5, fontWeight: '700', color: INK },
+
+  // Chase rail
+  chase: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 4,
+    backgroundColor: PLATE,
+    borderWidth: 1,
+    borderColor: ETCH,
+    borderRadius: 14,
+  },
+  chaseHead: {
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: ETCH,
+  },
+  chaseHeading: { fontSize: 13, fontWeight: '700', color: INK },
+  chaseMeta: { marginTop: 3, fontSize: 11, color: INK_3 },
+
+  chaseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: ETCH,
+  },
+  chaseMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    paddingVertical: 11,
+  },
+  chaseRank: {
+    width: 22,
+    textAlign: 'center',
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: INK_3,
+  },
+  chaseArt: { width: 42, height: 42, borderRadius: 7, borderWidth: 1, borderColor: ETCH },
+  chaseArtEmpty: { backgroundColor: 'rgba(255,255,255,0.05)' },
+  chaseText: { flex: 1, minWidth: 0 },
+  chaseTitle: { fontSize: 13.5, fontWeight: '500', color: INK_2 },
+  chaseArtist: { marginTop: 1, fontSize: 11.5, color: INK_3 },
+  chaseBar: {
+    height: 5,
+    marginTop: 7,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     overflow: 'hidden',
   },
-  dropdownOption: {
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(192, 192, 192, 0.1)',
-  },
-  dropdownOptionSelected: {
-    backgroundColor: COLORS.unisBlue,
-  },
-  dropdownOptionText: {
-    color: COLORS.textSilver,
-    fontSize: 15,
-    textAlign: 'center',
-  },
-  dropdownOptionTextSelected: {
-    color: COLORS.accentWhite,
-    fontWeight: '600',
+  chaseFill: { height: '100%', borderRadius: 3 },
+  chasePoints: {
+    minWidth: 52,
+    textAlign: 'right',
+    fontSize: 13,
+    fontWeight: '700',
+    color: INK_2,
   },
 
-  // View Current Button
-  viewCurrentButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    backgroundColor: 'transparent',
+  chasePlay: {
+    width: 30,
+    height: 30,
+    marginLeft: 8,
+    borderRadius: 15,
     borderWidth: 1,
-    borderColor: COLORS.textSilver,
-    borderRadius: 50,
-    width: IS_MOBILE ? '100%' : 'auto',
     alignItems: 'center',
-  },
-  viewCurrentButtonDisabled: {
-    opacity: 0.5,
-  },
-  viewCurrentButtonText: {
-    color: COLORS.textSilver,
-    fontWeight: 'bold',
-    fontSize: 14,
-  },
-
-  // Results Section
-  resultsSection: {
-    width: '100%',
-    maxWidth: 900,
-  },
-  resultsList: {
-    gap: 16,
-  },
-
-  // Result Item
-  resultItem: {
-    backgroundColor: COLORS.subtleBlack,
-    borderRadius: 8,
-    padding: IS_MOBILE ? 12 : 16,
-    flexDirection: IS_MOBILE ? 'column' : 'row',
-    alignItems: IS_MOBILE ? 'flex-start' : 'center',
-    gap: IS_MOBILE ? 12 : 15,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.unisBlue,
-    borderRightWidth: 4,
-    borderRightColor: COLORS.unisBlue,
-  },
-
-  // Rank
-  rank: {
-    fontSize: IS_MOBILE ? 24 : 32,
-    fontWeight: '800',
-    color: COLORS.unisBlue,
-    width: IS_MOBILE ? 'auto' : 50,
-    textAlign: 'center',
-  },
-
-  // Artwork
-  itemArtwork: {
-    width: IS_MOBILE ? 55 : 60,
-    height: IS_MOBILE ? 55 : 60,
-    borderRadius: 4,
-  },
-
-  // Item Info
-  itemInfo: {
-    flex: 1,
     justifyContent: 'center',
   },
-  itemTitle: {
-    fontSize: IS_MOBILE ? 14 : 16,
-    fontWeight: '600',
-    color: COLORS.accentWhite,
-  },
-  itemArtist: {
-    fontSize: IS_MOBILE ? 12 : 13,
-    color: COLORS.unisSilver,
-    marginTop: 2,
-  },
-
-  // Result Actions
-  resultActions: {
-    flexDirection: 'row',
-    gap: 10,
-    width: IS_MOBILE ? '100%' : 'auto',
-  },
-
-  // Buttons
-  listenButton: {
-    flex: IS_MOBILE ? 1 : undefined,
-    paddingVertical: 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 18,
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: COLORS.textGray,
-    borderRadius: 4,
-    alignItems: 'center',
-  },
-  listenButtonText: {
-    color: COLORS.textSilver,
-    fontSize: IS_MOBILE ? 11 : 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  viewButton: {
-    flex: IS_MOBILE ? 1 : undefined,
-    paddingVertical: 8,
-    paddingHorizontal: IS_MOBILE ? 12 : 18,
-    backgroundColor: COLORS.unisBlue,
-    borderWidth: 1,
-    borderColor: COLORS.unisBlue,
-    borderRadius: 4,
-    alignItems: 'center',
-  },
-  viewButtonText: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 11 : 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-
-  // Messages
-  messageContainer: {
-    padding: 20,
-    alignItems: 'center',
-  },
-  messageText: {
-    color: COLORS.textGray,
-    fontSize: 14,
-    fontStyle: 'italic',
-    textAlign: 'center',
-    marginTop: 10,
-  },
-  errorText: {
-    color: '#ff6b6b',
-    fontSize: 14,
-    textAlign: 'center',
-  },
+  chasePlayIcon: { fontSize: 11, marginLeft: 2 },
 });
 
-export default LeaderboardsScreen;
+export default Leaderboardsscreen;

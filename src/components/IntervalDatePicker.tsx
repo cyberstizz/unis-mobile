@@ -274,8 +274,31 @@ const IntervalDatePicker: React.FC<IntervalDatePickerProps> = ({
     </TouchableOpacity>
   );
 
+  // Clamp the month so a year jump cannot land outside the min/max window.
+  const stepYear = (delta: number) => {
+    const nextYear = year + delta;
+    if (nextYear < minYear || nextYear > maxYear) return;
+    let m = month;
+    if (nextYear === maxYear && m > maxMonth) m = maxMonth;
+    if (nextYear === minYear && m < minMonth) m = minMonth;
+    setYear(nextYear);
+    setMonth(m);
+  };
+
+  // Four controls: year, month, month, year. Stepping back a year through
+  // twelve taps on a month arrow was not navigation.
   const MonthNav = () => (
     <View style={[styles.navRow, { borderBottomColor: palette.edgeDim }]}>
+      <TouchableOpacity
+        style={[styles.navBtn, { borderColor: palette.edgeDim }, year <= minYear && styles.navBtnOff]}
+        onPress={() => stepYear(-1)}
+        disabled={year <= minYear}
+        accessibilityRole="button"
+        accessibilityLabel="Previous year"
+      >
+        <Text style={styles.navGlyph}>«</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity
         style={[styles.navBtn, { borderColor: palette.edgeDim }, atMinMonth && styles.navBtnOff]}
         onPress={() => stepMonth(-1)}
@@ -296,6 +319,16 @@ const IntervalDatePicker: React.FC<IntervalDatePickerProps> = ({
         accessibilityLabel="Next month"
       >
         <Text style={styles.navGlyph}>›</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.navBtn, { borderColor: palette.edgeDim }, year >= maxYear && styles.navBtnOff]}
+        onPress={() => stepYear(1)}
+        disabled={year >= maxYear}
+        accessibilityRole="button"
+        accessibilityLabel="Next year"
+      >
+        <Text style={styles.navGlyph}>»</Text>
       </TouchableOpacity>
     </View>
   );
@@ -572,7 +605,7 @@ const styles = StyleSheet.create({
   },
   panel: {
     width: '100%',
-    maxWidth: 380,
+    maxWidth: 400,
     padding: 16,
     borderWidth: 1,
     borderRadius: 16,
@@ -607,8 +640,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   navBtn: {
-    width: 34,
-    height: 30,
+    width: 32,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
@@ -621,6 +654,8 @@ const styles = StyleSheet.create({
     color: 'rgba(246,247,249,0.66)',
   },
   navTitle: {
+    flex: 1,
+    textAlign: 'center',
     fontSize: 14,
     fontWeight: '600',
     color: '#f6f7f9',
@@ -645,11 +680,12 @@ const styles = StyleSheet.create({
   dayCell: {
     width: `${100 / 7}%`,
     aspectRatio: 1,
+    minHeight: 44,          // never smaller than a finger, whatever the width
     alignItems: 'center',
     justifyContent: 'center',
   },
   dayText: {
-    fontSize: 13,
+    fontSize: 15,
     color: 'rgba(246,247,249,0.66)',
   },
   dayTextOff: { color: 'rgba(246,247,249,0.20)' },
