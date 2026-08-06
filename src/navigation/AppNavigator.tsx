@@ -23,6 +23,7 @@ import ArtistScreen from '../screens/ArtistScreen';
 import LeaderboardsScreen from '../screens/Leaderboardsscreen';
 import MilestonesScreen from '../screens/Milestonesscreen';
 import JurisdictionScreen from '../screens/JurisdictionScreen';
+import WinnersScreen from '../screens/WinnersScreen';
 import ArtistDashboardScreen from '../screens/ArtistdashboardScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import EarningsScreen from '../screens/Earningsscreen';
@@ -49,7 +50,18 @@ export type RootStackParamList = {
   Profile: undefined;
   ArtistDashboard: undefined;
   Settings: undefined;
-  Jurisdiction: undefined;
+  // Both accept `jurisdictionName` (what JurisdictionScreen reads first) and
+  // `jurisdiction` (what WinnersScreen reads first), so either caller works.
+  Jurisdiction: { jurisdictionName?: string; jurisdiction?: string } | undefined;
+  Winners:
+    | {
+        jurisdiction?: string;
+        jurisdictionName?: string;
+        jurisdictionId?: string | null;
+        interval?: 'day' | 'week' | 'month' | 'quarter' | 'midterm' | 'year';
+        category?: 'song' | 'artist';
+      }
+    | undefined;
 };
 
 export type DrawerParamList = {
@@ -88,6 +100,7 @@ const MainStack = () => {
       <Stack.Screen name="Leaderboards" component={LeaderboardsScreen} />
       <Stack.Screen name="Milestones" component={MilestonesScreen} />
       <Stack.Screen name="Jurisdiction" component={JurisdictionScreen} />
+      <Stack.Screen name="Winners" component={WinnersScreen} />
       <Stack.Screen name="ArtistDashboard" component={ArtistDashboardScreen} />
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="Messages" component={MessagesScreen} />
