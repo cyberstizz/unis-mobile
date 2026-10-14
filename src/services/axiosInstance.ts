@@ -61,6 +61,10 @@ axiosInstance.interceptors.request.use(
         config.headers.Authorization = `Bearer ${token}`;
       }
 
+      // Tells the server which app made the request, so plays and activity can
+      // be split by platform in the admin Metrics page (web sends 'web').
+      config.headers['X-Unis-Platform'] = Platform.OS === 'ios' ? 'ios' : 'android';
+
       // Let React Native / browser set Content-Type for FormData (file uploads)
       // This is CRITICAL: manually setting 'multipart/form-data' omits the
       // boundary string, which corrupts the request so the server never

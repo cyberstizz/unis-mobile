@@ -130,9 +130,11 @@ const Player: React.FC = () => {
   // On every track change, schedule a play-tracking call. If the user
   // skips before 30s elapses, schedulePlayTracking cancels the previous
   // timer internally. On unmount, cancel any pending timer.
+  // Guests are tracked too: their plays are recorded separately as
+  // logged-out plays (no points, no play count), see playTracker.ts.
   useEffect(() => {
     const songId = currentMedia?.id ?? currentMedia?.songId;
-    if (songId && userId) {
+    if (songId) {
       schedulePlayTracking(songId, userId);
     }
     return () => {
