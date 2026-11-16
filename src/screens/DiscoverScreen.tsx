@@ -28,7 +28,8 @@ import {
   Dimensions,
   useWindowDimensions,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useRoute, useNavigation } from '@react-navigation/native';
+import AdSlot from '../components/AdSlot';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import axiosInstance from '../services/axiosInstance';
@@ -45,7 +46,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
 
@@ -407,9 +408,20 @@ const DiscoverScreen: React.FC = () => {
   const accent = getThemeHex(theme);
 
   const [activeType, setActiveType] = useState<TypeKey>('all');
-  const [inputValue, setInputValue] = useState('');
-  const [query, setQuery] = useState('');
-  const [scope, setScope] = useState<Scope>(DEFAULT_SCOPE);
+  // Deep links: { q } from the header search, { jid, jname } from a
+  // listener's "Find similar", { type } from the search results page.
+  const route = useRoute<any>();
+  const [inputValue, setInputValue] = useState<string>(route.params?.q || '');
+  const [query, setQuery] = useState<string>(route.params?.q || '');
+  const [scope, setScope] = useState<Scope>(() => scopeById(route.params?.jid) || DEFAULT_SCOPE);
+  const scopeFromParams = useRef(Boolean(scopeById(route.params?.jid)));
+  useEffect(() => {
+    const p = route.params || {};
+    if (typeof p.q === 'string') { setInputValue(p.q); setQuery(p.q.trim()); }
+    const known = scopeById(p.jid);
+    if (known) { scopeFromParams.current = true; setScope(known); }
+    if (p.type && ['all', 'user', 'song', 'playlist', 'video'].includes(p.type)) setActiveType(p.type as TypeKey);
+  }, [route.params]);
   const [scopeOpen, setScopeOpen] = useState(false);
 
   const [buckets, setBuckets] = useState<Buckets>(EMPTY_BUCKETS);
@@ -433,6 +445,7 @@ const DiscoverScreen: React.FC = () => {
   // ── default scope from the signed-in user's jurisdiction ──
   // AuthContext already holds the full profile — no second profile fetch.
   useEffect(() => {
+    if (scopeFromParams.current) return;
     const jid = (user as any)?.jurisdiction?.jurisdictionId;
     const known = scopeById(jid);
     if (known) {
@@ -772,6 +785,9 @@ const DiscoverScreen: React.FC = () => {
             </Text>
           </View>
         )}
+
+        {/* Ad space (none for Unis Plus) */}
+        <View style={{ marginTop: 18 }}><AdSlot placement="discover" /></View>
       </ScrollView>
 
       {/* scope picker */}

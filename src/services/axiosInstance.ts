@@ -105,10 +105,17 @@ axiosInstance.interceptors.response.use(
   },
   async (error) => {
     if (error.response?.status === 401) {
-      console.log('[API] 401 Unauthorized - clearing token');
-      await SecureStore.deleteItemAsync('token');
-      // Note: Navigation to login screen will be handled by AuthContext/navigation
-      // We don't have window.location in React Native
+      // Same rule as web: a 401 while holding a session means the session is
+      // dead — clear it and tell AuthContext, which returns to sign-in.
+      let hadSession = false;
+      try { hadSession = !!(await SecureStore.getItemAsync('token')); } catch { /* ignore */ }
+      if (hadSession) {
+        console.log('[API] 401 Unauthorized - session ended');
+        await SecureStore.deleteItemAsync('token');
+        sessionExpiredListeners.forEach((fn) => {
+          try { fn(); } catch { /* ignore */ }
+        });
+      }
     }
 
     if (__DEV__) {
@@ -120,6 +127,13 @@ axiosInstance.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// ── Session-expired signal (web: window 'unis:session-expired') ──
+const sessionExpiredListeners = new Set<() => void>();
+export const onSessionExpired = (fn: () => void): (() => void) => {
+  sessionExpiredListeners.add(fn);
+  return () => { sessionExpiredListeners.delete(fn); };
+};
 
 // Helper function to get current base URL (useful for debugging)
 export const getApiBaseUrl = (): string => API_BASE_URL;

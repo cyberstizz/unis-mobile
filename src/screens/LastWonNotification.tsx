@@ -120,7 +120,7 @@ const atob = (input: string): string => {
 // ═════════════════════════════════════════════════════════════
 const LastWonNotification: React.FC = () => {
   const navigation = useNavigation<any>();
-  const { playMedia } = usePlayer();
+  const { requestPlay } = usePlayer();
   const { user } = useAuth();
 
   const [visible, setVisible] = useState(false);
@@ -268,14 +268,14 @@ const LastWonNotification: React.FC = () => {
 
   const handleVote = () => {
     dismiss();
-    navigation.navigate('VoteAwards');
+    navigation.navigate('Vote');
   };
 
   const handleSecondary = () => {
     dismiss();
     if (notification?.songData) {
       const song = notification.songData;
-      playMedia({
+      requestPlay({
         type: 'song',
         id: song.songId,
         songId: song.songId,
@@ -283,7 +283,7 @@ const LastWonNotification: React.FC = () => {
         title: song.title,
         artist: song.artist?.username || 'Unknown',
         artwork: getMediaUrl(song.artworkUrl),
-      } as any, []);
+      } as any);
     } else if (notification?.navigateTo) {
       navigation.navigate(notification.navigateTo.screen, notification.navigateTo.params);
     }
@@ -298,6 +298,15 @@ const LastWonNotification: React.FC = () => {
       <Animated.View style={[s.overlay, { opacity: overlayOpacity }]}>
         <Pressable style={s.overlayPress} onPress={dismiss}>
           <Animated.View style={[s.card, { opacity: cardOpacity, transform: [{ scale: cardScale }] }]}>
+            {/* The artwork itself, blurred, behind the whole card — the same blend
+                as the vote awards cards — so the lower half carries the art's
+                colors instead of flat black. */}
+            {!!notification.image && (
+              <View style={StyleSheet.absoluteFill} pointerEvents="none">
+                <Image source={{ uri: notification.image }} style={StyleSheet.absoluteFill} blurRadius={40} />
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(10,10,12,0.72)' }]} />
+              </View>
+            )}
             <Pressable onPress={() => {}} /* prevent dismiss on card tap */>
 
               {/* ── Hero artwork ── */}

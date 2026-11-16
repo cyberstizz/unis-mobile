@@ -14,7 +14,7 @@
 // is wired end-to-end EXCEPT the actual card capture:
 //
 //   • Step 1 (amount/note) is fully functional.
-//   • `startPayment()` calls the real /intent endpoint and receives clientSecret.
+//   • Card entry is not native yet: the pay step opens the artist's page on unismusic.com.
 //   • `confirmSupport()` calls the real /confirm endpoint and fires onSuccess
 //     with the same { supportId, amount, note } shape MessageThread expects.
 //   • The card entry itself is isolated in <PaymentStep> behind a single
@@ -41,8 +41,12 @@ import {
 } from 'react-native';
 import { Zap, X, Check } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { Linking } from 'react-native';
+import { useFeedback } from '../context/FeedbackContext';
+import { webUrl } from '../config/links';
 
 const PRESETS = [3, 5, 10, 25]; // dollars
+const MAX_SUPPORT_CENTS = 10000;  // $100 per payment (the server enforces this and the daily/weekly limits)
 
 interface SupportResult {
   supportId?: string;
@@ -75,8 +79,8 @@ const PaymentStep: React.FC<{
     */}
     <View style={styles.cardPlaceholder}>
       <Text style={styles.cardPlaceholderText}>
-        Card entry requires the Stripe native module. See the INTEGRATION note in
-        SupportSheet.tsx.
+        Card payments finish on unismusic.com — your browser opens on this
+        artist's page, where you tap Support and pay with Stripe.
       </Text>
     </View>
 
@@ -88,7 +92,7 @@ const PaymentStep: React.FC<{
       disabled={busy}
     >
       <Text style={styles.btnPrimaryText}>
-        {busy ? 'Processing…' : `Send $${(amountCents / 100).toFixed(2)} support`}
+        {busy ? 'Processing…' : `Pay $${(amountCents / 100).toFixed(2)} on unismusic.com`}
       </Text>
     </TouchableOpacity>
     <TouchableOpacity style={[styles.btn, styles.btnGhost]} onPress={onBack} disabled={busy}>
@@ -118,9 +122,9 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
   const [selected, setSelected] = useState(10);
   const [custom, setCustom] = useState('');
   const [note, setNote] = useState('');
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const feedback = useFeedback();
 
   const amountCents = useMemo(() => {
     const dollars = custom !== '' ? parseFloat(custom) : selected;
@@ -135,7 +139,6 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
     setSelected(10);
     setCustom('');
     setNote('');
-    setClientSecret(null);
     setError(null);
     setBusy(false);
   }, [isOpen]);
@@ -145,21 +148,11 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
       setError('Minimum support is $1.00.');
       return;
     }
-    setBusy(true);
+    if (amountCents > MAX_SUPPORT_CENTS) { setError('The most you can send at once is $100.'); return; }
     setError(null);
-    try {
-      const res = await axiosInstance.post(`/v1/support/${artistId}/intent`, {
-        amount: amountCents,
-        note: note.trim() || null,
-        source,
-      });
-      setClientSecret(res.data.clientSecret);
-      setStep('pay');
-    } catch (e: any) {
-      setError(e?.response?.data?.error || 'Could not start the payment.');
-    } finally {
-      setBusy(false);
-    }
+    // No /intent here: the web page creates its own PaymentIntent, so making
+    // one on the phone would leave an unused intent behind.
+    setStep('pay');
   };
 
   // Called after Stripe card capture succeeds (paymentIntent.status === 'succeeded').
@@ -172,6 +165,8 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
         paymentIntentId,
       });
       setStep('done');
+      // The sheet closes itself in a moment — the toast stays behind.
+      feedback.success(`Sent $${((res.data?.amount || amountCents) / 100).toFixed(2)} to ${artistName}. Thank you!`);
       onSuccess({ supportId: res.data?.supportId, amount: amountCents, note: note.trim() });
       setTimeout(onClose, 1700);
     } catch (_) {
@@ -181,14 +176,14 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
     }
   };
 
-  // Placeholder pay handler — replace the body with the real Stripe confirm
-  // (see PaymentStep INTEGRATION note), which resolves to a paymentIntentId.
+  // Card capture runs on the web (Stripe Payment Element). Native card entry
+  // would need @stripe/stripe-react-native + a native rebuild; until then the
+  // payment hands off to the artist's page, the same way Plus checkout does.
+  // confirmSupport() stays wired for when native card entry is added.
+  void confirmSupport;
   const handlePay = () => {
-    setError(
-      'Card payments need the Stripe native module (@stripe/stripe-react-native). ' +
-      'The amount and note are ready; wiring card capture completes this flow.'
-    );
-    // When Stripe is wired: confirmSupport(paymentIntent.id)
+    Linking.openURL(webUrl(`/artist/${artistId}`)).catch(() => setError("Couldn't open your browser."));
+    onClose();
   };
 
   return (
@@ -268,7 +263,7 @@ const SupportSheet: React.FC<SupportSheetProps> = ({
             </View>
           )}
 
-          {step === 'pay' && clientSecret && (
+          {step === 'pay' && (
             <PaymentStep
               amountCents={amountCents}
               busy={busy}

@@ -2,7 +2,8 @@
 //
 // Pure React Native confetti effect — no native modules required.
 // Replaces the web's canvas-confetti library.
-// Uses the Unis brand colors for the particles.
+// Uses the Unis brand colors for the particles, or the `colors` passed in
+// (the voting wizard passes the active theme, like web's fireworks).
 
 import React, { useEffect, useRef, useMemo } from 'react';
 import { View, Animated, Easing, StyleSheet, Dimensions } from 'react-native';
@@ -24,7 +25,8 @@ interface Particle {
   startX: number;
 }
 
-const ConfettiCannon: React.FC = () => {
+const ConfettiCannon: React.FC<{ colors?: string[] }> = ({ colors }) => {
+  const palette = colors && colors.length ? colors : UNIS_COLORS;
   const particles = useMemo<Particle[]>(() => {
     return Array.from({ length: PARTICLE_COUNT }, () => {
       const startX = Math.random() * SCREEN_WIDTH;
@@ -34,7 +36,7 @@ const ConfettiCannon: React.FC = () => {
         y: new Animated.Value(-20),
         rotate: new Animated.Value(0),
         opacity: new Animated.Value(1),
-        color: UNIS_COLORS[Math.floor(Math.random() * UNIS_COLORS.length)],
+        color: palette[Math.floor(Math.random() * palette.length)],
         size: 4 + Math.random() * 8,
         shape: shapes[Math.floor(Math.random() * shapes.length)],
         startX,

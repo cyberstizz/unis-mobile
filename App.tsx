@@ -5,7 +5,10 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Font from 'expo-font';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
-import { PlayerProvider, usePlayer } from './src/context/PlayerContext';import AppNavigator from './src/navigation/AppNavigator';
+import { PlayerProvider, usePlayer } from './src/context/PlayerContext';
+import { FeedbackProvider } from './src/context/FeedbackContext';
+import { RewardProvider } from './src/context/RewardContext';
+import AppNavigator from './src/navigation/AppNavigator';
 import Player from './src/components/Player';
 import SongNotification from './src/components/SongNotification';
 import WinnersNotification from './src/components/WinnersNotification';
@@ -90,9 +93,16 @@ export default function App() {
     <GestureHandlerRootView style={styles.container}>
       <SafeAreaProvider>
         <AuthProvider>
-          <PlayerProvider>
-            <AppContent />
-          </PlayerProvider>
+          {/* Feedback (toasts + confirm) and the reward pill read the theme
+              from AuthContext, so they sit inside it (web: outside, reading
+              [data-theme] off the DOM instead). */}
+          <FeedbackProvider>
+            <RewardProvider>
+              <PlayerProvider>
+                <AppContent />
+              </PlayerProvider>
+            </RewardProvider>
+          </FeedbackProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

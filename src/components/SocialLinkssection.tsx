@@ -12,6 +12,7 @@
 //   - onUpdated: () => void  (parent reload; busts cache)
 
 import React, { useState, useEffect } from 'react';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import {
   View,
   Text,
@@ -50,6 +51,7 @@ const safeUrl = (url?: string | null): string | null => {
 };
 
 const SocialLinksSection: React.FC<SocialLinksSectionProps> = ({ userId, profile, onUpdated }) => {
+  const feedback = useFeedback();
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [values, setValues] = useState({
@@ -78,10 +80,11 @@ const SocialLinksSection: React.FC<SocialLinksSectionProps> = ({ userId, profile
       });
       console.log(`[SocialLinks] action=save status=ok durationMs=${Date.now() - startedAt}`);
       setEditing(false);
+      feedback.success('Your links are saved');
       onUpdated?.();
     } catch (err) {
       console.error('[SocialLinks] action=save status=fail err=', err);
-      Alert.alert('Error', 'Failed to save social links. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't save your links. Try again."));
     } finally {
       setSaving(false);
     }

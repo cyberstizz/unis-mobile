@@ -53,6 +53,8 @@ import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import axiosInstance from '../services/axiosInstance';
 import { buildUrl } from '../utils/buildUrl';
+import AdSlot from '../components/AdSlot';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import VotingWizard from '../components/VotingWizard';
 import MessageButton from '../components/MessageButton';
 import ArtistAwardRails, { normalizeAwards } from '../components/ArtistAwardRails';
@@ -72,7 +74,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (t?: string): string => THEME_HEX[t || 'blue'] || THEME_HEX.blue;
 
@@ -156,6 +158,7 @@ const ArtistScreen: React.FC = () => {
   const [showSupporter, setShowSupporter] = useState(false);
   const [supporterBusy, setSupporterBusy] = useState(false);
   const [supporterError, setSupporterError] = useState<string | null>(null);
+  const feedback = useFeedback();
   const [supporterResult, setSupporterResult] = useState<SupporterResult | null>(null);
 
   // Shop
@@ -289,7 +292,7 @@ const ArtistScreen: React.FC = () => {
   // would throw. This stays purely as a defensive guard.
   const requireAuth = useCallback((): boolean => {
     if (!userId) {
-      Alert.alert('Sign in required', 'Please sign in to continue.');
+      feedback.info('Log in to continue');
       return false;
     }
     return true;
@@ -307,12 +310,14 @@ const ArtistScreen: React.FC = () => {
       } else {
         await axiosInstance.post(`/v1/users/${artistId}/follow`);
       }
-      console.log('[Follow] ok:', { artistId, following: !prev });
+      const who = artist?.username || 'this artist';
+      feedback.success(prev ? `Unfollowed ${who}` : `Following ${who}`, { id: 'artist-follow' });
     } catch (e: any) {
       console.error('[Follow] failed:', { artistId, err: e?.message });
       setIsFollowing(prev);
       setFollowerCount(prevCount);
-      Alert.alert('Something went wrong', 'Please try again.');
+      const who = artist?.username || 'this artist';
+      feedback.error(errorMessage(e, prev ? `Couldn't unfollow ${who}. Try again.` : `Couldn't follow ${who}. Try again.`));
     }
   };
 
@@ -325,7 +330,7 @@ const ArtistScreen: React.FC = () => {
     if (!song || !artist) return;
     const url = buildUrl(song.fileUrl);
     if (!url) {
-      Alert.alert('Unavailable', 'This track has no playable file yet.');
+      feedback.error('This track has no playable file yet.');
       return;
     }
     requestPlay({
@@ -347,7 +352,7 @@ const ArtistScreen: React.FC = () => {
   const playDefault = () => {
     const target = defaultSong || topSong;
     if (!target) {
-      Alert.alert('No song available', 'This artist has no default song yet.');
+      feedback.info(`${artist?.username || 'This artist'} hasn\u2019t picked a song to feature yet`);
       return;
     }
     playSong(target);
@@ -370,12 +375,19 @@ const ArtistScreen: React.FC = () => {
       console.log('[Support] supported-artist update ok:', { artistId, status: data.status });
       setSupporterResult(data);
       if (data.status === 'immediate' || data.status === 'cancelled') setIsSupporting(true);
+      const who = artist?.username || 'this artist';
+      if (data.status === 'immediate' || data.status === 'cancelled') {
+        feedback.success(data.status === 'cancelled' ? `Pending switch cancelled \u2014 you're still supporting ${who}` : `You now support ${who}`);
+      } else {
+        const when = data.effectiveDate ? new Date(data.effectiveDate).toLocaleDateString() : 'soon';
+        feedback.success(`Switch saved \u2014 you'll support ${who} starting ${when}`);
+      }
       await refreshUser?.();
     } catch (e: any) {
       console.error('[Support] supported-artist update failed:', { artistId, err: e?.message });
-      setSupporterError(
-        e?.response?.data?.error || 'Could not update your supported artist. Please try again.'
-      );
+      const text = e?.response?.data?.error || 'Could not update your supported artist. Please try again.';
+      setSupporterError(text);
+      feedback.error(text);
     } finally {
       setSupporterBusy(false);
     }
@@ -407,6 +419,9 @@ const ArtistScreen: React.FC = () => {
       name: artist?.username,
       type: 'artist',
       jurisdiction: artist?.jurisdiction,
+      jurisdictionId: artist?.jurisdiction?.jurisdictionId,
+      genreId: artist?.genre?.genreId,
+      photoUrl: artistPhoto || undefined,
     } as VotingNominee);
     setShowVotingWizard(true);
   };
@@ -415,10 +430,10 @@ const ArtistScreen: React.FC = () => {
     try {
       await axiosInstance.put(`/v1/users/profile/${artistId}/bio`, { bio });
       console.log('[Bio] saved:', { artistId });
-      Alert.alert('Saved', 'Bio updated successfully.');
+      feedback.success('Bio saved');
     } catch (e: any) {
       console.error('[Bio] save failed:', { artistId, err: e?.message });
-      Alert.alert('Failed', 'Could not update bio.');
+      feedback.error(errorMessage(e, "Couldn't save your bio. Try again."));
     }
   };
 
@@ -832,6 +847,9 @@ const ArtistScreen: React.FC = () => {
             themeColor={themeColor}
             cardStyle={styles.cardGap}
           />
+
+          {/* Ad space (none for Unis Plus) */}
+          <AdSlot placement="artist" />
         </View>
       </Animated.ScrollView>
 
@@ -861,11 +879,11 @@ const ArtistScreen: React.FC = () => {
       />
 
       <VotingWizard
-        show={showVotingWizard}
+        visible={showVotingWizard}
         onClose={() => setShowVotingWizard(false)}
         onVoteSuccess={() => setShowVotingWizard(false)}
         nominee={nominee}
-        userId={userId}
+        userId={userId ?? null}
         filters={{
           selectedGenre: artist.genre?.name?.toLowerCase().replace('/', '-') || 'unknown',
           selectedType: 'artist',

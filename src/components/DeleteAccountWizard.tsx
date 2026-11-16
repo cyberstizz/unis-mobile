@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useFeedback } from '../context/FeedbackContext';
 import {
   Modal,
   View,
@@ -29,6 +30,7 @@ interface DeleteAccountWizardProps {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onClose }) => {
+  const feedback = useFeedback();
   const { user, logout } = useAuth();
 
   const [step, setStep] = useState<1 | 2>(1);
@@ -78,6 +80,8 @@ const DeleteAccountWizard: React.FC<DeleteAccountWizardProps> = ({ visible, onCl
         throw new Error(`Delete failed with status ${response.status}`);
       }
 
+      // The toast rides along to the sign-in screen.
+      feedback.success('Your account has been permanently deleted.');
       await logout();
       // logout() should navigate to login screen via AuthContext / AppNavigator
     } catch (err: any) {

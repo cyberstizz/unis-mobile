@@ -1,2048 +1,1014 @@
 // src/screens/FeedScreen.tsx
-// Full port of web Feed.jsx with hero banner, jurisdiction selector,
-// lens bar (All / Charts / Playlists / Fresh), Songs of the Week
-// timeline, Artist of the Week, weekly most-played chart, playlists
-// view, and fresh view. Header is handled by LayoutWrapper in
-// AppNavigator.
+// ─────────────────────────────────────────────────────────────
+// Mobile port of web src/feed.jsx.
 //
-// IMPORTANT: all sub-components live at module scope. Components
-// defined inside the screen function get a new identity on every
-// render, forcing React to unmount/remount their subtree on every
-// state change (replayed animations, reloaded images). That bug was
-// fixed on web — do not reintroduce it here.
-
+//   Spotlight (today's leader → Song of the Week → Artist of the Week)
+//   Lens bar: All · Charts · Playlists · Fresh
+//   All:       Trending Today in <jurisdiction ▾> · New Releases · ad space ·
+//              Songs of the Week timeline · Artist of the Week · Top 5 artists ·
+//              Today's race · Your day · Movers · New from artists you follow
+//   Charts:    this week's standings board (same formula as awards)
+//   Playlists: featured (official, else top community) + community grid
+//   Fresh:     dropped recently (+ Dropping soon once the backend has it)
+//
+// Plays are never recorded here — the Player records them after real
+// listening (PLAY-FLOW). Taps go through requestPlay → PlayChoiceModal.
+//
+// All sub-components live at module scope: components defined inside the
+// screen get a new identity every render and remount their subtree.
+// ─────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
   ScrollView,
-  FlatList,
   Image,
   ActivityIndicator,
   StyleSheet,
-  Dimensions,
   RefreshControl,
-  ImageBackground,
-  Animated,
-  Easing,
-  TouchableOpacity,
-  Platform,
+  Pressable,
+  Modal,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as SecureStore from 'expo-secure-store';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
-import { Picker } from '@react-native-picker/picker';
+import Svg, { Circle, Path, Polygon, Rect } from 'react-native-svg';
 import { useAuth } from '../context/AuthContext';
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import MediaCard, { MediaItem } from '../components/MediaCard';
-import ArtistCard, { ArtistItem } from '../components/ArtistCard';
-import { INTERVAL_IDS } from '../utils/IdMappings';
+import { useReward } from '../context/RewardContext';
+import { useFeedback } from '../context/FeedbackContext';
+import axiosInstance from '../services/axiosInstance';
+import { buildUrl } from '../utils/buildUrl';
+import { JURISDICTION_NAMES, INTERVAL_IDS } from '../utils/IdMappings';
+import { fetchStandings, describeBoard, formatCount, playEntry, Board, BoardEntry } from '../utils/standings';
+import { toLocalISO } from '../utils/periodBounds';
+import { useUnisTheme, UnisTheme } from '../theme/unisTheme';
+import AdSlot from '../components/AdSlot';
+import RankMove from '../components/RankMove';
+import ArtistOfWeekCard, { ArtistOfWeek } from '../components/feed/ArtistOfWeekCard';
+import { FeedSpotlight, TodayRace, DayTiles, MoversCard, FollowingDrops } from '../components/feed/FeedModules';
+import LastWonNotification from './LastWonNotification';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 480;
-
-// ─── Active jurisdictions (matches web + backend) ───
-const ACTIVE_JURISDICTIONS = [
-  { id: '1cf6ceb1-aae6-4113-98c0-d9fe8ad8b5e3', name: 'Harlem' },
-  { id: '52740de0-e4e9-4c9e-b68e-1e170f6788c4', name: 'Uptown Harlem' },
-  { id: '4b09eaa2-03bc-4778-b7c2-db8b42c9e732', name: 'Downtown Harlem' },
-];
-
-// ─── Theme hex map — mirrors ThemePicker / web --unis-primary ───
-const THEME_HEX: Record<string, string> = {
-  blue: '#163387',
-  orange: '#C44B0A',
-  red: '#B51C24',
-  green: '#0F7A3E',
-  purple: '#4A1A8C',
-  yellow: '#C49A0A',
-  dianna: '#C49A0A',
+const randomRapper = require('../../assets/randomrapper.jpeg');
+const DEMO_ART = {
+  one: require('../../assets/demo/songartworkONe.jpeg'),
+  two: require('../../assets/demo/songartworktwo.jpeg'),
+  three: require('../../assets/demo/songartworkthree.jpeg'),
+  four: require('../../assets/demo/songartworkfour.jpeg'),
+  five: require('../../assets/demo/songartfive.jpg'),
+  six: require('../../assets/demo/songarteight.png'),
+  nine: require('../../assets/demo/albumartnine.jpg'),
+  ten: require('../../assets/demo/albumartten.jpeg'),
+  eleven: require('../../assets/demo/rapperphotoOne.jpg'),
 };
 
-const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
-
-// Lighter companion tone for text-on-dark accents (mirrors --unis-primary-2)
-const lightenHex = (hex: string, amt: number = 60): string => {
-  const num = parseInt(hex.replace('#', ''), 16);
-  const r = Math.min(255, (num >> 16) + amt);
-  const g = Math.min(255, ((num >> 8) & 0xff) + amt);
-  const b = Math.min(255, (num & 0xff) + amt);
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+// ─── Pure formatters ───
+const formatDuration = (ms?: number | null) => {
+  if (!ms) return '';
+  const totalSec = Math.floor(ms / 1000);
+  return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
 };
 
-// ─── Feed lenses ───
-type LensKey = 'all' | 'charts' | 'playlists' | 'fresh';
+const formatTimeAgo = (dateString?: string | null) => {
+  if (!dateString) return '';
+  const diffSeconds = Math.floor((Date.now() - new Date(dateString).getTime()) / 1000);
+  const m = Math.floor(diffSeconds / 60);
+  const h = Math.floor(m / 60);
+  const d = Math.floor(h / 24);
+  const w = Math.floor(d / 7);
+  const mo = Math.floor(d / 30);
+  const y = Math.floor(d / 365);
+  const s = (n: number) => (n !== 1 ? 's' : '');
+  if (diffSeconds < 60) return 'just now';
+  if (m < 60) return `${m} minute${s(m)} ago`;
+  if (h < 24) return `${h} hour${s(h)} ago`;
+  if (d < 7) return `${d} day${s(d)} ago`;
+  if (w < 4) return `${w} week${s(w)} ago`;
+  if (mo < 12) return `${mo} month${s(mo)} ago`;
+  return `${y} year${s(y)} ago`;
+};
 
-const LENSES: { key: LensKey; label: string; icon: string }[] = [
-  { key: 'all', label: 'All', icon: '▦' },
-  { key: 'charts', label: 'Charts', icon: '🏆' },
-  { key: 'playlists', label: 'Playlists', icon: '♫' },
-  { key: 'fresh', label: 'Fresh', icon: '✦' },
-];
-
-// ─── Chart entry shape (matches ChartsDto on the backend) ───
-interface ChartEntry {
-  rank: number;
-  movement: number | null;
-  plays: number;
-  songId: string;
-  title: string;
-  artworkUrl?: string;
-  fileUrl?: string;
-  duration?: number;
-  explicit?: boolean;
-  artistId?: string;
-  artistName?: string;
-}
-
-interface ChartData {
-  totalPlaysThisWeek: number;
-  entries: ChartEntry[];
-  isDemo?: boolean;
-}
-
-interface WeeklyWinner {
-  awardId?: string;
-  awardDate?: string;
-  songId: string;
-  title: string;
-  artworkUrl?: string;
-  artistName: string;
-  artistId?: string;
-}
-
-interface ArtistOfWeek {
-  userId: string;
-  username: string;
-  photoUrl?: string;
-  votesCount: number;
-}
-
-interface PlaylistSummary {
-  playlistId: string;
-  name: string;
-  type?: string;
-  songCount?: number;
-  followerCount?: number;
-  coverImageUrl?: string;
-  creatorName?: string;
-  creatorId?: string;
-  firstFourArtworks?: string[];
-}
-
-// ─── Pure formatters (module scope) ───
-const formatPlayCount = (count?: number): string => {
+const formatPlayCount = (count: any) => {
   const value = Number(count) || 0;
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
   return `${value}`;
 };
 
-const formatTimeAgo = (dateString?: string | null): string => {
+const formatAwardDate = (dateString?: string) => {
   if (!dateString) return '';
-  const diffMs = Date.now() - new Date(dateString).getTime();
-  const diffMinutes = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMinutes / 60);
-  const diffDays = Math.floor(diffHours / 24);
-  const diffWeeks = Math.floor(diffDays / 7);
-  if (diffMinutes < 1) return 'just now';
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return `${diffWeeks}w ago`;
+  return new Date(`${dateString}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
 };
 
-const formatAwardDate = (dateString?: string): string => {
-  if (!dateString) return '';
-  const d = new Date(`${dateString}T12:00:00`);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase();
-};
-
-const isWithinDays = (dateString: string | null | undefined, days: number): boolean => {
+const isWithinDays = (dateString: string | null | undefined, days: number) => {
   if (!dateString) return false;
   const diff = Date.now() - new Date(dateString).getTime();
-  return diff >= 0 && diff <= days * 24 * 60 * 60 * 1000;
+  return diff >= 0 && diff <= days * 86400000;
 };
 
-const toApiDate = (date: Date): string => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+// Awards are per jurisdiction PER GENRE, so one week yields one row per genre.
+// Collapse to one row per award_date, keeping the highest totalPoints.
+const bestPerAwardDate = (awards: any[]) => {
+  const byDate = new Map<string, any>();
+  const weight = (x: any) => x?.totalPoints ?? x?.weightedPoints ?? x?.votesCount ?? 0;
+  awards.forEach((a) => {
+    const key = a?.awardDate;
+    if (!key) return;
+    const held = byDate.get(key);
+    if (!held || weight(a) > weight(held)) byDate.set(key, a);
+  });
+  return Array.from(byDate.values()).sort((a, b) => (a.awardDate < b.awardDate ? 1 : -1));
 };
 
-const todayInEst = (): string =>
-  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-
-const pickPhoto = (obj: any): string | undefined => {
-  if (!obj) return undefined;
-  const candidate =
-    obj.photoUrl || obj.imageUrl || obj.profilePhotoUrl || obj.avatarUrl ||
-    obj.pictureUrl || obj.photo || obj.profilePhoto || obj.avatar || obj.picture;
-  return candidate ? getMediaUrl(candidate) : undefined;
+const pickPhoto = (obj: any): string | null => {
+  if (!obj) return null;
+  const c = obj.photoUrl || obj.imageUrl || obj.profilePhotoUrl || obj.avatarUrl || obj.pictureUrl || obj.photo || obj.profilePhoto || obj.avatar || obj.picture;
+  return c ? buildUrl(c) : null;
 };
 
-// ─────────────────────────────────────────────
-// ANIMATED SECTION — slides in from left like web
-// ─────────────────────────────────────────────
-const AnimatedSection: React.FC<{
-  children: React.ReactNode;
-  delay: number;
-}> = ({ children, delay }) => {
-  const slideX = useRef(new Animated.Value(-50)).current;
-  const fadeIn = useRef(new Animated.Value(0)).current;
+const toApiDate = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-  useFocusEffect(
-    useCallback(() => {
-      slideX.setValue(-50);
-      fadeIn.setValue(0);
-
-      const timer = setTimeout(() => {
-        Animated.parallel([
-          Animated.timing(slideX, {
-            toValue: 0,
-            duration: 600,
-            delay,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-          Animated.timing(fadeIn, {
-            toValue: 1,
-            duration: 600,
-            delay,
-            easing: Easing.out(Easing.cubic),
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }, 50);
-
-      return () => clearTimeout(timer);
-    }, [])
-  );
-
-  return (
-    <Animated.View
-      style={{
-        opacity: fadeIn,
-        transform: [{ translateX: slideX }],
-      }}
-    >
-      {children}
-    </Animated.View>
-  );
+const todayInEst = () => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  } catch {
+    return toApiDate(new Date());
+  }
 };
 
-// ─────────────────────────────────────────────
-// HERO PARTICLES — floating circles like web
-// ─────────────────────────────────────────────
-const HeroParticles: React.FC = () => {
-  const float1 = useRef(new Animated.Value(0)).current;
-  const float2 = useRef(new Animated.Value(0)).current;
-  const float3 = useRef(new Animated.Value(0)).current;
+const artSource = (v: any) => (v == null ? randomRapper : typeof v === 'number' ? v : { uri: v });
 
-  useEffect(() => {
-    const createFloat = (anim: Animated.Value, duration: number) => {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(anim, {
-            toValue: -12,
-            duration: duration / 2,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(anim, {
-            toValue: 0,
-            duration: duration / 2,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-        ])
-      ).start();
-    };
-    createFloat(float1, 6000);
-    createFloat(float2, 8000);
-    createFloat(float3, 5000);
-  }, []);
-
-  return (
-    <View style={particleStyles.container}>
-      <Animated.View
-        style={[
-          particleStyles.particle,
-          particleStyles.p1,
-          { transform: [{ translateY: float1 }] },
-        ]}
-      />
-      <Animated.View
-        style={[
-          particleStyles.particle,
-          particleStyles.p2,
-          { transform: [{ translateY: float2 }] },
-        ]}
-      />
-      <Animated.View
-        style={[
-          particleStyles.particle,
-          particleStyles.p3,
-          { transform: [{ translateY: float3 }] },
-        ]}
-      />
-    </View>
-  );
-};
-
-const particleStyles = StyleSheet.create({
-  container: {
-    position: 'absolute',
-    right: 30,
-    top: 0,
-    bottom: 0,
-    width: 150,
-  },
-  particle: {
-    position: 'absolute',
-    borderRadius: 999,
-    opacity: 0.4,
-  },
-  p1: {
-    width: 60,
-    height: 60,
-    backgroundColor: 'rgba(78, 168, 245, 0.25)',
-    top: 20,
-    right: 30,
-  },
-  p2: {
-    width: 90,
-    height: 90,
-    backgroundColor: 'rgba(124, 94, 245, 0.15)',
-    top: 40,
-    right: 70,
-  },
-  p3: {
-    width: 45,
-    height: 45,
-    backgroundColor: 'rgba(78, 168, 245, 0.2)',
-    top: 70,
-    right: 5,
-  },
-});
-
-// ─────────────────────────────────────────────
-// LENS BAR — rectangular YouTube-chip buttons, theme colored
-// ─────────────────────────────────────────────
-const LensBar: React.FC<{
-  activeLens: LensKey;
-  onSelect: (key: LensKey) => void;
-  primary: string;
-}> = ({ activeLens, onSelect, primary }) => (
-  <ScrollView
-    horizontal
-    showsHorizontalScrollIndicator={false}
-    style={lensStyles.bar}
-    contentContainerStyle={lensStyles.barContent}
-  >
-    {LENSES.map((lens) => {
-      const active = activeLens === lens.key;
-      return (
-        <TouchableOpacity
-          key={lens.key}
-          activeOpacity={0.8}
-          onPress={() => onSelect(lens.key)}
-          style={[
-            lensStyles.button,
-            active && { backgroundColor: primary, borderColor: 'rgba(255,255,255,0.22)' },
-          ]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: active }}
-        >
-          <Text style={[lensStyles.icon, active && lensStyles.iconActive]}>{lens.icon}</Text>
-          <Text style={[lensStyles.label, active && lensStyles.labelActive]}>{lens.label}</Text>
-        </TouchableOpacity>
-      );
-    })}
-  </ScrollView>
+// ─── Icons ───
+const CardPlayIcon: React.FC = () => (
+  <Svg viewBox="0 0 24 24" width={18} height={18} style={{ marginLeft: 2 }}>
+    <Polygon points="5,3 19,12 5,21" fill="#ffffff" />
+  </Svg>
 );
 
-const lensStyles = StyleSheet.create({
-  bar: {
-    marginBottom: 28,
-    flexGrow: 0,
-  },
-  barContent: {
-    gap: 8,
-    paddingRight: 16,
-  },
-  button: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  icon: {
-    fontSize: 13,
-    color: 'rgba(255,255,255,0.55)',
-  },
-  iconActive: {
-    color: '#FFFFFF',
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.55)',
-    letterSpacing: 0.1,
-  },
-  labelActive: {
-    color: '#FFFFFF',
-  },
-});
-
-// ─────────────────────────────────────────────
-// MOVEMENT BADGE — chart rank movement
-// ─────────────────────────────────────────────
-const MovementBadge: React.FC<{ movement: number | null | undefined; primaryLight: string }> = ({
-  movement,
-  primaryLight,
-}) => {
-  if (movement === null || movement === undefined) {
-    return (
-      <View style={[chartStyles.newBadge, { borderColor: primaryLight }]}>
-        <Text style={[chartStyles.newBadgeText, { color: primaryLight }]}>NEW</Text>
-      </View>
-    );
-  }
-  if (movement > 0) {
-    return <Text style={[chartStyles.movement, chartStyles.movementUp]}>▲ {movement}</Text>;
-  }
-  if (movement < 0) {
-    return <Text style={[chartStyles.movement, chartStyles.movementDown]}>▼ {Math.abs(movement)}</Text>;
-  }
-  return <Text style={[chartStyles.movement, chartStyles.movementFlat]}>—</Text>;
+const LensIcon: React.FC<{ type: string; color: string }> = ({ type, color }) => {
+  const p = { stroke: color, strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
+  return (
+    <Svg width={15} height={15} viewBox="0 0 24 24">
+      {type === 'all' && (
+        <>
+          <Rect x={3} y={3} width={7} height={7} rx={1} {...p} />
+          <Rect x={14} y={3} width={7} height={7} rx={1} {...p} />
+          <Rect x={3} y={14} width={7} height={7} rx={1} {...p} />
+          <Rect x={14} y={14} width={7} height={7} rx={1} {...p} />
+        </>
+      )}
+      {type === 'charts' && (
+        <>
+          <Path d="M8 21h8" {...p} />
+          <Path d="M12 17v4" {...p} />
+          <Path d="M7 4h10v6a5 5 0 0 1-10 0V4z" {...p} />
+          <Path d="M7 6H4a1 1 0 0 0-1 1c0 2 1.5 3.5 4 4" {...p} />
+          <Path d="M17 6h3a1 1 0 0 1 1 1c0 2-1.5 3.5-4 4" {...p} />
+        </>
+      )}
+      {type === 'playlists' && (
+        <>
+          <Path d="M3 6h13" {...p} />
+          <Path d="M3 12h13" {...p} />
+          <Path d="M3 18h8" {...p} />
+          <Circle cx={18} cy={17} r={3} {...p} />
+          <Path d="M21 17V9" {...p} />
+        </>
+      )}
+      {type === 'fresh' && (
+        <>
+          <Path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" {...p} />
+          <Path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" {...p} />
+        </>
+      )}
+    </Svg>
+  );
 };
 
-// ─────────────────────────────────────────────
-// PLAYLIST COVER — image or 2x2 mosaic fallback
-// ─────────────────────────────────────────────
-const PlaylistCover: React.FC<{ playlist: PlaylistSummary; size: number; radius?: number }> = ({
-  playlist,
-  size,
-  radius = 10,
-}) => {
-  const cover = playlist.coverImageUrl ? getMediaUrl(playlist.coverImageUrl) : undefined;
+// ─── Playlist cover (image or mosaic fallback) ───
+const PlaylistCover: React.FC<{ playlist: any; style: any }> = ({ playlist, style }) => {
+  const cover = playlist.coverImageUrl ? buildUrl(playlist.coverImageUrl) : null;
   const mosaic = (playlist.firstFourArtworks || []).filter(Boolean).slice(0, 4);
-
-  if (cover) {
-    return (
-      <Image
-        source={{ uri: cover }}
-        style={{ width: size, height: size, borderRadius: radius, backgroundColor: '#18181c' }}
-      />
-    );
-  }
+  if (cover) return <View style={style}><Image source={{ uri: cover }} defaultSource={randomRapper} style={StyleSheet.absoluteFill} /></View>;
   if (mosaic.length) {
-    const half = size / 2;
     return (
-      <View
-        style={{
-          width: size,
-          height: size,
-          borderRadius: radius,
-          overflow: 'hidden',
-          flexDirection: 'row',
-          flexWrap: 'wrap',
-          backgroundColor: '#18181c',
-        }}
-      >
-        {[0, 1, 2, 3].map((i) => (
-          <Image
-            key={i}
-            source={mosaic[i] ? { uri: getMediaUrl(mosaic[i]) } : undefined}
-            style={{ width: half, height: half, backgroundColor: '#18181c' }}
-          />
+      <View style={[style, { flexDirection: 'row', flexWrap: 'wrap' }]}>
+        {mosaic.map((art: string, i: number) => (
+          <Image key={i} source={{ uri: buildUrl(art) || undefined }} defaultSource={randomRapper} style={mosaic.length >= 4 ? { width: '50%', height: '50%' } : StyleSheet.absoluteFill} />
         ))}
       </View>
     );
   }
-  return (
-    <Image
-      source={require('../../assets/randomrapper.jpeg')}
-      style={{ width: size, height: size, borderRadius: radius }}
-    />
-  );
+  return <View style={style}><Image source={randomRapper} style={StyleSheet.absoluteFill} /></View>;
 };
 
-// ─────────────────────────────────────────────
-// GHOST JURISDICTION SELECTOR (inline in title)
-// ─────────────────────────────────────────────
-const JurisdictionSelect: React.FC<{
-  selectedId: string;
-  onChange: (id: string) => void;
-}> = ({ selectedId, onChange }) => {
-  const selectedName = ACTIVE_JURISDICTIONS.find(j => j.id === selectedId)?.name || 'Harlem';
-  const [showPicker, setShowPicker] = useState(false);
-
-  if (Platform.OS === 'ios') {
-    return (
-      <>
-        <TouchableOpacity
-          style={ghostStyles.wrapper}
-          onPress={() => setShowPicker(!showPicker)}
-          activeOpacity={0.7}
-        >
-          <Text style={ghostStyles.label}>{selectedName}</Text>
-          <Text style={ghostStyles.arrow}>▾</Text>
-        </TouchableOpacity>
-        {showPicker && (
-          <View style={ghostStyles.pickerContainer}>
-            <Picker
-              selectedValue={selectedId}
-              onValueChange={(val) => {
-                onChange(val);
-                setShowPicker(false);
-              }}
-              style={ghostStyles.picker}
-              itemStyle={ghostStyles.pickerItem}
-            >
-              {ACTIVE_JURISDICTIONS.map((j) => (
-                <Picker.Item key={j.id} label={j.name} value={j.id} />
-              ))}
-            </Picker>
-          </View>
-        )}
-      </>
-    );
-  }
-
-  // Android — native picker inline
-  return (
-    <View style={ghostStyles.androidWrapper}>
-      <Picker
-        selectedValue={selectedId}
-        onValueChange={onChange}
-        style={ghostStyles.androidPicker}
-        dropdownIconColor="#4ea8f5"
-        mode="dropdown"
-      >
-        {ACTIVE_JURISDICTIONS.map((j) => (
-          <Picker.Item
-            key={j.id}
-            label={j.name}
-            value={j.id}
-            style={ghostStyles.androidItem}
-          />
-        ))}
-      </Picker>
+// ─── Song card (Trending / New releases rows) ───
+const SongCard: React.FC<{ item: any; onNav: (id: string, type?: string) => void; onArtistNav: (id: string) => void; onPlay: (item: any) => void }> = React.memo(({ item, onNav, onArtistNav, onPlay }) => (
+  <Pressable style={({ pressed }) => [cardStyles.card, pressed && { opacity: 0.85 }]} onPress={() => onNav(item.id, item.type)}>
+    <View style={cardStyles.art}>
+      <Image source={artSource(item.artworkUrl || item.artwork)} defaultSource={randomRapper} style={StyleSheet.absoluteFill} />
+      {!!item.duration && <Text style={cardStyles.duration}>{formatDuration(item.duration)}</Text>}
+      {!!item.explicit && <Text style={cardStyles.explicit}>E</Text>}
+      <Pressable style={cardStyles.play} onPress={() => onPlay(item)} accessibilityLabel={`Play ${item.title}`} hitSlop={6}>
+        <CardPlayIcon />
+      </Pressable>
     </View>
+    <Text style={cardStyles.title} numberOfLines={1}>{item.title}</Text>
+    <View style={cardStyles.subrow}>
+      <Pressable style={{ flexShrink: 1 }} onPress={() => onArtistNav(item.artistData?.userId || 'unknown')} hitSlop={4}>
+        <Text style={cardStyles.artist} numberOfLines={1}>{item.artistData?.username || item.artist || 'Unknown'}</Text>
+      </Pressable>
+      <View style={cardStyles.plays} accessibilityLabel={`${item.playCount || 0} total plays`}>
+        <Svg viewBox="0 0 24 24" width={10} height={10}><Path d="M8 5v14l11-7z" fill="rgba(255,255,255,0.5)" /></Svg>
+        <Text style={cardStyles.playsText}>{formatPlayCount(item.playCount)}</Text>
+      </View>
+    </View>
+    {!!item.createdAt && <Text style={cardStyles.meta}>{formatTimeAgo(item.createdAt)}</Text>}
+  </Pressable>
+));
+
+// ─── Ghost jurisdiction dropdown ───
+const ACTIVE_JURISDICTIONS = [
+  { id: '1cf6ceb1-aae6-4113-98c0-d9fe8ad8b5e3', name: 'Harlem' },
+  { id: '52740de0-e4e9-4c9e-b68e-1e170f6788c4', name: 'Uptown Harlem' },
+  { id: '4b09eaa2-03bc-4778-b7c2-db8b42c9e732', name: 'Downtown Harlem' },
+];
+const DEFAULT_JURISDICTION_ID = '1cf6ceb1-aae6-4113-98c0-d9fe8ad8b5e3';
+
+const JurisdictionSelect: React.FC<{ value: string; label: string; onChange: (id: string) => void; t: UnisTheme }> = ({ value, label, onChange, t }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable style={styles.ghost} onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={`Jurisdiction: ${label}. Change`}>
+        <Text style={styles.ghostLabel}>{label}</Text>
+        <Text style={[styles.ghostArrow, { color: t.textAccent }]}>▾</Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.pickerBackdrop} onPress={() => setOpen(false)}>
+          <View style={[styles.pickerCard, { borderColor: t.border }]}>
+            {ACTIVE_JURISDICTIONS.map((j) => {
+              const on = j.id === value;
+              return (
+                <Pressable
+                  key={j.id}
+                  style={[styles.pickerRow, on && { backgroundColor: t.soft }]}
+                  onPress={() => { onChange(j.id); setOpen(false); }}
+                  accessibilityState={{ selected: on }}
+                >
+                  <Text style={[styles.pickerText, on && { color: '#fff', fontWeight: '800' }]}>{j.name}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </Pressable>
+      </Modal>
+    </>
   );
 };
 
-const ghostStyles = StyleSheet.create({
-  wrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  label: {
-    color: '#FFFFFF',
-    fontSize: IS_MOBILE ? 18 : 22,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  arrow: {
-    color: '#4ea8f5',
-    fontSize: 12,
-    marginLeft: 4,
-    opacity: 0.5,
-  },
-  pickerContainer: {
-    backgroundColor: '#1a1a1a',
-    borderRadius: 10,
-    marginTop: 8,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  picker: {
-    color: '#fff',
-    backgroundColor: '#1a1a1a',
-  },
-  pickerItem: {
-    color: '#fff',
-    fontSize: 16,
-  },
-  androidWrapper: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 6,
-    overflow: 'hidden',
-    minWidth: 140,
-    height: 36,
-    justifyContent: 'center',
-  },
-  androidPicker: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    marginTop: -8,
-    marginBottom: -8,
-  },
-  androidItem: {
-    backgroundColor: '#1a1a1a',
-    color: '#FFFFFF',
-    fontSize: 14,
-  },
-});
-
-// ─────────────────────────────────────────────
-// FOOTER
-// ─────────────────────────────────────────────
-const FeedFooter: React.FC = () => (
-  <View style={footerStyles.container}>
-    <View style={footerStyles.divider} />
-    <Text style={footerStyles.copyright}>
-      © {new Date().getFullYear()} Unis Music. All rights reserved.
-    </Text>
-  </View>
+// ─── Chart row (Top 5 artists / This week's chart) ───
+const ChartRow: React.FC<{
+  entry: BoardEntry;
+  artist: boolean;
+  t: UnisTheme;
+  onSong: (id: string, type?: string) => void;
+  onArtist: (id: string) => void;
+  onPlay: (e: BoardEntry) => void;
+}> = ({ entry, artist, t, onSong, onArtist, onPlay }) => (
+  <Pressable
+    style={({ pressed }) => [styles.chartRow, entry.rank === 1 && { borderColor: t.border, backgroundColor: t.subtle }, pressed && { opacity: 0.8 }]}
+    onPress={() => (artist ? onArtist(entry.id) : onSong(entry.id, 'song'))}
+  >
+    {!!entry.artwork && <Image source={{ uri: entry.artwork }} style={styles.chartAmbient} blurRadius={30} />}
+    <Text style={[styles.chartRank, entry.rank === 1 && { color: t.textAccent }]}>{entry.rank}</Text>
+    <Image source={artSource(entry.artwork)} defaultSource={randomRapper} style={[styles.chartArt, artist && { borderRadius: 24 }]} />
+    <View style={{ flex: 1 }}>
+      <Text style={styles.chartTitle} numberOfLines={1}>{entry.name}</Text>
+      {artist ? (
+        <Text style={styles.chartSub} numberOfLines={1}>
+          {formatCount(entry.points)} pts{entry.votes > 0 ? ` · ${formatCount(entry.votes)} vote${entry.votes === 1 ? '' : 's'}` : ''}
+        </Text>
+      ) : (
+        <Pressable onPress={() => entry.artistId && onArtist(entry.artistId)} hitSlop={4}>
+          <Text style={styles.chartSub} numberOfLines={1}>{entry.artistName} · {formatCount(entry.points)} pts</Text>
+        </Pressable>
+      )}
+    </View>
+    <RankMove movement={entry.movement} isNew={entry.isNew} />
+    <Pressable style={[styles.roundPlay, { backgroundColor: t.primary }]} onPress={() => onPlay(entry)} accessibilityLabel={`Play ${entry.name}`} hitSlop={6}>
+      <CardPlayIcon />
+    </Pressable>
+  </Pressable>
 );
 
-const footerStyles = StyleSheet.create({
-  container: { alignItems: 'center', paddingTop: 20, paddingBottom: 10, marginTop: 10 },
-  divider: { width: '40%', height: 1, backgroundColor: 'rgba(192,192,192,0.15)', marginBottom: 16 },
-  copyright: { color: 'rgba(192,192,192,0.25)', fontSize: 10, letterSpacing: 0.5 },
-});
+const LENSES = [
+  { key: 'all', label: 'All' },
+  { key: 'charts', label: 'Charts' },
+  { key: 'playlists', label: 'Playlists' },
+  { key: 'fresh', label: 'Fresh' },
+] as const;
+type LensKey = (typeof LENSES)[number]['key'];
 
-// ─────────────────────────────────────────────
-// DUMMY DATA
-// ─────────────────────────────────────────────
-const getDummyTrending = (): MediaItem[] => [
-  { id: 'd1', title: 'Paranoid', artistData: { userId: '1', username: 'Tony Fadd' }, artworkUrl: 'https://picsum.photos/200?random=1', type: 'song', duration: 180000, explicit: false, createdAt: new Date(Date.now() - 2 * 86400000).toISOString() },
-  { id: 'd2', title: 'Waited All Night', artistData: { userId: '2', username: 'SD Boomin' }, artworkUrl: 'https://picsum.photos/200?random=2', type: 'song', duration: 210000, explicit: true, createdAt: new Date(Date.now() - 5 * 86400000).toISOString() },
-  { id: 'd3', title: 'Golden Hour', artistData: { userId: '3', username: 'Artist Three' }, artworkUrl: 'https://picsum.photos/200?random=3', type: 'song', duration: 195000, explicit: false, createdAt: new Date(Date.now() - 86400000).toISOString() },
-  { id: 'd4', title: 'Midnight Dreams', artistData: { userId: '4', username: 'Artist Four' }, artworkUrl: 'https://picsum.photos/200?random=4', type: 'song', duration: 240000, explicit: true, createdAt: new Date(Date.now() - 3 * 86400000).toISOString() },
-  { id: 'd5', title: 'Street Lights', artistData: { userId: '5', username: 'Artist Five' }, artworkUrl: 'https://picsum.photos/200?random=5', type: 'song', duration: 175000, explicit: false, createdAt: new Date(Date.now() - 7 * 86400000).toISOString() },
+// ─── Dummies (fallback content when the feed can't load) ───
+const getDummyTrending = () => [
+  { id: 'dummy1', title: 'Tony Fadd - Paranoid', artistData: { userId: '1', username: 'Tony Fadd' }, artworkUrl: DEMO_ART.one, type: 'song', score: 100, createdAt: new Date(Date.now() - 2 * 86400000).toISOString(), duration: 180000, explicit: false, playsToday: 45, demo: true },
+  { id: 'dummy2', title: 'SD Boomin - Waited All Night', artistData: { userId: '2', username: 'SD Boomin' }, artworkUrl: DEMO_ART.two, type: 'song', score: 80, createdAt: new Date(Date.now() - 5 * 86400000).toISOString(), duration: 210000, explicit: true, playsToday: 32, demo: true },
+  { id: 'dummy3', title: 'Bad Video', artistData: { userId: '3', username: 'some guy' }, artworkUrl: DEMO_ART.three, type: 'video', score: 60, createdAt: new Date(Date.now() - 30 * 86400000).toISOString(), duration: 120000, explicit: false, playsToday: 18, demo: true },
+  { id: 'dummy4', title: 'Song 4', artistData: { userId: '4', username: 'Artist 4' }, artworkUrl: DEMO_ART.four, type: 'song', score: 50, createdAt: new Date(Date.now() - 90 * 86400000).toISOString(), duration: 195000, explicit: true, playsToday: 12, demo: true },
+  { id: 'dummy5', title: 'Song 5', artistData: { userId: '5', username: 'Artist 5' }, artworkUrl: DEMO_ART.five, type: 'song', score: 40, createdAt: new Date(Date.now() - 365 * 86400000).toISOString(), duration: 240000, explicit: false, playsToday: 8, demo: true },
 ];
 
-const getDummyNew = (): MediaItem[] => [
-  { id: 'd6', title: 'The Outside', artistData: { userId: '6', username: 'Artist Six' }, artworkUrl: 'https://picsum.photos/200?random=6', type: 'song', duration: 155000, explicit: false, createdAt: new Date(Date.now() - 3600000).toISOString() },
-  { id: 'd7', title: 'Original Man', artistData: { userId: '7', username: 'Artist Seven' }, artworkUrl: 'https://picsum.photos/200?random=7', type: 'song', duration: 205000, explicit: true, createdAt: new Date(Date.now() - 43200000).toISOString() },
-  { id: 'd8', title: 'Flavorfall', artistData: { userId: '8', username: 'Artist Eight' }, artworkUrl: 'https://picsum.photos/200?random=8', type: 'song', duration: 175000, explicit: false, createdAt: new Date(Date.now() - 2 * 86400000).toISOString() },
+const getDummyNew = () => [
+  { id: 'dummy6', title: 'The Outside', artistData: { userId: '6', username: 'Artist Six' }, artworkUrl: DEMO_ART.six, type: 'song', score: 30, createdAt: new Date(Date.now() - 3600000).toISOString(), duration: 155000, explicit: false, demo: true },
+  { id: 'dummy7', title: 'Original Man', artistData: { userId: '7', username: 'Artist Seven' }, artworkUrl: DEMO_ART.nine, type: 'song', score: 25, createdAt: new Date(Date.now() - 12 * 3600000).toISOString(), duration: 205000, explicit: true, demo: true },
+  { id: 'dummy8', title: 'flavorfall', artistData: { userId: '8', username: 'Artist Eight' }, artworkUrl: DEMO_ART.ten, type: 'song', score: 20, createdAt: new Date(Date.now() - 7 * 86400000).toISOString(), duration: 175000, explicit: false, demo: true },
+  { id: 'dummy9', title: 'Golden Son', artistData: { userId: '9', username: 'Artist Nine' }, artworkUrl: DEMO_ART.eleven, type: 'song', score: 15, createdAt: new Date(Date.now() - 14 * 86400000).toISOString(), duration: 188000, explicit: false, demo: true },
+  { id: 'dummy10', title: 'New Track', artistData: { userId: '10', username: 'Artist Ten' }, artworkUrl: DEMO_ART.one, type: 'song', score: 10, createdAt: new Date().toISOString(), duration: 220000, explicit: true, demo: true },
 ];
 
-const getDummyArtists = (): ArtistItem[] => [
-  { userId: 'art1', username: 'Tony Fadd', photoUrl: 'https://picsum.photos/400/300?random=a1', score: 100 },
-  { userId: 'art2', username: 'SD Boomin', photoUrl: 'https://picsum.photos/400/300?random=a2', score: 80 },
-  { userId: 'art3', username: 'Artist Three', photoUrl: 'https://picsum.photos/400/300?random=a3', score: 60 },
-];
-
-const getDummyChart = (): ChartData => ({
-  totalPlaysThisWeek: 0,
-  entries: getDummyTrending().map((d, i) => ({
-    rank: i + 1,
-    movement: i === 0 ? 2 : i === 1 ? -1 : i === 2 ? 0 : null,
-    plays: [124, 88, 76, 61, 44][i],
-    songId: d.id,
-    title: d.title,
-    artworkUrl: d.artworkUrl,
-    fileUrl: d.mediaUrl,
-    artistId: d.artistData?.userId,
-    artistName: d.artistData?.username,
-  })),
-  isDemo: true,
-});
-
-// ─────────────────────────────────────────────
-// MAIN COMPONENT
-// ─────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════
 const FeedScreen: React.FC = () => {
-  const insets = useSafeAreaInsets();
-  const { user, theme } = useAuth();
-  const { playMedia } = usePlayer();
+  const t = useUnisTheme();
   const navigation = useNavigation<any>();
+  const { requestPlay } = usePlayer();
+  const { user, isGuest } = useAuth() as any;
+  const { displayedScore } = useReward();
+  const feedback = useFeedback();
 
-  const primary = getThemeHex(theme);
-  const primaryLight = lightenHex(primary);
-
+  const [trendingToday, setTrendingToday] = useState<any[]>([]);
+  const [newMedia, setNewMedia] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState('');
-  const [userId, setUserId] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
-
-  // ─── Lens state ───
+  const [error, setError] = useState('');
   const [activeLens, setActiveLens] = useState<LensKey>('all');
 
-  // Jurisdiction selector
-  const userJurisdictionId = user?.jurisdiction?.jurisdictionId || '1cf6ceb1-aae6-4113-98c0-d9fe8ad8b5e3';
-  const [selectedJurisdictionId, setSelectedJurisdictionId] = useState(userJurisdictionId);
-  const selectedJurisdictionName = ACTIVE_JURISDICTIONS.find(j => j.id === selectedJurisdictionId)?.name || 'Harlem';
-
-  useEffect(() => {
-    if (userJurisdictionId) setSelectedJurisdictionId(userJurisdictionId);
-  }, [userJurisdictionId]);
-
-  // Data — All lens
-  const [trendingToday, setTrendingToday] = useState<MediaItem[]>([]);
-  const [topRated, setTopRated] = useState<MediaItem[]>([]);
-  const [newMedia, setNewMedia] = useState<MediaItem[]>([]);
-  const [popularArtists, setPopularArtists] = useState<ArtistItem[]>([]);
-
-  // Data — awards-derived (timeline + artist of the week + hero winner)
-  const [weeklyWinners, setWeeklyWinners] = useState<WeeklyWinner[]>([]);
+  const [weeklyWinners, setWeeklyWinners] = useState<any[]>([]);
   const [artistOfWeek, setArtistOfWeek] = useState<ArtistOfWeek | null>(null);
   const lastWinner = weeklyWinners.length ? weeklyWinners[0] : null;
 
-  // Data — Charts lens
-  const [chart, setChart] = useState<ChartData | null>(null);
+  const [chart, setChart] = useState<Board | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [topFive, setTopFive] = useState<Board | null>(null);
 
-  // Data — Playlists lens
-  const [featuredPlaylist, setFeaturedPlaylist] = useState<PlaylistSummary | null>(null);
-  const [communityPlaylists, setCommunityPlaylists] = useState<PlaylistSummary[]>([]);
+  const [featuredPlaylist, setFeaturedPlaylist] = useState<any>(null);
+  const [communityPlaylists, setCommunityPlaylists] = useState<any[]>([]);
   const [playlistsLoading, setPlaylistsLoading] = useState(false);
-
-  // Data — Fresh lens (upcoming hidden until backend scheduling exists)
   const [upcoming, setUpcoming] = useState<any[]>([]);
 
-  // ─── Normalize media (same as web) ───
-  const normalizeMedia = useCallback((items: any[]): MediaItem[] => {
-    return (items || []).map(item => ({
-      id: item.songId || item.videoId,
-      title: item.title,
-      artist: item.artist?.username || 'Unknown',
-      artistData: item.artist || { userId: 'unknown', username: 'Unknown' },
-      artworkUrl: getMediaUrl(item.artworkUrl),
-      mediaUrl: getMediaUrl(item.fileUrl),
-      url: getMediaUrl(item.fileUrl),
-      artwork: getMediaUrl(item.artworkUrl),
-      type: item.songId ? 'song' : 'video',
-      score: item.score || 0,
-      artistId: item.artist?.userId || 'unknown',
-      duration: item.duration || null,
-      createdAt: item.createdAt || null,
-      explicit: item.explicit || false,
-      playsToday: item.playsToday || 0,
-      playCount: item.playCount || 0,
-    }));
-  }, []);
+  const [dailySongBoard, setDailySongBoard] = useState<Board | null>(null);
+  const [dailyArtistBoard, setDailyArtistBoard] = useState<Board | null>(null);
+  const [raceCategory, setRaceCategory] = useState<'song' | 'artist'>('song');
+  const [moversPeriod, setMoversPeriod] = useState<'daily' | 'weekly'>('daily');
+  const [weeklyMoversBoard, setWeeklyMoversBoard] = useState<Board | null>(null);
+  const [voteHistory, setVoteHistory] = useState<any[]>([]);
+  const [followingDrops, setFollowingDrops] = useState<any[]>([]);
 
-  // ─── Fetch profile ───
-  const fetchProfile = async () => {
-    try {
-      const token = await SecureStore.getItemAsync('token');
-      if (!token) throw new Error('Not authenticated');
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      setUserId(payload.userId);
-    } catch (err) {
-      console.error('Profile load error:', err);
-      setError('Profile unavailable—using default feed.');
-    }
-  };
+  const userId = user?.userId;
+  const userJurisdictionId = user?.jurisdiction?.jurisdictionId || DEFAULT_JURISDICTION_ID;
+  const [selectedJurisdictionId, setSelectedJurisdictionId] = useState(userJurisdictionId);
+  useEffect(() => { if (userJurisdictionId) setSelectedJurisdictionId(userJurisdictionId); }, [userJurisdictionId]);
+  const selectedJurisdictionName = ACTIVE_JURISDICTIONS.find((j) => j.id === selectedJurisdictionId)?.name || 'Your Area';
 
-  // ─── Fetch all feed data (same 6 calls as web) ───
-  const fetchMediaData = async () => {
-    if (!userId || !selectedJurisdictionId) return;
+  const normalizeMedia = useCallback((items: any[]) => (items || []).map((item) => ({
+    id: item.songId || item.videoId,
+    title: item.title,
+    artist: item.artist?.username || 'Unknown',
+    artistData: item.artist || { userId: 'unknown', username: 'Unknown' },
+    artworkUrl: buildUrl(item.artworkUrl),
+    mediaUrl: buildUrl(item.fileUrl),
+    url: buildUrl(item.fileUrl),
+    artwork: buildUrl(item.artworkUrl),
+    type: item.songId ? 'song' : 'video',
+    score: item.score || 0,
+    artistId: item.artist?.userId || 'unknown',
+    duration: item.duration || null,
+    createdAt: item.createdAt || null,
+    explicit: item.explicit || false,
+    playsToday: item.playsToday || 0,
+    playCount: item.playCount || 0,
+  })), []);
 
-    try {
-      const jId = selectedJurisdictionId;
-
-      const [trendingTodayRes, topRatedRes, newRes, popularRes] = await Promise.all([
-        axiosInstance.get(`/v1/media/trending/today?jurisdictionId=${jId}&limit=10`),
-        axiosInstance.get(`/v1/media/trending?jurisdictionId=${jId}&limit=5`),
-        axiosInstance.get(`/v1/media/new?jurisdictionId=${jId}&limit=5`),
-        axiosInstance.get(`/v1/users/artist/top?jurisdictionId=${jId}&limit=5`),
-      ]);
-
-      setTrendingToday(normalizeMedia(trendingTodayRes.data || []));
-      setTopRated(normalizeMedia(topRatedRes.data || []));
-      setNewMedia(normalizeMedia(newRes.data || []));
-
-      // Normalize artists with photoUrl
-      const normalizedArtists = (popularRes.data || []).map((artist: any) => ({
-        ...artist,
-        photoUrl: pickPhoto(artist),
-      }));
-      setPopularArtists(normalizedArtists);
-
-      // Fallback: extract artists from media if API returns none
-      if (normalizedArtists.length === 0) {
-        const artistMap = new Map<string, ArtistItem>();
-        const allMedia = [...(trendingTodayRes.data || []), ...(newRes.data || [])];
-        allMedia.forEach((media: any) => {
-          if (media.artist && !artistMap.has(media.artist.userId)) {
-            artistMap.set(media.artist.userId, {
-              userId: media.artist.userId,
-              username: media.artist.username,
-              photoUrl: getMediaUrl(media.artist.photoUrl) || undefined,
-              score: media.artist.score || 0,
-            });
-          }
-        });
-        setPopularArtists(
-          Array.from(artistMap.values()).sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5)
-        );
-      }
-
-      setError('');
-    } catch (err) {
-      console.error('Media load error:', err);
-      setError('Feed unavailable—showing demo content.');
-      setTrendingToday(getDummyTrending());
-      setNewMedia(getDummyNew());
-    }
-  };
-
-  // ─── Fetch weekly winners (timeline + hero) + artist of the week ───
-  const fetchAwardsData = async () => {
+  // ─── Songs of the Week timeline + Artist of the Week ───
+  useEffect(() => {
     if (!selectedJurisdictionId) return;
-
-    const today = new Date();
-    const sixtyDaysAgo = new Date(today);
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-
-    const baseParams = `startDate=${toApiDate(sixtyDaysAgo)}&endDate=${toApiDate(today)}&jurisdictionId=${selectedJurisdictionId}&intervalId=${INTERVAL_IDS['weekly']}`;
-    // Same defensive filter web uses — reject future-dated awards that
-    // leak through from the UTC-midnight cron.
-    const cutoff = todayInEst();
-
-    try {
-      const [songAwardsRes, artistAwardsRes] = await Promise.all([
-        axiosInstance.get(`/v1/awards/past?type=song&${baseParams}`),
-        axiosInstance.get(`/v1/awards/past?type=artist&${baseParams}`),
-      ]);
-
-      const songAwards = (songAwardsRes.data || [])
-        .filter((a: any) => !a?.awardDate || a.awardDate <= cutoff)
-        .filter((a: any) => a?.song);
-
-      setWeeklyWinners(
-        songAwards.slice(0, 3).map((award: any) => ({
+    const run = async () => {
+      const today = new Date();
+      today.setDate(today.getDate() - 1);
+      const sixtyDaysAgo = new Date(today);
+      sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+      const baseParams = `startDate=${toApiDate(sixtyDaysAgo)}&endDate=${toApiDate(today)}&jurisdictionId=${selectedJurisdictionId}&intervalId=${INTERVAL_IDS.weekly}`;
+      const cutoff = todayInEst();
+      try {
+        const [songAwardsRes, artistAwardsRes] = await Promise.all([
+          axiosInstance.get(`/v1/awards/past?type=song&${baseParams}`),
+          axiosInstance.get(`/v1/awards/past?type=artist&${baseParams}`),
+        ]);
+        const songAwards = bestPerAwardDate((songAwardsRes.data || []).filter((a: any) => !a?.awardDate || a.awardDate <= cutoff).filter((a: any) => a?.song));
+        setWeeklyWinners(songAwards.slice(0, 4).map((award: any) => ({
           awardId: award.awardId,
           awardDate: award.awardDate,
           songId: award.song.songId || award.targetId,
           title: award.song.title || 'Unknown',
-          artworkUrl: getMediaUrl(award.song.artworkUrl),
+          artworkUrl: buildUrl(award.song.artworkUrl),
           artistName: award.song.artist?.username || 'Unknown',
           artistId: award.song.artist?.userId,
-        }))
-      );
-
-      const artistAwards = (artistAwardsRes.data || [])
-        .filter((a: any) => !a?.awardDate || a.awardDate <= cutoff)
-        .filter((a: any) => a?.user);
-
-      if (artistAwards.length) {
-        const award = artistAwards[0];
-        setArtistOfWeek({
-          userId: award.user.userId || award.targetId,
-          username: award.user.username || 'Unknown',
-          photoUrl: pickPhoto(award.user),
-          votesCount: award.votesCount || 0,
-        });
-      } else {
+        })));
+        const artistAwards = bestPerAwardDate((artistAwardsRes.data || []).filter((a: any) => !a?.awardDate || a.awardDate <= cutoff).filter((a: any) => a?.user));
+        if (artistAwards.length) {
+          const award = artistAwards[0];
+          setArtistOfWeek({
+            userId: award.user.userId || award.targetId,
+            username: award.user.username || 'Unknown',
+            photoUrl: pickPhoto(award.user),
+            votesCount: award.votesCount || 0,
+            awardDate: award.awardDate,
+          });
+        } else {
+          setArtistOfWeek(null);
+        }
+      } catch (err) {
+        console.error('[Feed] awards fetch failed (timeline + artist of week hidden):', err);
+        setWeeklyWinners([]);
         setArtistOfWeek(null);
       }
-    } catch (err) {
-      setWeeklyWinners([]);
-      setArtistOfWeek(null);
-    }
-  };
+    };
+    run();
+  }, [selectedJurisdictionId, refreshTick]);
 
-  // ─── Lifecycle ───
+  // ─── Main feed rows ───
   useEffect(() => {
-    fetchProfile().finally(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (userId && selectedJurisdictionId) {
-      setLoading(true);
-      Promise.all([fetchMediaData(), fetchAwardsData()]).finally(() => setLoading(false));
-    }
-  }, [userId, selectedJurisdictionId]);
-
-  // ─── Fetch weekly most-played chart — lazy, when Charts lens is active ───
-  useEffect(() => {
-    if (activeLens !== 'charts' || !selectedJurisdictionId) return;
-
-    const fetchChart = async () => {
-      setChartLoading(true);
+    if (!selectedJurisdictionId) return;
+    const run = async () => {
+      if (!refreshing) setLoading(true);
+      setError('');
       try {
-        const res = await axiosInstance.get(
-          `/v1/charts?jurisdictionId=${selectedJurisdictionId}&limit=10`
-        );
-        setChart(res.data || null);
+        const jId = selectedJurisdictionId;
+        const [trendingTodayRes, newRes] = await Promise.all([
+          axiosInstance.get(`/v1/media/trending/today?jurisdictionId=${jId}&limit=10`),
+          axiosInstance.get(`/v1/media/new?jurisdictionId=${jId}&limit=5`),
+        ]);
+        setTrendingToday(normalizeMedia(trendingTodayRes.data || []));
+        setNewMedia(normalizeMedia(newRes.data || []));
       } catch (err) {
-        // Endpoint not deployed yet — fall back to demo
-        setChart(null);
+        console.error('Media load error:', err);
+        setError('Feed unavailable—showing demo content.');
       } finally {
-        setChartLoading(false);
+        setLoading(false);
+        setRefreshing(false);
       }
     };
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedJurisdictionId, normalizeMedia, refreshTick]);
 
-    fetchChart();
+  // ─── Charts lens (lazy, cached per jurisdiction) ───
+  const chartFetchedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeLens !== 'charts' || !selectedJurisdictionId) return;
+    const key = `${selectedJurisdictionId}:${refreshTick}`;
+    if (chartFetchedFor.current === key) return;
+    setChartLoading(true);
+    fetchStandings({ type: 'song', jurisdictionId: selectedJurisdictionId, genre: 'all', period: 'weekly', limit: 10 })
+      .then((board) => setChart(board))
+      .catch((err) => { console.error('[Feed] chart fetch failed (empty state shown):', err); setChart(null); })
+      .finally(() => { chartFetchedFor.current = key; setChartLoading(false); });
   }, [activeLens, selectedJurisdictionId, refreshTick]);
 
-  // ─── Fetch playlists — lazy, when Playlists lens is active ───
+  // ─── Top 5 artists this week ───
+  useEffect(() => {
+    if (!selectedJurisdictionId) return undefined;
+    let cancelled = false;
+    fetchStandings({ type: 'artist', jurisdictionId: selectedJurisdictionId, genre: 'all', period: 'weekly', limit: 5 })
+      .then((board) => { if (!cancelled) setTopFive(board); })
+      .catch((err) => { console.error('[Feed] top five fetch failed (section hidden):', err?.message || err); if (!cancelled) setTopFive(null); });
+    return () => { cancelled = true; };
+  }, [selectedJurisdictionId, refreshTick]);
+
+  // ─── Today's song race ───
+  useEffect(() => {
+    if (!selectedJurisdictionId) return undefined;
+    let cancelled = false;
+    setDailySongBoard(null);
+    fetchStandings({ type: 'song', jurisdictionId: selectedJurisdictionId, genre: 'all', period: 'daily', limit: 50 })
+      .then((board) => { if (!cancelled) setDailySongBoard(board); })
+      .catch((err) => {
+        console.error('[Feed] daily song race fetch failed (race shows empty):', err?.message || err);
+        if (!cancelled) setDailySongBoard({ state: 'LIVE', entries: [], closesAt: null } as any);
+      });
+    return () => { cancelled = true; };
+  }, [selectedJurisdictionId, refreshTick]);
+
+  // ─── Today's artist race (only once flipped to Artists) ───
+  useEffect(() => {
+    if (raceCategory !== 'artist' || !selectedJurisdictionId) return undefined;
+    let cancelled = false;
+    setDailyArtistBoard(null);
+    fetchStandings({ type: 'artist', jurisdictionId: selectedJurisdictionId, genre: 'all', period: 'daily', limit: 50 })
+      .then((board) => { if (!cancelled) setDailyArtistBoard(board); })
+      .catch((err) => {
+        console.error('[Feed] daily artist race fetch failed (race shows empty):', err?.message || err);
+        if (!cancelled) setDailyArtistBoard({ state: 'LIVE', entries: [], closesAt: null } as any);
+      });
+    return () => { cancelled = true; };
+  }, [raceCategory, selectedJurisdictionId, refreshTick]);
+
+  // ─── This week's movers (only once flipped to Week) ───
+  useEffect(() => {
+    if (moversPeriod !== 'weekly' || !selectedJurisdictionId) return undefined;
+    let cancelled = false;
+    setWeeklyMoversBoard(null);
+    fetchStandings({ type: 'song', jurisdictionId: selectedJurisdictionId, genre: 'all', period: 'weekly', limit: 50 })
+      .then((board) => { if (!cancelled) setWeeklyMoversBoard(board); })
+      .catch((err) => {
+        console.error('[Feed] weekly movers fetch failed (empty state shown):', err?.message || err);
+        if (!cancelled) setWeeklyMoversBoard({ state: 'LIVE', entries: [] } as any);
+      });
+    return () => { cancelled = true; };
+  }, [moversPeriod, selectedJurisdictionId, refreshTick]);
+
+  // ─── Your votes (marks "Your vote" + the votes tile) ───
+  useEffect(() => {
+    if (!userId) { setVoteHistory([]); return undefined; }
+    let cancelled = false;
+    axiosInstance.get('/v1/vote/history?limit=20')
+      .then((res) => { if (!cancelled) setVoteHistory(Array.isArray(res.data) ? res.data : []); })
+      .catch((err) => { console.error('[Feed] vote history fetch failed (vote marks hidden):', err?.message || err); if (!cancelled) setVoteHistory([]); });
+    return () => { cancelled = true; };
+  }, [userId, refreshTick]);
+
+  // ─── New songs from artists you follow ───
+  useEffect(() => {
+    if (!userId) { setFollowingDrops([]); return undefined; }
+    let cancelled = false;
+    axiosInstance.get('/v1/media/following/new?days=7&limit=12')
+      .then((res) => {
+        if (cancelled) return;
+        const raw = Array.isArray(res.data) ? res.data : [];
+        setFollowingDrops(normalizeMedia(raw).map((song, i) => ({ ...song, artistPhoto: pickPhoto(raw[i]?.artist) })));
+      })
+      .catch((err) => { console.error('[Feed] following drops fetch failed (row hidden):', err?.message || err); if (!cancelled) setFollowingDrops([]); });
+    return () => { cancelled = true; };
+  }, [userId, normalizeMedia, refreshTick]);
+
+  // ─── Playlists lens ───
+  const playlistsFetchedFor = useRef<string | null>(null);
   useEffect(() => {
     if (activeLens !== 'playlists' || !selectedJurisdictionId) return;
-
-    const fetchPlaylists = async () => {
+    const key = `${selectedJurisdictionId}:${refreshTick}`;
+    if (playlistsFetchedFor.current === key) return;
+    const run = async () => {
       setPlaylistsLoading(true);
       try {
         const [officialRes, communityRes] = await Promise.all([
-          axiosInstance.get(`/v1/playlists/official`),
+          axiosInstance.get('/v1/playlists/official'),
           axiosInstance.get(`/v1/playlists/community/${selectedJurisdictionId}`),
         ]);
-
-        const official: PlaylistSummary[] = officialRes.data || [];
-        const community: PlaylistSummary[] = (communityRes.data || [])
-          .slice()
-          .sort((a: PlaylistSummary, b: PlaylistSummary) => (b.followerCount || 0) - (a.followerCount || 0));
-
-        setFeaturedPlaylist(official.length ? official[0] : (community.length ? community[0] : null));
+        const official = officialRes.data || [];
+        const community = (communityRes.data || []).slice().sort((a: any, b: any) => (b.followerCount || 0) - (a.followerCount || 0));
+        setFeaturedPlaylist(official.length ? official[0] : community.length ? community[0] : null);
         setCommunityPlaylists(official.length ? community : community.slice(1));
       } catch (err) {
+        console.error('[Feed] playlists fetch failed (empty state shown):', err);
         setFeaturedPlaylist(null);
         setCommunityPlaylists([]);
       } finally {
+        playlistsFetchedFor.current = key;
         setPlaylistsLoading(false);
       }
     };
-
-    fetchPlaylists();
+    run();
   }, [activeLens, selectedJurisdictionId, refreshTick]);
 
-  // ─── Fetch upcoming releases — lazy, when Fresh lens is active ───
-  // Backend endpoint doesn't exist yet; section stays hidden until it does.
+  // ─── Fresh lens: upcoming (hidden until scheduling exists on backend) ───
+  const upcomingFetchedFor = useRef<string | null>(null);
   useEffect(() => {
     if (activeLens !== 'fresh' || !selectedJurisdictionId) return;
-
-    const fetchUpcoming = async () => {
-      try {
-        const res = await axiosInstance.get(
-          `/v1/media/upcoming?jurisdictionId=${selectedJurisdictionId}&limit=5`
-        );
-        setUpcoming(res.data || []);
-      } catch (err) {
-        setUpcoming([]);
-      }
-    };
-
-    fetchUpcoming();
-  }, [activeLens, selectedJurisdictionId, refreshTick]);
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await Promise.all([fetchMediaData(), fetchAwardsData()]);
-    setRefreshTick((t) => t + 1); // re-fires the active lens fetch
-    setRefreshing(false);
-  }, [userId, selectedJurisdictionId]);
+    if (upcomingFetchedFor.current === selectedJurisdictionId) return;
+    axiosInstance.get(`/v1/media/upcoming?jurisdictionId=${selectedJurisdictionId}&limit=5`)
+      .then((res) => setUpcoming(res.data || []))
+      .catch(() => { console.warn('[Feed] /v1/media/upcoming unavailable (Dropping Soon hidden)'); setUpcoming([]); })
+      .finally(() => { upcomingFetchedFor.current = selectedJurisdictionId; });
+  }, [activeLens, selectedJurisdictionId]);
 
   // ─── Navigation ───
-  const handleSongNav = (mediaId: string, type: string = 'song') => {
-    navigation.navigate('Song', { songId: mediaId, type });
-  };
-
-  const handleArtistNav = (artistId: string) => {
+  const handleSongNav = useCallback((mediaId: string, type = 'song') => {
+    if (!mediaId || String(mediaId).startsWith('dummy')) return;
+    if (type === 'video') navigation.navigate('Video', { videoId: mediaId });
+    else navigation.navigate('Song', { songId: mediaId });
+  }, [navigation]);
+  const handleArtistNav = useCallback((artistId: string) => {
+    if (!artistId || artistId === 'unknown' || /^\d+$/.test(artistId)) return;
     navigation.navigate('Artist', { artistId });
-  };
+  }, [navigation]);
+  const handlePlaylistNav = useCallback((playlistId: string) => navigation.navigate('Playlist', { playlistId }), [navigation]);
 
-  const handlePlaylistNav = () => {
-    // No playlist detail screen on mobile yet — drawer route is a placeholder.
-    navigation.navigate('Playlists');
-  };
-
-  // ─── Play media (same logic as before) ───
-  const handlePlayMedia = async (media: MediaItem) => {
-    try {
-      const endpoint = media.type === 'song'
-        ? `/v1/media/song/${media.id}/play?userId=${userId}`
-        : `/v1/media/video/${media.id}/play?userId=${userId}`;
-      await axiosInstance.post(endpoint);
-    } catch (err) {
-      console.error('Failed to track play:', err);
+  const handlePlayMedia = useCallback(async (media: any) => {
+    if (media.demo) {
+      feedback.info('This is demo content — the live feed couldn’t load.');
+      return;
     }
+    let playMediaObj = media;
+    if (media.type === 'artist') {
+      try {
+        const res = await axiosInstance.get(`/v1/users/${media.artistData.userId}/default-song`);
+        const url = buildUrl(res.data.fileUrl);
+        if (!url) throw new Error('no default song');
+        playMediaObj = {
+          type: 'song',
+          id: res.data.songId,
+          songId: res.data.songId,
+          url,
+          fileUrl: url,
+          title: res.data.title || 'Default Track',
+          artist: media.artistData?.username || media.artist,
+          artistId: media.artistData?.userId,
+          artwork: buildUrl(res.data.artworkUrl) || media.artworkUrl,
+          artworkUrl: buildUrl(res.data.artworkUrl) || media.artworkUrl,
+        };
+      } catch (err) {
+        console.error('Default song fetch error:', err);
+        feedback.info(`${media.artistData?.username || media.artist || 'This artist'} hasn’t picked a song to feature yet`);
+        return;
+      }
+    }
+    requestPlay(playMediaObj);
+  }, [requestPlay, feedback]);
 
-    const playlist = [media, ...newMedia.slice(0, 2).filter(m => m.id !== media.id)];
-    playMedia(media as any, playlist as any);
+  const handlePlayChartEntry = useCallback(async (entry: BoardEntry) => {
+    const played = await playEntry(entry, requestPlay as any, 'feed');
+    if (!played) feedback.info(`${entry?.name || 'This artist'} hasn’t picked a song to feature yet`);
+  }, [requestPlay, feedback]);
+
+  const handleVoteClick = useCallback(() => navigation.navigate('Vote'), [navigation]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    setRefreshTick((n) => n + 1);
   };
 
-  // ─── Play a chart entry (ChartsDto shape → MediaItem shape) ───
-  const handlePlayChartEntry = (entry: ChartEntry) => {
-    const media: MediaItem = {
-      id: entry.songId,
-      title: entry.title,
-      artist: entry.artistName,
-      artistData: { userId: entry.artistId || 'unknown', username: entry.artistName || 'Unknown' },
-      artworkUrl: getMediaUrl(entry.artworkUrl),
-      artwork: getMediaUrl(entry.artworkUrl),
-      mediaUrl: getMediaUrl(entry.fileUrl),
-      url: getMediaUrl(entry.fileUrl),
-      type: 'song',
-      duration: entry.duration,
-      explicit: entry.explicit,
-    };
-    handlePlayMedia(media);
-  };
+  const trendingTodayList = trendingToday.length ? trendingToday.slice(0, 10) : getDummyTrending();
+  const newMediaList = newMedia.length ? newMedia.slice(0, 5) : getDummyNew();
+  // Charts NEVER falls back to demo content — only entries that scored.
+  const chartEntries = chart ? chart.entries.filter((e) => e.points > 0) : [];
+  const chartStatus = chart ? describeBoard(chart) : null;
+  const topFiveEntries = topFive ? topFive.entries.filter((e) => e.points > 0) : [];
+  const topFiveStatus = topFive ? describeBoard(topFive) : null;
+  const placeKey = JURISDICTION_NAMES[selectedJurisdictionId] || 'harlem';
+  const openChart = (type: string, period = 'weekly') => navigation.navigate('Charts', { type, period, genre: 'all', place: placeKey });
 
-  // ─── Lens switch — no-op when already active ───
-  const handleLensSelect = (key: LensKey) => {
-    setActiveLens((current) => (current === key ? current : key));
-  };
+  const todayIso = toLocalISO(new Date());
+  const todaysVotes = voteHistory.filter((v) =>
+    v?.voteDate === todayIso && /^(dai|day)/i.test(v?.interval || 'day') && (!v?.jurisdictionId || v.jurisdictionId === selectedJurisdictionId));
+  const isVoteType = (v: any, type: string) => String(v?.targetType || '').toLowerCase() === type;
+  const votedSongToday = todaysVotes.some((v) => isVoteType(v, 'song'));
+  const votedArtistToday = todaysVotes.some((v) => isVoteType(v, 'artist'));
+  const votedTargetIds = new Set<string>(todaysVotes.filter((v) => isVoteType(v, raceCategory)).map((v) => v.targetId));
+  const moversBoard = moversPeriod === 'weekly' ? weeklyMoversBoard : dailySongBoard;
+  const raceClosesAt = (dailySongBoard?.state || 'LIVE') === 'LIVE' ? dailySongBoard?.closesAt : null;
+  const openRaceEntry = (entry: BoardEntry) => (entry.type === 'artist' ? handleArtistNav(entry.id) : handleSongNav(entry.id, 'song'));
+  const openStandings = () => openChart(raceCategory, 'daily');
 
-  // ─── Display lists with fallback ───
-  const trendingList = trendingToday.length > 0 ? trendingToday.slice(0, 10) : getDummyTrending();
-  const newMediaList = newMedia.length > 0 ? newMedia.slice(0, 5) : getDummyNew();
-  const artistsList = popularArtists.length > 0 ? popularArtists.slice(0, 5) : getDummyArtists();
-  const chartData: ChartData = (chart && chart.entries && chart.entries.length) ? chart : getDummyChart();
-
-  // ─── Loading state ───
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={primary} />
+      <View style={styles.loading}>
+        <ActivityIndicator color={t.primary} size="large" />
         <Text style={styles.loadingText}>Loading your feed...</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
-      <ImageBackground
-        source={require('../../assets/randomrapper.jpeg')}
-        style={styles.backgroundImage}
-        resizeMode="cover"
-      >
-        <LinearGradient
-          colors={['transparent', '#000000']}
-          locations={[0, 0.9]}
-          style={styles.backgroundGradient}
-        />
-      </ImageBackground>
-
+    <View style={{ flex: 1 }}>
       <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={primary}
-            colors={[primary]}
-          />
-        }
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
       >
-        {error ? (
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        ) : null}
+        {!!error && <Text style={styles.error}>{error}</Text>}
 
-        {/* ═══════ HERO BANNER (static across all lenses) ═══════ */}
-        <TouchableOpacity
-          style={styles.heroBanner}
-          onPress={() => navigation.navigate('VoteAwards')}
-          activeOpacity={0.95}
-        >
-          <LinearGradient
-            colors={['#1a1a2e', '#16213e', '#0f3460']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-          <LinearGradient
-            colors={['rgba(10,10,12,0.9)', 'rgba(10,10,12,0.4)', 'transparent']}
-            start={{ x: 0, y: 0.5 }}
-            end={{ x: 1, y: 0.5 }}
-            style={StyleSheet.absoluteFill}
-          />
-          {lastWinner ? (
-            <TouchableOpacity
-              style={styles.heroWinner}
-              activeOpacity={0.8}
-              onPress={() => handleSongNav(lastWinner.songId, 'song')}
-            >
-              <View style={styles.heroWinnerLabelRow}>
-                <View style={[styles.heroWinnerDot, { backgroundColor: primary }]} />
-                <Text style={styles.heroWinnerLabel}>SONG OF THE WEEK</Text>
-              </View>
-              <Image
-                source={lastWinner.artworkUrl ? { uri: lastWinner.artworkUrl } : require('../../assets/randomrapper.jpeg')}
-                style={styles.heroWinnerThumb}
-              />
-            </TouchableOpacity>
-          ) : (
-            <HeroParticles />
-          )}
-          <View style={styles.heroContent}>
-            <Text style={styles.heroLabel}>
-              Featured in {selectedJurisdictionName}
-            </Text>
-            <Text style={styles.heroTitle}>
-              Vote for This Week's Top Track
-            </Text>
-            <Text style={styles.heroSubtitle}>
-              Your vote decides who tops the neighborhood leaderboard.
-            </Text>
-            <TouchableOpacity
-              style={styles.heroCta}
-              onPress={() => navigation.navigate('VoteAwards')}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.heroCtaText}>✓ Vote Now</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
+        <FeedSpotlight
+          jurisdictionName={selectedJurisdictionName}
+          dailyBoard={dailySongBoard}
+          weeklyWinner={lastWinner}
+          artistOfWeek={artistOfWeek}
+          onVote={handleVoteClick}
+          onSongNav={handleSongNav}
+          onArtistNav={handleArtistNav}
+        />
 
-        {/* ═══════ LENS BAR ═══════ */}
-        <LensBar activeLens={activeLens} onSelect={handleLensSelect} primary={primary} />
+        {/* Lens bar */}
+        <View style={styles.lensBar} accessibilityRole="tablist">
+          {LENSES.map((lens) => {
+            const on = activeLens === lens.key;
+            return (
+              <Pressable
+                key={lens.key}
+                onPress={() => setActiveLens((cur) => (cur === lens.key ? cur : lens.key))}
+                style={[styles.lensBtn, on && { backgroundColor: t.primary, borderColor: t.primary }]}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: on }}
+              >
+                <LensIcon type={lens.key} color={on ? '#fff' : 'rgba(255,255,255,0.7)'} />
+                <Text style={[styles.lensText, on && { color: '#fff' }]}>{lens.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
-        {/* ═══════════════════════════════════════ */}
-        {/* ═══════ LENS: ALL ═══════ */}
-        {/* ═══════════════════════════════════════ */}
+        {/* ═══════ ALL ═══════ */}
         {activeLens === 'all' && (
           <>
-            {/* ═══════ TRENDING TODAY ═══════ */}
-            <AnimatedSection delay={100}>
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <View style={styles.sectionTitleRow}>
-                    <Text style={styles.sectionTitle}>Trending Today in </Text>
-                    <JurisdictionSelect
-                      selectedId={selectedJurisdictionId}
-                      onChange={setSelectedJurisdictionId}
-                    />
-                  </View>
-                  <TouchableOpacity onPress={() => navigation.navigate('Find')}>
-                    <Text style={styles.seeAll}>Show all</Text>
-                  </TouchableOpacity>
-                </View>
-                <FlatList
-                  data={trendingList}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.carouselContent}
-                  keyExtractor={(item) => item.id}
-                  renderItem={({ item }) => (
-                    <MediaCard
-                      item={item}
-                      onPress={() => handleSongNav(item.id, item.type)}
-                      onPlayPress={() => handlePlayMedia(item)}
-                    />
-                  )}
-                  ItemSeparatorComponent={() => <View style={{ width: 14 }} />}
-                />
+            <View style={styles.section}>
+              <View style={styles.titleRow}>
+                <Text style={styles.sectionTitle}>Trending Today in </Text>
+                <JurisdictionSelect value={selectedJurisdictionId} label={selectedJurisdictionName} onChange={setSelectedJurisdictionId} t={t} />
               </View>
-            </AnimatedSection>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardRow}>
+                {trendingTodayList.map((item) => (
+                  <SongCard key={item.id} item={item} onNav={handleSongNav} onArtistNav={handleArtistNav} onPlay={handlePlayMedia} />
+                ))}
+              </ScrollView>
+            </View>
 
-            {/* ═══════ NEW RELEASES ═══════ */}
-            <AnimatedSection delay={200}>
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>New Releases</Text>
-                  <TouchableOpacity onPress={() => navigation.navigate('Find')}>
-                    <Text style={styles.seeAll}>Show all</Text>
-                  </TouchableOpacity>
-                </View>
-                <FlatList
-                  data={newMediaList}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.carouselContent}
-                  keyExtractor={(item) => `new-${item.id}`}
-                  renderItem={({ item }) => (
-                    <MediaCard
-                      item={item}
-                      onPress={() => handleSongNav(item.id, item.type)}
-                      onPlayPress={() => handlePlayMedia(item)}
-                    />
-                  )}
-                  ItemSeparatorComponent={() => <View style={{ width: 14 }} />}
-                />
-              </View>
-            </AnimatedSection>
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>New Releases</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cardRow}>
+                {newMediaList.map((item) => (
+                  <SongCard key={item.id} item={item} onNav={handleSongNav} onArtistNav={handleArtistNav} onPlay={handlePlayMedia} />
+                ))}
+              </ScrollView>
+            </View>
 
-            {/* ═══════ SONGS OF THE WEEK TIMELINE ═══════ */}
+            <AdSlot placement="feed" />
+
             {weeklyWinners.length > 0 && (
-              <AnimatedSection delay={300}>
-                <View style={styles.section}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Songs of the Week</Text>
-                  </View>
-                  <View style={timelineStyles.container}>
-                    <View style={timelineStyles.rail} />
-                    {weeklyWinners.map((winner, i) => (
-                      <TouchableOpacity
-                        key={winner.awardId || winner.songId}
-                        style={timelineStyles.node}
-                        activeOpacity={0.8}
-                        onPress={() => handleSongNav(winner.songId, 'song')}
-                      >
-                        <Image
-                          source={winner.artworkUrl ? { uri: winner.artworkUrl } : require('../../assets/randomrapper.jpeg')}
-                          style={[
-                            timelineStyles.thumb,
-                            i === 0 && { borderColor: primary },
-                          ]}
-                        />
-                        <Text style={[timelineStyles.date, i === 0 && { color: primaryLight }]}>
-                          {formatAwardDate(winner.awardDate)}
-                        </Text>
-                        <Text style={timelineStyles.song} numberOfLines={1}>{winner.title}</Text>
-                        <Text style={timelineStyles.artist} numberOfLines={1}>{winner.artistName}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-              </AnimatedSection>
-            )}
-
-            {/* ═══════ ARTIST OF THE WEEK ═══════ */}
-            {artistOfWeek && (
-              <AnimatedSection delay={400}>
-                <View style={styles.section}>
-                  <TouchableOpacity
-                    style={aowStyles.card}
-                    activeOpacity={0.85}
-                    onPress={() => handleArtistNav(artistOfWeek.userId)}
-                  >
-                    <View style={aowStyles.photoWrap}>
-                      <Text style={aowStyles.crown}>👑</Text>
-                      <Image
-                        source={artistOfWeek.photoUrl ? { uri: artistOfWeek.photoUrl } : require('../../assets/randomrapper.jpeg')}
-                        style={[aowStyles.photo, { borderColor: primary }]}
-                      />
-                    </View>
-                    <View style={aowStyles.info}>
-                      <Text style={[aowStyles.label, { color: primaryLight }]}>
-                        ARTIST OF THE WEEK · {selectedJurisdictionName.toUpperCase()}
-                      </Text>
-                      <Text style={aowStyles.name} numberOfLines={1}>{artistOfWeek.username}</Text>
-                      {artistOfWeek.votesCount > 0 && (
-                        <Text style={aowStyles.meta}>
-                          {artistOfWeek.votesCount} vote{artistOfWeek.votesCount !== 1 ? 's' : ''} this week
-                        </Text>
-                      )}
-                    </View>
-                    <Text style={aowStyles.chevron}>›</Text>
-                  </TouchableOpacity>
-                </View>
-              </AnimatedSection>
-            )}
-
-            {/* ═══════ POPULAR ARTISTS ═══════ */}
-            <AnimatedSection delay={500}>
               <View style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>Popular Artists</Text>
-                </View>
-                <View style={styles.artistsGrid}>
-                  {artistsList.map((artist, index) => (
-                    <ArtistCard
-                      key={artist.userId}
-                      artist={artist}
-                      index={index}
-                      onPress={() => handleArtistNav(artist.userId)}
-                      onViewPress={() => handleArtistNav(artist.userId)}
-                    />
+                <Text style={styles.sectionTitle}>Songs of the Week</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingTop: 12, paddingRight: 8 }}>
+                  <View style={styles.rail} />
+                  {weeklyWinners.map((winner, i) => (
+                    <Pressable key={winner.awardId || winner.songId} style={styles.node} onPress={() => handleSongNav(winner.songId, 'song')}>
+                      <View style={[styles.nodeThumb, i === 0 && { borderColor: t.primary, borderWidth: 3, shadowColor: t.primary, shadowOpacity: 0.7, shadowRadius: 12 }]}>
+                        <Image source={artSource(winner.artworkUrl)} defaultSource={randomRapper} style={StyleSheet.absoluteFill} />
+                      </View>
+                      <Text style={[styles.nodeDate, i === 0 && { color: t.textAccent }]}>{formatAwardDate(winner.awardDate)}</Text>
+                      <Text style={styles.nodeSong} numberOfLines={1}>{winner.title}</Text>
+                      <Pressable onPress={() => winner.artistId && handleArtistNav(winner.artistId)} hitSlop={4}>
+                        <Text style={styles.nodeArtist} numberOfLines={1}>{winner.artistName}</Text>
+                      </Pressable>
+                    </Pressable>
                   ))}
-                </View>
+                </ScrollView>
               </View>
-            </AnimatedSection>
+            )}
+
+            {artistOfWeek && (
+              <View style={styles.section}>
+                <ArtistOfWeekCard artist={artistOfWeek} place={selectedJurisdictionName} onOpen={() => handleArtistNav(artistOfWeek.userId)} />
+              </View>
+            )}
+
+            {topFiveEntries.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Top 5 artists in {selectedJurisdictionName}</Text>
+                {topFiveStatus && <Text style={styles.caption}>{topFiveStatus.title}</Text>}
+                <View style={{ marginTop: 10, gap: 8 }}>
+                  {topFiveEntries.map((entry) => <ChartRow key={entry.id} entry={entry} artist t={t} onSong={handleSongNav} onArtist={handleArtistNav} onPlay={handlePlayChartEntry} />)}
+                </View>
+                <Pressable style={styles.fullChart} onPress={() => openChart('artist')}><Text style={styles.fullChartText}>See the full chart</Text></Pressable>
+              </View>
+            )}
+
+            <TodayRace
+              jurisdictionName={selectedJurisdictionName}
+              songBoard={dailySongBoard}
+              artistBoard={dailyArtistBoard}
+              category={raceCategory}
+              onCategoryChange={setRaceCategory}
+              votedTargetIds={votedTargetIds}
+              onVote={handleVoteClick}
+              onOpenEntry={openRaceEntry}
+              onOpenStandings={openStandings}
+            />
+            <DayTiles
+              isGuest={isGuest}
+              jurisdictionName={selectedJurisdictionName}
+              votedSongToday={votedSongToday}
+              votedArtistToday={votedArtistToday}
+              score={displayedScore ?? user?.score}
+              level={user?.level}
+              closesAt={raceClosesAt}
+            />
+            <MoversCard
+              jurisdictionName={selectedJurisdictionName}
+              board={moversBoard}
+              period={moversPeriod}
+              onPeriodChange={setMoversPeriod}
+              onOpenEntry={openRaceEntry}
+              fallbackArt={randomRapper}
+            />
+            <FollowingDrops drops={followingDrops} onOpen={(song) => handleSongNav(song.id, 'song')} />
           </>
         )}
 
-        {/* ═══════════════════════════════════════ */}
-        {/* ═══════ LENS: CHARTS ═══════ */}
-        {/* ═══════════════════════════════════════ */}
+        {/* ═══════ CHARTS ═══════ */}
         {activeLens === 'charts' && (
-          <AnimatedSection delay={100}>
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Most Played This Week</Text>
-              <Text style={chartStyles.caption}>
-                Voting closes Sunday 11:59 PM
-                {!chartData.isDemo &&
-                  ` · ${formatPlayCount(chartData.totalPlaysThisWeek)} play${chartData.totalPlaysThisWeek !== 1 ? 's' : ''} this week`}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>This Week{'’'}s Chart in {selectedJurisdictionName}</Text>
+            {chartStatus && <Text style={styles.caption}>{chartStatus.title}. {chartStatus.detail}</Text>}
+            {chartLoading ? (
+              <View style={styles.lensLoading}><ActivityIndicator color="#fff" /></View>
+            ) : chartEntries.length === 0 ? (
+              <Text style={styles.lensEmpty}>
+                Nothing has scored yet this week in {selectedJurisdictionName}. Plays, likes and votes put songs on the chart.
               </Text>
-
-              {chartLoading ? (
-                <View style={chartStyles.loading}>
-                  <ActivityIndicator size="small" color={primary} />
-                </View>
-              ) : (
-                <View style={chartStyles.list}>
-                  {chartData.entries.map((entry) => (
-                    <TouchableOpacity
-                      key={entry.songId}
-                      style={[
-                        chartStyles.row,
-                        entry.rank === 1 && { borderColor: primary },
-                      ]}
-                      activeOpacity={0.85}
-                      onPress={() => handleSongNav(entry.songId, 'song')}
-                    >
-                      <Image
-                        source={entry.artworkUrl ? { uri: getMediaUrl(entry.artworkUrl) || entry.artworkUrl } : require('../../assets/randomrapper.jpeg')}
-                        style={chartStyles.ambient}
-                        blurRadius={25}
-                      />
-                      <View style={chartStyles.ambientOverlay} />
-                      <Text
-                        style={[
-                          chartStyles.rank,
-                          entry.rank === 1 && { color: primaryLight },
-                        ]}
-                      >
-                        {entry.rank}
-                      </Text>
-                      <Image
-                        source={entry.artworkUrl ? { uri: getMediaUrl(entry.artworkUrl) || entry.artworkUrl } : require('../../assets/randomrapper.jpeg')}
-                        style={chartStyles.artwork}
-                      />
-                      <View style={chartStyles.info}>
-                        <Text style={chartStyles.songTitle} numberOfLines={1}>{entry.title}</Text>
-                        <Text style={chartStyles.songArtist} numberOfLines={1}>
-                          {entry.artistName} · {formatPlayCount(entry.plays)} play{entry.plays !== 1 ? 's' : ''}
-                        </Text>
-                      </View>
-                      <MovementBadge movement={entry.movement} primaryLight={primaryLight} />
-                      <TouchableOpacity
-                        style={[chartStyles.playButton, { backgroundColor: primary }]}
-                        activeOpacity={0.8}
-                        onPress={() => handlePlayChartEntry(entry)}
-                      >
-                        <Text style={chartStyles.playIcon}>▶</Text>
-                      </TouchableOpacity>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
-
-              {lastWinner && (
-                <TouchableOpacity
-                  style={chartStyles.lastWinner}
-                  activeOpacity={0.85}
-                  onPress={() => handleSongNav(lastWinner.songId, 'song')}
-                >
-                  <Text style={chartStyles.lastWinnerTrophy}>🏆</Text>
-                  <Text style={chartStyles.lastWinnerText} numberOfLines={2}>
-                    Last week's winner:{' '}
-                    <Text style={chartStyles.lastWinnerStrong}>
-                      {lastWinner.title} — {lastWinner.artistName}
-                    </Text>
-                  </Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </AnimatedSection>
+            ) : (
+              <View style={{ marginTop: 10, gap: 8 }}>
+                {chartEntries.map((entry) => <ChartRow key={entry.id} entry={entry} artist={false} t={t} onSong={handleSongNav} onArtist={handleArtistNav} onPlay={handlePlayChartEntry} />)}
+              </View>
+            )}
+            <Pressable style={styles.fullChart} onPress={() => openChart('song')}><Text style={styles.fullChartText}>See the full chart</Text></Pressable>
+            {lastWinner && (
+              <Pressable style={styles.lastWinner} onPress={() => handleSongNav(lastWinner.songId, 'song')}>
+                <Svg viewBox="0 0 24 24" width={18} height={18}>
+                  <Path d="M8 21h8M12 17v4M7 4h10v6a5 5 0 0 1-10 0V4z" fill="none" stroke="#eab308" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </Svg>
+                <Text style={styles.lastWinnerText} numberOfLines={2}>
+                  Last week{'’'}s winner: <Text style={{ fontWeight: '800', color: '#fff' }}>{lastWinner.title} — {lastWinner.artistName}</Text>
+                </Text>
+              </Pressable>
+            )}
+          </View>
         )}
 
-        {/* ═══════════════════════════════════════ */}
-        {/* ═══════ LENS: PLAYLISTS ═══════ */}
-        {/* ═══════════════════════════════════════ */}
+        {/* ═══════ PLAYLISTS ═══════ */}
         {activeLens === 'playlists' && (
-          <AnimatedSection delay={100}>
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Playlists Rising in {selectedJurisdictionName}</Text>
-              </View>
-
-              {playlistsLoading ? (
-                <View style={chartStyles.loading}>
-                  <ActivityIndicator size="small" color={primary} />
-                </View>
-              ) : (
-                <>
-                  {featuredPlaylist && (
-                    <TouchableOpacity
-                      style={playlistStyles.featured}
-                      activeOpacity={0.85}
-                      onPress={handlePlaylistNav}
-                    >
-                      <PlaylistCover
-                        playlist={featuredPlaylist}
-                        size={SCREEN_WIDTH - 32}
-                        radius={0}
-                      />
-                      <View style={playlistStyles.featuredBody}>
-                        <View style={[playlistStyles.featuredBadge, { backgroundColor: primary }]}>
-                          <Text style={playlistStyles.featuredBadgeText}>
-                            {featuredPlaylist.type === 'official' ? 'CURATED BY UNIS' : 'COMMUNITY FAVORITE'}
-                          </Text>
-                        </View>
-                        <Text style={playlistStyles.featuredName} numberOfLines={1}>
-                          {featuredPlaylist.name}
-                        </Text>
-                        <Text style={playlistStyles.featuredMeta}>
-                          {featuredPlaylist.songCount || 0} track{(featuredPlaylist.songCount || 0) !== 1 ? 's' : ''}
-                          {featuredPlaylist.creatorName ? ` · by ${featuredPlaylist.creatorName}` : ''}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  )}
-
-                  {communityPlaylists.length > 0 ? (
-                    <View style={playlistStyles.grid}>
-                      {communityPlaylists.slice(0, 8).map((playlist) => (
-                        <TouchableOpacity
-                          key={playlist.playlistId}
-                          style={playlistStyles.tile}
-                          activeOpacity={0.85}
-                          onPress={handlePlaylistNav}
-                        >
-                          <PlaylistCover
-                            playlist={playlist}
-                            size={(SCREEN_WIDTH - 32 - 14) / 2}
-                          />
-                          <Text style={playlistStyles.tileName} numberOfLines={1}>{playlist.name}</Text>
-                          <Text style={playlistStyles.tileMeta} numberOfLines={1}>
-                            {playlist.songCount || 0} track{(playlist.songCount || 0) !== 1 ? 's' : ''}
-                            {playlist.creatorName ? ` · ${playlist.creatorName}` : ''}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  ) : (
-                    !featuredPlaylist && (
-                      <View style={playlistStyles.empty}>
-                        <Text style={playlistStyles.emptyText}>
-                          No public playlists in {selectedJurisdictionName} yet. Be the first to make one.
-                        </Text>
-                      </View>
-                    )
-                  )}
-                </>
-              )}
-            </View>
-          </AnimatedSection>
-        )}
-
-        {/* ═══════════════════════════════════════ */}
-        {/* ═══════ LENS: FRESH ═══════ */}
-        {/* ═══════════════════════════════════════ */}
-        {activeLens === 'fresh' && (
-          <AnimatedSection delay={100}>
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Dropped Recently</Text>
-              </View>
-              <View style={chartStyles.list}>
-                {newMediaList.map((item) => (
-                  <TouchableOpacity
-                    key={`fresh-${item.id}`}
-                    style={chartStyles.row}
-                    activeOpacity={0.85}
-                    onPress={() => handleSongNav(item.id, item.type)}
-                  >
-                    <Image
-                      source={item.artworkUrl ? { uri: item.artworkUrl } : require('../../assets/randomrapper.jpeg')}
-                      style={chartStyles.artwork}
-                    />
-                    <View style={chartStyles.info}>
-                      <Text style={chartStyles.songTitle} numberOfLines={1}>{item.title}</Text>
-                      <Text style={chartStyles.songArtist} numberOfLines={1}>
-                        {item.artistData?.username || item.artist || 'Unknown'}
-                        {item.createdAt ? ` · ${formatTimeAgo(item.createdAt)}` : ''}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Playlists Rising in {selectedJurisdictionName}</Text>
+            {playlistsLoading ? (
+              <View style={styles.lensLoading}><ActivityIndicator color="#fff" /></View>
+            ) : (
+              <>
+                {featuredPlaylist && (
+                  <Pressable style={[styles.featured, { borderColor: t.border }]} onPress={() => handlePlaylistNav(featuredPlaylist.playlistId)}>
+                    <PlaylistCover playlist={featuredPlaylist} style={styles.featuredCover} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.featuredBadge, { color: t.textAccent }]}>
+                        {featuredPlaylist.type === 'official' ? 'Curated by Unis' : 'Community Favorite'}
+                      </Text>
+                      <Text style={styles.featuredName} numberOfLines={2}>{featuredPlaylist.name}</Text>
+                      <Text style={styles.featuredMeta}>
+                        {featuredPlaylist.songCount || 0} track{(featuredPlaylist.songCount || 0) !== 1 ? 's' : ''}
+                        {featuredPlaylist.creatorName ? ` · by ${featuredPlaylist.creatorName}` : ''}
                       </Text>
                     </View>
-                    {isWithinDays(item.createdAt, 7) && (
-                      <View style={freshStyles.newBadge}>
-                        <Text style={freshStyles.newBadgeText}>NEW</Text>
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      style={[chartStyles.playButton, { backgroundColor: primary }]}
-                      activeOpacity={0.8}
-                      onPress={() => handlePlayMedia(item)}
-                    >
-                      <Text style={chartStyles.playIcon}>▶</Text>
-                    </TouchableOpacity>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              {/* Dropping soon — renders only once /v1/media/upcoming exists and returns data */}
-              {upcoming.length > 0 && (
-                <>
-                  <View style={[styles.sectionHeader, freshStyles.upcomingHeader]}>
-                    <Text style={styles.sectionTitle}>Dropping Soon</Text>
-                  </View>
-                  <View style={chartStyles.list}>
-                    {upcoming.map((item: any) => (
-                      <View key={`up-${item.songId}`} style={[chartStyles.row, freshStyles.upcomingRow]}>
-                        <Image
-                          source={item.artworkUrl ? { uri: getMediaUrl(item.artworkUrl) } : require('../../assets/randomrapper.jpeg')}
-                          style={chartStyles.artwork}
-                        />
-                        <View style={chartStyles.info}>
-                          <Text style={chartStyles.songTitle} numberOfLines={1}>{item.title}</Text>
-                          <Text style={chartStyles.songArtist} numberOfLines={1}>
-                            {item.artist?.username || 'Unknown'}
-                          </Text>
+                  </Pressable>
+                )}
+                {communityPlaylists.length > 0 ? (
+                  <View style={styles.plGrid}>
+                    {communityPlaylists.slice(0, 8).map((pl) => (
+                      <Pressable key={pl.playlistId} style={styles.plTile} onPress={() => handlePlaylistNav(pl.playlistId)}>
+                        <View>
+                          <PlaylistCover playlist={pl} style={styles.plCover} />
+                          <Text style={styles.plCount}>{pl.songCount || 0} track{(pl.songCount || 0) !== 1 ? 's' : ''}</Text>
                         </View>
-                        <Text style={[freshStyles.date, { color: primaryLight }]}>
-                          {item.scheduledReleaseAt
-                            ? new Date(item.scheduledReleaseAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                            : 'Soon'}
+                        <Text style={styles.plName} numberOfLines={1}>{pl.name}</Text>
+                        <Text style={styles.plMeta} numberOfLines={1}>
+                          {pl.creatorName ? `by ${pl.creatorName}` : ''}
+                          {pl.followerCount ? ` · ${formatPlayCount(pl.followerCount)} followers` : ''}
                         </Text>
-                      </View>
+                      </Pressable>
                     ))}
                   </View>
-                </>
-              )}
-            </View>
-          </AnimatedSection>
+                ) : (
+                  !featuredPlaylist && (
+                    <Text style={styles.lensEmpty}>No public playlists in {selectedJurisdictionName} yet. Be the first to make one.</Text>
+                  )
+                )}
+              </>
+            )}
+          </View>
         )}
 
-        <FeedFooter />
-        <View style={{ height: 100 }} />
+        {/* ═══════ FRESH ═══════ */}
+        {activeLens === 'fresh' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Dropped Recently</Text>
+            <View style={{ marginTop: 10, gap: 8 }}>
+              {newMediaList.map((item) => (
+                <Pressable key={item.id} style={styles.freshRow} onPress={() => handleSongNav(item.id, item.type)}>
+                  <Image source={artSource(item.artworkUrl || item.artwork)} defaultSource={randomRapper} style={styles.freshArt} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.chartTitle} numberOfLines={1}>{item.title}</Text>
+                    <Pressable onPress={() => handleArtistNav(item.artistData?.userId || 'unknown')} hitSlop={4}>
+                      <Text style={styles.chartSub} numberOfLines={1}>
+                        {item.artistData?.username || item.artist || 'Unknown'}{item.createdAt ? ` · ${formatTimeAgo(item.createdAt)}` : ''}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  {isWithinDays(item.createdAt, 7) && <Text style={[styles.freshBadge, { backgroundColor: t.primary }]}>NEW</Text>}
+                  <Pressable style={[styles.roundPlay, { backgroundColor: t.primary }]} onPress={() => handlePlayMedia(item)} accessibilityLabel={`Play ${item.title}`} hitSlop={6}>
+                    <CardPlayIcon />
+                  </Pressable>
+                </Pressable>
+              ))}
+            </View>
+
+            {upcoming.length > 0 && (
+              <>
+                <Text style={[styles.sectionTitle, { marginTop: 22 }]}>Dropping Soon</Text>
+                <View style={{ marginTop: 10, gap: 8 }}>
+                  {upcoming.map((item) => (
+                    <View key={item.songId} style={[styles.freshRow, { opacity: 0.85 }]}>
+                      <Image source={artSource(buildUrl(item.artworkUrl))} defaultSource={randomRapper} style={styles.freshArt} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.chartTitle} numberOfLines={1}>{item.title}</Text>
+                        <Text style={styles.chartSub}>{item.artist?.username || 'Unknown'}</Text>
+                      </View>
+                      <Text style={styles.freshDate}>
+                        {item.scheduledReleaseAt ? new Date(item.scheduledReleaseAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Soon'}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+          </View>
+        )}
       </ScrollView>
+
+      {!isGuest && <LastWonNotification />}
     </View>
   );
 };
 
-// ─── Base64 decode for token parsing ───
-const atob = (input: string): string => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
-  let str = input.replace(/=+$/, '');
-  let output = '';
-  if (str.length % 4 === 1) throw new Error('Invalid base64 string');
-  for (let bc = 0, bs = 0, buffer, i = 0; (buffer = str.charAt(i++)); ) {
-    buffer = chars.indexOf(buffer) as any;
-    if ((buffer as number) === -1) continue;
-    bs = bc % 4 ? bs * 64 + (buffer as number) : (buffer as number);
-    if (bc++ % 4) output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
-  }
-  return output;
-};
-
-// ─────────────────────────────────────────────
-// TIMELINE STYLES
-// ─────────────────────────────────────────────
-const timelineStyles = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    position: 'relative',
-    paddingHorizontal: 4,
-  },
-  rail: {
-    position: 'absolute',
-    top: 32,
-    left: 44,
-    right: 44,
-    height: 2,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-  },
-  node: {
-    alignItems: 'center',
-    width: '31%',
-  },
-  thumb: {
-    width: 64,
-    height: 64,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: '#18181c',
-  },
-  date: {
-    marginTop: 7,
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    color: 'rgba(255,255,255,0.35)',
-  },
-  song: {
-    marginTop: 2,
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#f0f0f2',
-    maxWidth: '100%',
-  },
-  artist: {
-    fontSize: 10.5,
-    color: 'rgba(255,255,255,0.55)',
-    maxWidth: '100%',
-  },
+const cardStyles = StyleSheet.create({
+  card: { width: 148 },
+  art: { width: 148, height: 148, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.05)' },
+  duration: { position: 'absolute', left: 8, bottom: 8, color: '#fff', fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, overflow: 'hidden' },
+  explicit: { position: 'absolute', left: 8, top: 8, color: '#0b0b0f', fontSize: 10, fontWeight: '900', backgroundColor: 'rgba(255,255,255,0.85)', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, overflow: 'hidden' },
+  play: { position: 'absolute', right: 8, bottom: 8, width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.55)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
+  title: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 8 },
+  subrow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginTop: 2 },
+  artist: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5 },
+  plays: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  playsText: { color: 'rgba(255,255,255,0.5)', fontSize: 11.5, fontWeight: '600' },
+  meta: { color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2 },
 });
 
-// ─────────────────────────────────────────────
-// ARTIST OF THE WEEK STYLES
-// ─────────────────────────────────────────────
-const aowStyles = StyleSheet.create({
-  card: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-    padding: 16,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  photoWrap: {
-    position: 'relative',
-  },
-  crown: {
-    position: 'absolute',
-    top: -14,
-    alignSelf: 'center',
-    fontSize: 16,
-    zIndex: 2,
-  },
-  photo: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 3,
-    backgroundColor: '#18181c',
-  },
-  info: {
-    flex: 1,
-    minWidth: 0,
-  },
-  label: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    marginBottom: 3,
-  },
-  name: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#f0f0f2',
-    letterSpacing: -0.3,
-  },
-  meta: {
-    fontSize: 11.5,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 2,
-  },
-  chevron: {
-    fontSize: 24,
-    color: 'rgba(255,255,255,0.35)',
-    paddingLeft: 4,
-  },
-});
-
-// ─────────────────────────────────────────────
-// CHART / FRESH ROW STYLES
-// ─────────────────────────────────────────────
-const chartStyles = StyleSheet.create({
-  caption: {
-    fontSize: 12.5,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 4,
-    marginBottom: 16,
-  },
-  loading: {
-    paddingVertical: 40,
-    alignItems: 'center',
-  },
-  list: {
-    gap: 10,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  // Ambient blurred artwork layer (matches Trophy Case / VotingWizard)
-  ambient: {
-    ...StyleSheet.absoluteFillObject,
-    opacity: 0.45,
-  },
-  ambientOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(10,10,12,0.72)',
-  },
-  rank: {
-    width: 22,
-    fontSize: 16,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.35)',
-    textAlign: 'center',
-  },
-  artwork: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: '#18181c',
-  },
-  info: {
-    flex: 1,
-    minWidth: 0,
-  },
-  songTitle: {
-    fontSize: 13.5,
-    fontWeight: '600',
-    color: '#f0f0f2',
-  },
-  songArtist: {
-    fontSize: 11.5,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 2,
-  },
-  movement: {
-    fontSize: 11,
-    fontWeight: '700',
-    minWidth: 34,
-    textAlign: 'right',
-  },
-  movementUp: {
-    color: '#22c58b',
-  },
-  movementDown: {
-    color: '#e2564b',
-  },
-  movementFlat: {
-    color: 'rgba(255,255,255,0.35)',
-  },
-  newBadge: {
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-  },
-  newBadgeText: {
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  playButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  playIcon: {
-    color: '#fff',
-    fontSize: 12,
-    marginLeft: 2,
-  },
-  lastWinner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  lastWinnerTrophy: {
-    fontSize: 15,
-  },
-  lastWinnerText: {
-    flex: 1,
-    fontSize: 11.5,
-    color: 'rgba(255,255,255,0.55)',
-    lineHeight: 16,
-  },
-  lastWinnerStrong: {
-    color: '#f0f0f2',
-    fontWeight: '600',
-  },
-});
-
-// ─────────────────────────────────────────────
-// PLAYLIST STYLES
-// ─────────────────────────────────────────────
-const playlistStyles = StyleSheet.create({
-  featured: {
-    borderRadius: 14,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    marginBottom: 20,
-  },
-  featuredBody: {
-    padding: 14,
-  },
-  featuredBadge: {
-    alignSelf: 'flex-start',
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    marginBottom: 8,
-  },
-  featuredBadgeText: {
-    color: '#fff',
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  featuredName: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#f0f0f2',
-    letterSpacing: -0.3,
-  },
-  featuredMeta: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 3,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 14,
-  },
-  tile: {
-    width: (SCREEN_WIDTH - 32 - 14) / 2,
-  },
-  tileName: {
-    marginTop: 7,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#f0f0f2',
-  },
-  tileMeta: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.55)',
-    marginTop: 2,
-  },
-  empty: {
-    padding: 32,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 13,
-    textAlign: 'center',
-    lineHeight: 19,
-  },
-});
-
-// ─────────────────────────────────────────────
-// FRESH STYLES
-// ─────────────────────────────────────────────
-const freshStyles = StyleSheet.create({
-  newBadge: {
-    backgroundColor: 'rgba(34, 197, 139, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(34, 197, 139, 0.3)',
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  newBadgeText: {
-    color: '#22c58b',
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  upcomingHeader: {
-    marginTop: 28,
-  },
-  upcomingRow: {
-    backgroundColor: 'rgba(255,255,255,0.02)',
-  },
-  date: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-});
-
-// ─────────────────────────────────────────────
-// STYLES
-// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  backgroundImage: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    opacity: 0.15,
-  },
-  backgroundGradient: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    color: '#A9A9A9',
-    marginTop: 16,
-    fontSize: 16,
-    fontFamily: Platform.OS === 'ios' ? 'System' : 'sans-serif',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 20,
-  },
-  errorContainer: {
-    backgroundColor: 'rgba(255, 165, 0, 0.15)',
-    padding: 12,
-    borderRadius: 10,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 165, 0, 0.2)',
-  },
-  errorText: {
-    color: '#FFA500',
-    textAlign: 'center',
-    fontSize: 14,
-  },
-
-  // ── Hero banner ──
-  heroBanner: {
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginBottom: 20,
-    height: IS_MOBILE ? 170 : 200,
-    position: 'relative',
-  },
-  heroContent: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    padding: IS_MOBILE ? 20 : 32,
-    justifyContent: 'center',
-    zIndex: 2,
-  },
-  heroLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    color: '#4ea8f5',
-    marginBottom: 6,
-  },
-  heroTitle: {
-    fontSize: IS_MOBILE ? 22 : 28,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    color: '#f0f0f2',
-    marginBottom: 4,
-  },
-  heroSubtitle: {
-    fontSize: IS_MOBILE ? 12 : 14,
-    color: 'rgba(255,255,255,0.55)',
-    maxWidth: 280,
-    lineHeight: 18,
-  },
-  heroCta: {
-    marginTop: 14,
-    backgroundColor: '#4ea8f5',
-    borderRadius: 40,
-    paddingHorizontal: 20,
-    paddingVertical: 9,
-    alignSelf: 'flex-start',
-  },
-  heroCtaText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-
-  // ── Hero winner (bottom-right thumb) ──
-  heroWinner: {
-    position: 'absolute',
-    bottom: 12,
-    right: 12,
-    zIndex: 3,
-    alignItems: 'flex-end',
-    gap: 4,
-  },
-  heroWinnerLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  heroWinnerDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
-  },
-  heroWinnerLabel: {
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 1,
-    color: 'rgba(255,255,255,0.7)',
-  },
-  heroWinnerThumb: {
-    width: 44,
-    height: 44,
-    borderRadius: 7,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-    backgroundColor: '#18181c',
-  },
-
-  // ── Sections ──
-  section: {
-    marginBottom: 32,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  sectionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    flex: 1,
-  },
-  sectionTitle: {
-    color: '#f0f0f2',
-    fontSize: IS_MOBILE ? 20 : 24,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  seeAll: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.55)',
-  },
-  carouselContent: {
-    paddingRight: 16,
-  },
-
-  // ── Artists ──
-  artistsGrid: {
-    gap: 16,
-  },
+  content: { padding: 16, paddingBottom: 160 },
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 80 },
+  loadingText: { color: 'rgba(255,255,255,0.7)', fontSize: 14 },
+  error: { color: '#fbbf24', fontSize: 13, textAlign: 'center', marginBottom: 10 },
+  lensBar: { flexDirection: 'row', gap: 8, marginBottom: 18 },
+  lensBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', backgroundColor: 'rgba(255,255,255,0.04)' },
+  lensText: { color: 'rgba(255,255,255,0.7)', fontWeight: '700', fontSize: 13 },
+  section: { marginBottom: 24 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 },
+  sectionTitle: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
+  caption: { color: 'rgba(255,255,255,0.55)', fontSize: 12.5, marginTop: 4 },
+  cardRow: { gap: 12, paddingTop: 12, paddingRight: 8 },
+  ghost: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  ghostLabel: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
+  ghostArrow: { fontSize: 12 },
+  pickerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 40 },
+  pickerCard: { borderRadius: 18, backgroundColor: '#11141c', borderWidth: 1, overflow: 'hidden' },
+  pickerRow: { paddingHorizontal: 18, paddingVertical: 15 },
+  pickerText: { color: 'rgba(255,255,255,0.8)', fontSize: 16, fontWeight: '600' },
+  rail: { position: 'absolute', left: 36, right: 36, top: 48, height: 2, backgroundColor: 'rgba(255,255,255,0.12)' },
+  node: { width: 112, alignItems: 'center', marginRight: 8 },
+  nodeThumb: { width: 72, height: 72, borderRadius: 36, overflow: 'hidden', borderWidth: 2, borderColor: 'rgba(255,255,255,0.2)', backgroundColor: '#0b0e16' },
+  nodeDate: { color: 'rgba(255,255,255,0.55)', fontSize: 11, fontWeight: '800', letterSpacing: 0.6, marginTop: 8 },
+  nodeSong: { color: '#fff', fontSize: 13.5, fontWeight: '700', marginTop: 2, maxWidth: 108 },
+  nodeArtist: { color: 'rgba(255,255,255,0.6)', fontSize: 12, maxWidth: 108 },
+  chartRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', overflow: 'hidden' },
+  chartAmbient: { ...StyleSheet.absoluteFillObject, opacity: 0.18 },
+  chartRank: { color: 'rgba(255,255,255,0.7)', fontSize: 16, fontWeight: '900', width: 22, textAlign: 'center' },
+  chartArt: { width: 48, height: 48, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)' },
+  chartTitle: { color: '#fff', fontWeight: '700', fontSize: 14.5 },
+  chartSub: { color: 'rgba(255,255,255,0.55)', fontSize: 12.5, marginTop: 2 },
+  roundPlay: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  fullChart: { alignSelf: 'center', marginTop: 12, paddingHorizontal: 16, paddingVertical: 9, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.07)' },
+  fullChartText: { color: '#fff', fontWeight: '700', fontSize: 13.5 },
+  lensLoading: { paddingVertical: 40, alignItems: 'center' },
+  lensEmpty: { color: 'rgba(255,255,255,0.6)', fontSize: 14, lineHeight: 20, textAlign: 'center', paddingVertical: 30, paddingHorizontal: 10 },
+  lastWinner: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14, padding: 12, borderRadius: 14, backgroundColor: 'rgba(234,179,8,0.08)', borderWidth: 1, borderColor: 'rgba(234,179,8,0.25)' },
+  lastWinnerText: { color: 'rgba(255,255,255,0.75)', fontSize: 13, flex: 1 },
+  featured: { flexDirection: 'row', gap: 14, alignItems: 'center', padding: 12, borderRadius: 18, borderWidth: 1, backgroundColor: 'rgba(255,255,255,0.04)', marginTop: 12 },
+  featuredCover: { width: 110, height: 110, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)' },
+  featuredBadge: { fontSize: 11, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase' },
+  featuredName: { color: '#fff', fontSize: 19, fontWeight: '800', marginTop: 4 },
+  featuredMeta: { color: 'rgba(255,255,255,0.55)', fontSize: 12.5, marginTop: 4 },
+  plGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 14 },
+  plTile: { width: '47%', flexGrow: 1, maxWidth: '48.5%' },
+  plCover: { width: '100%', aspectRatio: 1, borderRadius: 12, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)' },
+  plCount: { position: 'absolute', right: 6, bottom: 6, color: '#fff', fontSize: 11, fontWeight: '700', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
+  plName: { color: '#fff', fontSize: 14, fontWeight: '700', marginTop: 8 },
+  plMeta: { color: 'rgba(255,255,255,0.5)', fontSize: 12, marginTop: 2 },
+  freshRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.04)' },
+  freshArt: { width: 52, height: 52, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)' },
+  freshBadge: { color: '#fff', fontSize: 10, fontWeight: '900', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
+  freshDate: { color: 'rgba(255,255,255,0.7)', fontWeight: '700', fontSize: 12.5 },
 });
 
 export default FeedScreen;

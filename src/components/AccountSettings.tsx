@@ -19,6 +19,14 @@ import {
 } from 'react-native';
 import { Bell, Eye } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
+
+// What the toast calls each switch. Keep in step with the labels below.
+const LABELS: Record<string, string> = {
+  emailNotifications: 'Email notifications',
+  publicProfile: 'Public profile',
+  showVoteHistory: 'Show vote history',
+};
 
 interface SettingsShape {
   emailNotifications: boolean;
@@ -47,6 +55,7 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
     ...DEFAULTS,
     ...(incomingSettings || {}),
   });
+  const feedback = useFeedback();
   const [saving, setSaving] = useState<Partial<Record<keyof SettingsShape, boolean>>>({});
 
   // Re-sync when parent provides new settings (e.g., after reload()).
@@ -58,6 +67,7 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
 
   const update = async (key: keyof SettingsShape, value: boolean) => {
     const prev = settings[key];
+    const label = LABELS[key] || 'That setting';
 
     // Optimistic
     setSettings(s => ({ ...s, [key]: value }));
@@ -67,10 +77,12 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
     try {
       await axiosInstance.patch(`/v1/users/${userId}/preferences`, { [key]: value });
       console.log(`[AccountSettings] action=update key=${key} status=ok durationMs=${Date.now() - startedAt}`);
+      feedback.success(`${label} saved`, { id: `setting-${key}` });
       onUpdated?.();
     } catch (err) {
       console.error(`[AccountSettings] action=update key=${key} status=fail durationMs=${Date.now() - startedAt} err=`, err);
-      setSettings(s => ({ ...s, [key]: prev })); // revert
+      setSettings(s => ({ ...s, [key]: prev })); // revert — the switch flips back
+      feedback.error(errorMessage(err, `${label} didn't save. Try again.`));
     } finally {
       setSaving(s => ({ ...s, [key]: false }));
     }
@@ -104,7 +116,7 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
           <Text style={styles.groupLabelText}>Privacy</Text>
         </View>
 
-        <SettingRow label="Public profile" sub="Anyone on UNIS can find you">
+        <SettingRow label="Public profile" sub="Anyone can see your photos. Turn off to show them only to people you follow back.">
           <Switch
             on={settings.publicProfile}
             disabled={!!saving.publicProfile}

@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import Svg, { G, Path } from 'react-native-svg';
 
-import { US_STATES } from './geometry/usStates';
+import { US_STATES } from './usStates';
 import {
   geometryToPath,
   pathBounds,

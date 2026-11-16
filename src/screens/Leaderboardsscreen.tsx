@@ -55,9 +55,14 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { usePlayer, type MediaItem } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
-import axiosInstance from '../services/axiosInstance';
-import buildUrl from '../utils/buildUrl';
-import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
+import { JURISDICTION_IDS } from '../utils/IdMappings';
+import RankMove from '../components/RankMove';
+import { fetchStandings, describeBoard, playEntry } from '../utils/standings';
+
+// DATA — /v1/awards/standings via utils/standings.ts: the same formula that
+// decides awards, with the midnight rule. Before anyone scores in a new
+// period the board shows how the last one finished, and the status line and
+// leader plate say so ("Yesterday's final", "Won").
 
 const LOG = '[Leaderboards]';
 
@@ -69,7 +74,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
 
@@ -145,6 +150,9 @@ interface Entry {
   votes: number;
   artwork: string | null;
   fileUrl: string | null;
+  movement?: number | null;
+  isNew?: boolean;
+  winner?: boolean;
 }
 
 // ─── Segmented control ───────────────────────────────────────────────────────
@@ -219,7 +227,10 @@ const ChaseRow = ({
         }, ranked ${entry.rank}`}
         activeOpacity={0.7}
       >
-        <Text style={styles.chaseRank}>{entry.rank}</Text>
+        <View style={{ alignItems: 'center' }}>
+          <Text style={styles.chaseRank}>{entry.rank}</Text>
+          {hasPoints && <RankMove movement={entry.movement} isNew={entry.isNew} />}
+        </View>
 
         {entry.artwork ? (
           <Image source={{ uri: entry.artwork }} style={styles.chaseArt} />
@@ -280,17 +291,15 @@ const Leaderboardsscreen: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
+  const [status, setStatus] = useState<ReturnType<typeof describeBoard> | null>(null);
+  const [boardState, setBoardState] = useState<string>('LIVE');
+  const [shownPeriodKey, setShownPeriodKey] = useState('daily');
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const loadStandings = useCallback(async () => {
     const jurId = JURISDICTION_IDS[jurisdiction];
-    const genreId = GENRE_IDS[genre];
-    const intervalId = INTERVAL_IDS[intervalKey];
-
-    // Guard the exact failure the old screen shipped with: a control value
-    // that has no entry in IdMappings silently became `undefined` in the URL.
-    if (!jurId || !genreId || !intervalId) {
-      console.error(LOG, 'unmapped filter', { jurisdiction, genre, intervalKey });
+    if (!jurId) {
+      console.error(LOG, 'unmapped filter', { jurisdiction });
       setError('That combination is unavailable right now.');
       setHasSearched(true);
       return;
@@ -298,49 +307,35 @@ const Leaderboardsscreen: React.FC = () => {
 
     setIsLoading(true);
     setError(null);
+    setStatus(null);
     setResults([]);
     setHasSearched(true);
 
     try {
-      const response = await axiosInstance.get(
-        `/v1/vote/leaderboards?jurisdictionId=${jurId}&genreId=${genreId}` +
-          `&targetType=${category}&intervalId=${intervalId}&limit=50`,
-      );
-      const raw = response.data;
+      const board = await fetchStandings({ type: category, jurisdictionId: jurId, genre, period: intervalKey, limit: 50 });
+      setStatus(describeBoard(board));
+      setBoardState(board.state);
+      setShownPeriodKey(board.periodKey || intervalKey);
 
-      if (!Array.isArray(raw) || raw.length === 0) {
-        setError('Nothing has scored in this scope yet. Try a wider area or a longer period.');
+      const scored = board.entries.filter((e) => e.points > 0);
+      if (scored.length === 0) {
+        setError('Nothing has scored in this scope yet. Plays, likes and votes put entries on the board.');
         return;
       }
-
-      const normalized: Entry[] = raw.map((item: any, i: number) => {
-        if (category === 'artist') {
-          return {
-            id: item.targetId,
-            type: 'artist',
-            rank: item.rank || i + 1,
-            title: item.name || 'Unknown Artist',
-            artist: item.name || 'Unknown Artist',
-            artistId: item.targetId,
-            votes: item.votes || 0,
-            artwork: item.artwork ? buildUrl(item.artwork) : null,
-            fileUrl: null,
-          };
-        }
-        return {
-          id: item.targetId,
-          type: 'song',
-          rank: item.rank || i + 1,
-          title: item.name || 'Unknown Song',
-          artist: item.artist || 'Unknown',
-          artistId: null,
-          votes: item.votes || 0,
-          artwork: item.artwork ? buildUrl(item.artwork) : null,
-          fileUrl: item.fileUrl ? buildUrl(item.fileUrl) : null,
-        };
-      });
-
-      setResults(normalized);
+      setResults(scored.map((e) => ({
+        id: e.id,
+        type: e.type as 'artist' | 'song',
+        rank: e.rank,
+        title: e.name,
+        artist: e.type === 'song' ? (e.artistName || 'Unknown') : e.name,
+        artistId: e.artistId || null,
+        votes: e.points,
+        artwork: e.artwork || null,
+        fileUrl: e.fileUrl || null,
+        movement: e.movement,
+        isNew: e.isNew,
+        winner: e.winner,
+      })));
     } catch (err) {
       console.error(LOG, 'fetch failed', err);
       setError("Couldn't load the standings. Check your connection and try again.");
@@ -350,56 +345,17 @@ const Leaderboardsscreen: React.FC = () => {
   }, [jurisdiction, genre, category, intervalKey]);
 
   // ── Play ───────────────────────────────────────────────────────────────────
+  // No /play POST: the Player counts the play after real listening.
   const handlePlay = useCallback(
-    async (entry: Entry) => {
-      // Song row with a real file → play it.
-      if (entry.fileUrl) {
-        const media: MediaItem = {
-          type: 'song',
-          id: entry.id,
-          songId: entry.id,
-          url: entry.fileUrl,
-          fileUrl: entry.fileUrl,
-          title: entry.title,
-          artist: entry.artist,
-          artistId: entry.artistId ?? undefined,
-          artwork: entry.artwork ?? undefined,
-          artworkUrl: entry.artwork ?? undefined,
-          source: 'leaderboards',
-        } as MediaItem;
-        requestPlay(media);
-        return;
-      }
-
-      // Artist row → fetch their default song, then play it.
-      if (entry.type === 'artist' && entry.id) {
-        try {
-          const res = await axiosInstance.get(`/v1/users/${entry.id}/default-song`);
-          const song = res.data;
-          if (!song?.fileUrl) return; // nothing playable — do nothing
-
-          const url = buildUrl(song.fileUrl);
-          const art = buildUrl(song.artworkUrl) || entry.artwork;
-          if (!url) return;
-
-          requestPlay({
-            type: 'song',
-            id: song.songId,
-            songId: song.songId,
-            url,
-            fileUrl: url,
-            title: song.title,
-            artist: entry.title,
-            artistId: entry.id,
-            artwork: art ?? undefined,
-            artworkUrl: art ?? undefined,
-            source: 'leaderboards',
-          } as MediaItem);
-        } catch (err) {
-          console.error(LOG, 'default song fetch failed', err);
-        }
-      }
-    },
+    (entry: Entry) => playEntry({
+      id: entry.id,
+      type: entry.type,
+      name: entry.title,
+      artistName: entry.artist,
+      artistId: entry.artistId,
+      fileUrl: entry.fileUrl,
+      artwork: entry.artwork,
+    } as any, requestPlay, 'leaderboards'),
     [requestPlay],
   );
 
@@ -416,13 +372,18 @@ const Leaderboardsscreen: React.FC = () => {
   const runnerUp = results[1] || null;
   const chase = results.slice(1);
 
+  const finished = boardState === 'PREVIOUS_FINAL';
   const marginLabel = useMemo(() => {
     if (!leader) return null;
-    if (!runnerUp) return 'Uncontested so far';
-    if (leader.votes === runnerUp.votes) return `Tied with ${runnerUp.title}`;
+    if (!runnerUp) return finished ? 'Uncontested' : 'Uncontested so far';
+    if (leader.votes === runnerUp.votes) return `Tied with ${runnerUp.title}, ahead on the tiebreak`;
     const gap = leader.votes - runnerUp.votes;
-    return `Ahead by ${formatNumber(gap)} ${gap === 1 ? 'point' : 'points'}`;
-  }, [leader, runnerUp]);
+    return `${finished ? 'Finished' : 'Ahead'} by ${formatNumber(gap)} ${gap === 1 ? 'point' : 'points'}`;
+  }, [leader, runnerUp, finished]);
+  const leaderWord = finished
+    ? (leader?.winner ? 'Won' : 'Finished first')
+    : boardState === 'PREVIOUS_CLOSING' ? 'Leading, still counting' : 'Leading';
+  const openFullChart = () => navigation.navigate('Charts', { type: category, period: shownPeriodKey, genre, place: jurisdiction });
 
   const scopeLabel = `${JURISDICTION_LABEL[jurisdiction] || ''} · ${GENRE_LABEL[genre] || ''}`;
 
@@ -497,6 +458,16 @@ const Leaderboardsscreen: React.FC = () => {
           </View>
         ) : leader ? (
           <>
+            {status && (
+              <View style={styles.statusRow} accessibilityLiveRegion="polite">
+                <View style={[styles.statusDot, { backgroundColor: status.tone === 'live' ? '#4ade80' : status.tone === 'closing' ? '#fbbf24' : INK_3 }]} />
+                <Text style={styles.statusText}>
+                  <Text style={{ color: INK, fontWeight: '800' }}>{status.title}. </Text>
+                  {status.detail}
+                </Text>
+              </View>
+            )}
+
             {/* Leader plate */}
             <View style={[styles.plate, { borderColor: alpha(accentLight, 0.28) }]}>
               {leader.artwork && (
@@ -511,7 +482,7 @@ const Leaderboardsscreen: React.FC = () => {
 
               <View style={styles.plateInner}>
                 <Text style={[styles.plateEyebrow, { color: accentLight }]} numberOfLines={1}>
-                  LEADING · {scopeLabel.toUpperCase()}
+                  {leaderWord.toUpperCase()} · {scopeLabel.toUpperCase()}
                 </Text>
 
                 <View style={styles.plateHead}>
@@ -599,6 +570,10 @@ const Leaderboardsscreen: React.FC = () => {
                 ))}
               </View>
             )}
+
+            <TouchableOpacity style={[styles.btn, styles.fullChart]} onPress={openFullChart} accessibilityRole="button" activeOpacity={0.85}>
+              <Text style={styles.btnText}>See the full chart</Text>
+            </TouchableOpacity>
           </>
         ) : (
           <View style={styles.state}>
@@ -615,6 +590,10 @@ const Leaderboardsscreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#08090e' },
+  statusRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 12, paddingHorizontal: 2 },
+  statusDot: { width: 7, height: 7, borderRadius: 4, marginTop: 6 },
+  statusText: { flex: 1, color: INK_2, fontSize: 13, lineHeight: 19 },
+  fullChart: { marginTop: 16, alignSelf: 'center', paddingHorizontal: 22 },
   content: { paddingHorizontal: 14, paddingTop: 20, paddingBottom: 120 },
 
   // Masthead

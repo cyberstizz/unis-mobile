@@ -27,8 +27,19 @@ import {
   ChevronDown,
   TrendingUp,
   ArrowUpRight,
+  Sparkles,
 } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
+
+// Community Share: referral and supporter money is added once a month, when
+// the month is closed, so there's no running "this month" amount. Show what
+// the last closed month paid, and this month's listening as plays.
+const monthName = (ym?: string) => {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  if (!y || !m) return '';
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+};
 import CashoutPanel, { PayoutHistoryItem } from './CashoutPanel';
 
 // ---------------------------------------------------------------------------
@@ -63,7 +74,7 @@ const DetailRow: React.FC<{
   </View>
 );
 
-type StreamKey = 'sales' | 'referrals' | 'supporters';
+type StreamKey = 'sales' | 'referrals' | 'supporters' | 'plus';
 
 interface RevenueSectionProps {
   artistId?: string;
@@ -87,6 +98,7 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
   const [salesTotal, setSalesTotal] = useState<any>(null);
   const [salesLoading, setSalesLoading] = useState(true);
   const [openStream, setOpenStream] = useState<StreamKey | null>(null);
+  const feedback = useFeedback();
 
   // -- artist-level sales aggregate (per-song detail lives in SongSalesModal) --
   useEffect(() => {
@@ -101,18 +113,41 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
   }, [artistId]);
 
   // -- cashout handlers (web parity; Stripe onboarding opens in the browser) --
+  // Both used to fail in silence; CashoutPanel shows its own error state when
+  // the promise rejects, and the toast says why (web parity).
   const handleRequestPayout = useCallback(async () => {
-    const res = await axiosInstance.post('/v1/stripe/payout');
-    if (res.data?.success) onPayoutSuccess?.();
-  }, [onPayoutSuccess]);
+    try {
+      const res = await axiosInstance.post('/v1/stripe/payout');
+      if (res.data?.success) {
+        feedback.success('Payout on its way to your bank');
+        onPayoutSuccess?.();
+        return;
+      }
+      const msg = res.data?.error || "That payout didn't go through. Try again.";
+      feedback.error(msg);
+      throw new Error(msg);
+    } catch (err: any) {
+      if (err?.response || err?.request) {
+        console.error('[Revenue] payout failed:', err?.message || err);
+        feedback.error(errorMessage(err, "That payout didn't go through. Try again."));
+      }
+      throw err;
+    }
+  }, [onPayoutSuccess, feedback]);
 
   const handleConnectStripe = useCallback(async () => {
-    const res = await axiosInstance.post('/v1/stripe/onboard');
-    // Web: window.location.href = url. Mobile: open in the system browser —
-    // Stripe Connect onboarding completes on the web and status syncs via
-    // /v1/stripe/status on the next dashboard load.
-    if (res.data?.url) Linking.openURL(res.data.url).catch(() => {});
-  }, []);
+    try {
+      const res = await axiosInstance.post('/v1/stripe/onboard');
+      // Web: window.location.href = url. Mobile: the system browser — Stripe
+      // Connect onboarding completes on the web; status syncs via
+      // /v1/stripe/status on the next dashboard load.
+      if (res.data?.url) { await Linking.openURL(res.data.url); return; }
+      feedback.error("Couldn't open Stripe setup. Try again in a moment.");
+    } catch (err) {
+      console.error('[Revenue] Stripe onboarding failed:', err);
+      feedback.error(errorMessage(err, "Couldn't open Stripe setup. Try again in a moment."));
+    }
+  }, [feedback]);
 
   // -- derive the three streams (all in cents) --
   const copies = Number(salesTotal?.copies || 0);
@@ -121,17 +156,26 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
 
   const ref = earningsSummary?.referralEarnings || {};
   const referralCents = toCents(ref.lifetime);
-  const referralMonthCents = toCents(ref.thisMonth);
+  const referralLastMonthCents = toCents(ref.lastMonth);
   const l1 = ref.level1 || {};
   const l2 = ref.level2 || {};
   const l3 = ref.level3 || {};
   const referralCount = Number(earningsSummary?.referralCount || 0);
-  const referralViews = Number(earningsSummary?.referralViewsThisMonth || 0);
+  const listening = earningsSummary?.listeningThisMonth || {};
+  const networkPlays = Number(listening.networkPlays ?? earningsSummary?.referralViewsThisMonth ?? 0);
+  const supporterPlays = Number(listening.supporterPlays || 0);
+  const lastClosed = monthName(earningsSummary?.lastClosedMonth);
+  const lastClosedLabel = lastClosed ? `Last closed month · ${lastClosed}` : 'Last closed month';
 
   const sup = earningsSummary?.supporterEarnings || {};
   const supporterCents = toCents(sup.lifetime);
-  const supporterMonthCents = toCents(sup.thisMonth);
+  const supporterLastMonthCents = toCents(sup.lastMonth);
   const supporterCount = Number(earningsSummary?.supporterCount || 0);
+
+  // Unis Plus: half of the fee of every ad-free member who supports this artist, plus a share by their plays.
+  const plusEarnings = earningsSummary?.plusEarnings || {};
+  const plusCents = toCents(plusEarnings.lifetime);
+  const plusLastMonthCents = toCents(plusEarnings.lastMonth);
 
   const balanceCents = toCents(earningsSummary?.currentBalance);
   const minimumPayoutCents = toCents(earningsSummary?.payoutThreshold) || 5000;
@@ -168,6 +212,14 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
       loading: false,
       sub: plural(supporterCount, 'supporter', 'supporters'),
     },
+    {
+      key: 'plus',
+      label: 'Unis Plus',
+      Icon: Sparkles,
+      amount: plusCents,
+      loading: false,
+      sub: 'From ad-free members',
+    },
   ];
 
   const toggle = (key: StreamKey) => setOpenStream((cur) => (cur === key ? null : key));
@@ -188,7 +240,7 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
       </View>
 
       <Text style={styles.intro}>
-        Your three income streams at a glance. Tap any one to see how it breaks down.
+        Your income streams at a glance. Tap any one to see how it breaks down.
       </Text>
 
       {/* ── the three top-level streams ── */}
@@ -234,6 +286,11 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
               Open any track in your catalog for its day-by-day sales trend.
             </Text>
           </View>
+          <View style={styles.note}>
+            <Text style={styles.noteText}>
+              Unis&apos;s fee is 10%, or just the card fee + 1¢ on smaller sales. Stripe pays your bank on the 1st of each month.
+            </Text>
+          </View>
         </View>
       )}
 
@@ -241,17 +298,17 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
         <View style={styles.detail}>
           <DetailRow
             label="Tier 1 · direct"
-            sub="10% of referred ad revenue"
+            sub="10% of their monthly share"
             value={money(toCents(l1.lifetime))}
           />
-          <DetailRow label="Tier 2" sub="5% of their referrals" value={money(toCents(l2.lifetime))} />
+          <DetailRow label="Tier 2" sub="5%, the people they invite" value={money(toCents(l2.lifetime))} />
           <DetailRow label="Tier 3" sub="2%, one level deeper" value={money(toCents(l3.lifetime))} />
-          <DetailRow label="This month" value={money(referralMonthCents)} accent />
+          <DetailRow label={lastClosedLabel} value={money(referralLastMonthCents)} accent />
           <View style={styles.note}>
             <ArrowUpRight size={13} color="#888888" />
             <Text style={styles.noteText}>
-              {plural(referralCount, 'person in your network', 'people in your network')}
-              {referralViews > 0 ? ` · ${referralViews.toLocaleString()} ad-views this month` : ''}
+              {plural(referralCount, 'person you invited', 'people you invited')}
+              {networkPlays > 0 ? ` · ${plural(networkPlays, 'play', 'plays')} in your network this month` : ''}
             </Text>
           </View>
         </View>
@@ -260,12 +317,28 @@ const RevenueSection: React.FC<RevenueSectionProps> = ({
       {openStream === 'supporters' && (
         <View style={styles.detail}>
           <DetailRow label="Lifetime" value={money(supporterCents)} />
-          <DetailRow label="This month" value={money(supporterMonthCents)} accent />
+          <DetailRow label={lastClosedLabel} value={money(supporterLastMonthCents)} accent />
           <DetailRow label="Backed by" value={plural(supporterCount, 'supporter', 'supporters')} />
           <View style={styles.note}>
             <Heart size={13} color="#888888" />
             <Text style={styles.noteText}>
-              You earn 15% of the ad revenue from listeners who name you as their artist.
+              You get 15% of each supporter&apos;s monthly slice of the Community Share (their part of Unis&apos;s pot, by listening)
+              {supporterPlays > 0 ? ` (${plural(supporterPlays, 'play', 'plays')} so far this month)` : ''}.
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {openStream === 'plus' && (
+        <View style={styles.detail}>
+          <DetailRow label="Lifetime" value={money(plusCents)} />
+          <DetailRow label={lastClosedLabel} value={money(plusLastMonthCents)} accent />
+          <View style={styles.note}>
+            <Sparkles size={13} color="#888888" />
+            <Text style={styles.noteText}>
+              Each month you get half of the fee of every Unis Plus member who supports you ($2.50 of $4.99),
+              whatever they played, plus your part of what members&apos; plays send to artists ($1.00 of each fee,
+              split by their plays). A supporter who played no one sends you that $1.00 too.
             </Text>
           </View>
         </View>
@@ -382,11 +455,15 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 14,
   },
+  // Four streams now (Unis Plus joined): two per row.
   streams: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    rowGap: 8,
   },
   stream: {
-    flex: 1,
+    flexBasis: '46%',
+    flexGrow: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     borderColor: 'transparent',
     borderWidth: 1,

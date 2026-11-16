@@ -25,6 +25,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Play, Edit3, Trash2, Clock, Heart } from 'lucide-react-native';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import axiosInstance from '../services/axiosInstance';
 import buildUrl from '../utils/buildUrl';
 
@@ -138,6 +139,7 @@ const SectionError: React.FC<{ message?: string; onRetry?: () => void }> = ({
 // ============================================================================
 const ProfileScreen: React.FC = () => {
   const { user } = useAuth();
+  const feedback = useFeedback();
   const { requestPlay } = usePlayer();
 
   const [summary, setSummary] = useState<ProfileSummary | null>(null);
@@ -190,10 +192,11 @@ const ProfileScreen: React.FC = () => {
     try {
       await axiosInstance.delete(`/v1/users/${user.userId}/supported-artist/pending`);
       console.log(`[Profile] action=cancel_pending_artist status=ok durationMs=${Date.now() - startedAt}`);
+      feedback.success('Pending change cancelled — you keep your current artist');
       reload();
     } catch (err) {
       console.error(`[Profile] action=cancel_pending_artist status=fail durationMs=${Date.now() - startedAt} err=`, err);
-      Alert.alert('Error', 'Failed to cancel the pending change. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't cancel the pending change. Try again."));
     } finally {
       setCancellingPending(false);
     }
@@ -282,12 +285,7 @@ const ProfileScreen: React.FC = () => {
       artworkUrl: artworkResolved,
     };
 
-    try {
-      await axiosInstance.post(`/v1/media/song/${songId}/play?userId=${user.userId}`);
-    } catch (err) {
-      console.error('[Profile] action=track_play status=fail err=', err);
-    }
-
+    // Plays are counted by the Player after real listening — never here.
     // requestPlay: empty queue -> plays immediately,
     //              non-empty   -> opens PlayChoiceModal (preserves queue)
     requestPlay(mediaObject as any);

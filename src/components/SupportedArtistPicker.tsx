@@ -30,6 +30,7 @@ import {
 } from 'react-native';
 import { X, Check, Clock, Sparkles, MapPin, ChevronLeft } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useFeedback } from '../context/FeedbackContext';
 import buildUrl from '../utils/buildUrl';
 
 interface Jurisdiction {
@@ -76,6 +77,7 @@ const SupportedArtistPicker: React.FC<SupportedArtistPickerProps> = ({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<SubmitResult | null>(null);
+  const feedback = useFeedback();
   const [error, setError] = useState<string | null>(null);
 
   const isFirstPick = !currentArtistId;
@@ -151,10 +153,17 @@ const SupportedArtistPicker: React.FC<SupportedArtistPickerProps> = ({
       const res = await axiosInstance.put(`/v1/users/${userId}/supported-artist`, {
         artistId: selectedId,
       });
-      setResult(res.data || { status: isFirstPick ? 'immediate' : 'pending' });
+      const data = res.data || { status: isFirstPick ? 'immediate' : 'pending' };
+      setResult(data);
+      // The sheet shows its own success panel; the toast is what the user
+      // still sees once they close it.
+      const who = selectedArtist?.username || 'your artist';
+      feedback.success(data.status === 'immediate' ? `You now support ${who}` : `Switch saved \u2014 you'll support ${who} next month`);
       onSuccess?.();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not update your supported artist. Please try again.');
+      const text = err.response?.data?.error || 'Could not update your supported artist. Please try again.';
+      setError(text);
+      feedback.error(text);
     } finally {
       setSubmitting(false);
     }
@@ -181,7 +190,7 @@ const SupportedArtistPicker: React.FC<SupportedArtistPickerProps> = ({
         </Text>
         <Text style={styles.successBody}>
           {immediate
-            ? `${selectedArtist?.username || 'Your artist'} now receives a share of your ad revenue.`
+            ? `${selectedArtist?.username || 'Your artist'} now gets 15% of your monthly slice of the Community Share.`
             : `You'll start supporting ${selectedArtist?.username || 'them'}${effective ? ` on ${effective}` : ' next month'}. Your current artist keeps earning until then.`}
         </Text>
         <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={onClose}>

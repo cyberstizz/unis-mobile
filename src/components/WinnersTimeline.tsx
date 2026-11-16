@@ -53,7 +53,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (theme?: string): string =>
   THEME_HEX[theme || 'blue'] || THEME_HEX.blue;

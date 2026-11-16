@@ -20,6 +20,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import { useFeedback } from '../context/FeedbackContext';
 import { Copy, Check, Sparkles } from 'lucide-react-native';
 
 interface ReferralCodeCardProps {
@@ -34,6 +35,7 @@ const ReferralCodeCard: React.FC<ReferralCodeCardProps> = ({
   isArtist = false,
 }) => {
   const [copied, setCopied] = useState(false);
+  const feedback = useFeedback();
 
   const handleCopy = async () => {
     if (!referralCode) return;
@@ -43,6 +45,9 @@ const ReferralCodeCard: React.FC<ReferralCodeCardProps> = ({
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error('[ReferralCodeCard] action=copy status=fail err=', err);
+      // Silence here meant the button looked broken. Show the code so it can
+      // still be copied by hand.
+      feedback.info(`Copy your code: ${referralCode}`);
     }
   };
 
@@ -61,13 +66,17 @@ const ReferralCodeCard: React.FC<ReferralCodeCardProps> = ({
           </>
         ) : (
           <>
-            Every user who joins UNIS with your code earns you passive income.
-            <Text style={styles.bold}> Earn Cash</Text> when your referrals use the
-            platform. You earn a percentage of the income earned from their browsing
-            when they view, watch, and listen to ads
+            Every month, Unis shares what it earns with the community, based on listening.
+            <Text style={styles.bold}> Earn Cash</Text> when the people you invite listen: you get
+            10% of their monthly share, 5% from the people they invite, and 2% from the level after that.*
           </>
         )}
       </Text>
+      {!isArtist && (
+        <Text style={styles.note}>
+          *The people you invite need a verified phone number for their listening to count toward your share.
+        </Text>
+      )}
 
       <View style={styles.codeRow}>
         <View style={styles.code} accessibilityLabel={`Your referral code: ${referralCode || 'not assigned'}`}>
@@ -125,6 +134,7 @@ const ReferralCodeCard: React.FC<ReferralCodeCardProps> = ({
 };
 
 const styles = StyleSheet.create({
+  note: { color: 'rgba(255,255,255,0.45)', fontSize: 11.5, lineHeight: 16, marginTop: -4, marginBottom: 10 },
   card: {
     borderRadius: 14,
     backgroundColor: 'rgba(74, 158, 255, 0.05)',

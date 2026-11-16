@@ -33,6 +33,8 @@ import { useAuth } from '../context/AuthContext';
 import axiosInstance from '../services/axiosInstance';
 import CreateAccountWizard from '../components/Createaccountwizard';
 import ForgotPasswordWizard from '../components/ForgotPasswordWizard';
+import { Linking } from 'react-native';
+import { webUrl } from '../config/links';
 
 const spaceVideo = require('../../assets/space-bg.mp4');
 
@@ -61,7 +63,13 @@ interface WaitlistInfo {
 }
 
 const LoginScreen: React.FC = () => {
-  const { login } = useAuth();
+  const { login, completeLogin } = useAuth();
+  // Staff accounts: { setupRequired, mfaToken } after the password is right.
+  const [mfa, setMfa] = useState<any>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [mfaError, setMfaError] = useState('');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -94,6 +102,10 @@ const LoginScreen: React.FC = () => {
 
     if (result.success) {
       // No navigate() — the root navigator swaps to the app when user is set.
+    } else if ((result as any).mfa) {
+      setMfa((result as any).mfa);
+      setMfaCode('');
+      setMfaError('');
     } else {
       const data = result.data;
       if (data?.unverified) {
@@ -107,6 +119,28 @@ const LoginScreen: React.FC = () => {
     }
     setLoading(false);
   };
+
+  // POST /auth/mfa/verify { mfaToken, code } → session token. A recovery code
+  // works here too. First-time setup (QR code + recovery codes) happens on
+  // the web, where the codes can be saved.
+  const verifyMfa = async () => {
+    if (!mfa?.mfaToken || mfaBusy) return;
+    const code = mfaCode.trim();
+    if (!code) return;
+    setMfaBusy(true);
+    setMfaError('');
+    try {
+      const res = await axiosInstance.post('/auth/mfa/verify', { mfaToken: mfa.mfaToken, code });
+      const done = await completeLogin(res.data.token);
+      if (!done.success) setMfaError(done.error || 'Sign-in failed. Try again.');
+    } catch (err: any) {
+      const d = err?.response?.data;
+      setMfaError((typeof d === 'string' ? d : d?.error || d?.message) || "That code didn't work. Try the newest code.");
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+  const cancelMfa = () => { setMfa(null); setMfaCode(''); setMfaError(''); setPassword(''); };
 
   const handleCopyCode = async () => {
     if (waitlistInfo?.referralCode) {
@@ -175,7 +209,64 @@ const LoginScreen: React.FC = () => {
             <Text style={styles.title}>Discover The Best Songs From Harlem</Text>
             <Text style={styles.subtitle}>Harlems Finest</Text>
 
-            {!!error && !showWaitlistModal && <Text style={styles.error}>{error}</Text>}
+            {!!error && !showWaitlistModal && !mfa && <Text style={styles.error}>{error}</Text>}
+
+            {/* ── Staff two-factor step ── */}
+            {!!mfa && (
+              <View style={styles.unverified}>
+                {mfa.setupRequired ? (
+                  <>
+                    <Text style={styles.unverifiedTitle}>Set up two-factor sign-in</Text>
+                    <Text style={styles.unverifiedBody}>
+                      Staff accounts need a code from an authenticator app. Finish the
+                      one-time setup on unismusic.com (scan the QR code and save your
+                      recovery codes), then sign in here with a code.
+                    </Text>
+                    <TouchableOpacity style={styles.resendBtn} onPress={() => Linking.openURL(webUrl('/login'))}>
+                      <Text style={styles.resendBtnText}>Open unismusic.com</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.unverifiedTitle}>Two-factor sign-in</Text>
+                    <Text style={styles.unverifiedBody}>
+                      {useRecovery
+                        ? 'Enter one of your recovery codes. Each works once.'
+                        : 'Enter the 6-digit code from your authenticator app.'}
+                    </Text>
+                    <TextInput
+                      style={[styles.input, { marginTop: 12, letterSpacing: useRecovery ? 1 : 6, textAlign: 'center' }]}
+                      placeholder={useRecovery ? 'Recovery code' : '123456'}
+                      placeholderTextColor={COLORS.textGray}
+                      value={mfaCode}
+                      onChangeText={(v) => setMfaCode(useRecovery ? v : v.replace(/\D/g, '').slice(0, 6))}
+                      keyboardType={useRecovery ? 'default' : 'number-pad'}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      textContentType="oneTimeCode"
+                      autoComplete="one-time-code"
+                      autoFocus
+                      editable={!mfaBusy}
+                      onSubmitEditing={verifyMfa}
+                    />
+                    {!!mfaError && <Text style={styles.error}>{mfaError}</Text>}
+                    <TouchableOpacity
+                      style={[styles.loginBtn, (mfaBusy || !mfaCode.trim()) && styles.btnDisabled]}
+                      onPress={verifyMfa}
+                      disabled={mfaBusy || !mfaCode.trim()}
+                    >
+                      <Text style={styles.loginBtnText}>{mfaBusy ? 'Checking…' : 'Verify'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.forgotBtn} onPress={() => { setUseRecovery((r) => !r); setMfaCode(''); setMfaError(''); }}>
+                      <Text style={styles.forgotText}>{useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+                <TouchableOpacity style={styles.forgotBtn} onPress={cancelMfa}>
+                  <Text style={styles.forgotText}>Back to sign in</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             {/* ── unverified-email branch (inline, web parity) ── */}
             {!!unverifiedEmail && !showWaitlistModal && (
@@ -197,7 +288,7 @@ const LoginScreen: React.FC = () => {
               </View>
             )}
 
-            {!showWaitlistModal && (
+            {!showWaitlistModal && !mfa && (
               <>
                 <TextInput
                   style={styles.input}

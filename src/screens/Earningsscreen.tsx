@@ -61,6 +61,7 @@ import {
   Shield,
   X,
 } from 'lucide-react-native';
+import { useRoute } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 import axiosInstance from '../services/axiosInstance';
 import buildUrl from '../utils/buildUrl';
@@ -71,7 +72,10 @@ const backimage = require('../../assets/randomrapper.jpeg');
 // CONFIG
 // ============================================================================
 
-const HISTORY_DAYS = 30;
+const HISTORY_MONTHS = 12;
+
+// Fallback only; the server sends the real cap in summary.rates.dailyPlayCap.
+const DEFAULT_DAILY_PLAY_CAP = 50;
 
 // Fallback only — the authoritative value is summary.payoutThreshold, so a
 // backend policy change does not require an app store release.
@@ -95,7 +99,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 
 const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
@@ -148,21 +152,23 @@ interface SplitSegment {
   tone: Tone;
 }
 
-const DISPLAY_AD_SPLIT: SplitSegment[] = [
-  { key: 'unis',   label: 'Unis 68%',   legend: 'Unis (68%)',             width: 68, tone: 'brand' },
-  { key: 'artist', label: 'Artist 15%', legend: 'Supported Artist (15%)', width: 15, tone: 'purple' },
-  { key: 'level1', label: 'L1',         legend: 'Level 1 Referrer (10%)', width: 10, tone: 'blue' },
-  { key: 'level2', label: '',           legend: 'Level 2 Referrer (5%)',  width: 5,  tone: 'violet' },
-  { key: 'level3', label: '',           legend: 'Level 3 Referrer (2%)',  width: 2,  tone: 'cyan' },
+// How each listener's part of a month's revenue is divided (Community Share).
+const COMMUNITY_SPLIT: SplitSegment[] = [
+  { key: 'unis',   label: 'Unis 68%',   legend: 'Unis (68%)',                   width: 68, tone: 'brand' },
+  { key: 'artist', label: 'Artist 15%', legend: 'Their Supported Artist (15%)', width: 15, tone: 'purple' },
+  { key: 'level1', label: 'L1',         legend: 'Level 1 Referrer (10%)',       width: 10, tone: 'blue' },
+  { key: 'level2', label: '',           legend: 'Level 2 Referrer (5%)',        width: 5,  tone: 'violet' },
+  { key: 'level3', label: '',           legend: 'Level 3 Referrer (2%)',        width: 2,  tone: 'cyan' },
 ];
 
-const AUDIO_AD_SPLIT: SplitSegment[] = [
-  { key: 'artist', label: 'Artist 60%', legend: 'Artist (60%)',           width: 60, tone: 'green' },
-  { key: 'unis',   label: 'Unis 23%',   legend: 'Unis (23%)',             width: 23, tone: 'brand' },
-  { key: 'level1', label: 'L1',         legend: 'Level 1 Referrer (10%)', width: 10, tone: 'blue' },
-  { key: 'level2', label: '',           legend: 'Level 2 Referrer (5%)',  width: 5,  tone: 'violet' },
-  { key: 'level3', label: '',           legend: 'Level 3 Referrer (2%)',  width: 2,  tone: 'cyan' },
-];
+/** "2026-11" → "November 2026" (or "Nov" with short). */
+const monthName = (ym: any, short = false) => {
+  const [y, m] = String(ym || '').split('-').map(Number);
+  if (!y || !m) return '';
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', short ? { month: 'short' } : { month: 'long', year: 'numeric' });
+};
+
+const plural = (n: number, word: string) => `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
 
 const TABS = [
   { id: 'overview',  label: 'Overview' },
@@ -262,7 +268,13 @@ const EarningsScreen: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<ErrorState | null>(null);
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
+  const route = useRoute<any>();
+  const [activeTab, setActiveTab] = useState<TabId>(() =>
+    (TABS.some((tb) => tb.id === route.params?.tab) ? route.params.tab : 'overview') as TabId);
+  useEffect(() => {
+    const tab = route.params?.tab;
+    if (TABS.some((tb) => tb.id === tab)) setActiveTab(tab);
+  }, [route.params?.tab]);
   const [stripeLoading, setStripeLoading] = useState(false);
   const [payoutLoading, setPayoutLoading] = useState(false);
   const [payoutMessage, setPayoutMessage] = useState('');
@@ -314,7 +326,7 @@ const EarningsScreen: React.FC = () => {
       if (scope === 'full') {
         requests.push(
           { key: 'referrals', url: '/v1/earnings/my-referrals', apply: (d) => setReferrals(d || []) },
-          { key: 'history',   url: `/v1/earnings/my-history?days=${HISTORY_DAYS}`, apply: (d) => setHistory(d || []) },
+          { key: 'history',   url: `/v1/earnings/my-history?months=${HISTORY_MONTHS}`, apply: (d) => setHistory(d || []) },
         );
       }
 
@@ -538,6 +550,15 @@ const EarningsScreen: React.FC = () => {
   const stripeReady = Boolean(stripeStatus?.onboardingComplete && stripeStatus?.payoutsEnabled);
   const canWithdraw = stripeReady && availableBalance >= payoutThreshold;
 
+  const hasHistory = history.some((m: any) => toNumber(m.total, 0) !== 0);
+  // Listening so far this month (plays, not money — the month's money is only
+  // known once the month is closed).
+  const listening = summary?.listeningThisMonth || null;
+  const networkPlays = toNumber(listening?.networkPlays, toNumber(summary?.referralViewsThisMonth, 0));
+  const currentMonth = monthName(listening?.month) || 'This month';
+  const lastClosed = summary?.lastClosedMonth || null;
+  const dailyPlayCap = toNumber(summary?.rates?.dailyPlayCap, DEFAULT_DAILY_PLAY_CAP);
+
   const toneColor = (tone: Tone): string => {
     switch (tone) {
       case 'brand': return accent;
@@ -621,28 +642,60 @@ const EarningsScreen: React.FC = () => {
       </View>
 
       <View style={s.card}>
-        <Text style={s.cardHeading}>Last {HISTORY_DAYS} Days</Text>
-        {history.length > 0 ? (
+        <Text style={s.cardHeading}>{currentMonth} So Far</Text>
+        <View style={s.levelBreakdown}>
+          {[
+            { lvl: 1, dot: C.blue },
+            { lvl: 2, dot: C.violet },
+            { lvl: 3, dot: C.cyan },
+          ].map(({ lvl, dot }) => {
+            const row = listening?.[`level${lvl}`] || {};
+            const people = toNumber(row.people, 0);
+            return (
+              <View key={lvl} style={s.levelRow}>
+                <View style={s.levelLabel}>
+                  <View style={[s.levelDot, { backgroundColor: dot }]} />
+                  <Text style={s.levelName}>Level {lvl}</Text>
+                  <Text style={s.levelPct}>{people === 1 ? '1 person' : `${people.toLocaleString('en-US')} people`}</Text>
+                </View>
+                <Text style={s.levelAmount}>{plural(toNumber(row.plays, 0), 'play')}</Text>
+              </View>
+            );
+          })}
+          {isArtist && (
+            <View style={s.levelRow}>
+              <View style={s.levelLabel}>
+                <View style={[s.levelDot, { backgroundColor: C.purple }]} />
+                <Text style={s.levelName}>Fans who support you</Text>
+              </View>
+              <Text style={s.levelAmount}>{plural(toNumber(listening?.supporterPlays, 0), 'play')}</Text>
+            </View>
+          )}
+        </View>
+        <Text style={s.howNote}>
+          Counted plays: signed in, someone else's song, up to {dailyPlayCap} a day per person. Your share for {currentMonth} is worked out after the month ends and Unis has been paid for it.
+        </Text>
+      </View>
+
+      <View style={s.card}>
+        <Text style={s.cardHeading}>Last {HISTORY_MONTHS} Months</Text>
+        {hasHistory ? (
           <View
             style={s.miniChart}
             accessibilityRole="image"
-            accessibilityLabel={`Daily earnings for the last ${history.length} days. Total ${formatMoney(
-              history.reduce((sum, d) => sum + toNumber(d.total, 0), 0)
+            accessibilityLabel={`Monthly earnings for the last ${history.length} months. Total ${formatMoney(
+              history.reduce((sum, m) => sum + toNumber(m.total, 0), 0)
             )}.`}
           >
             {(() => {
-              const values = history.map((d) => toNumber(d.total, 0));
-              const maxVal = Math.max(...values);
-              const minVal = Math.min(...values);
-              const range = maxVal - minVal;
-              return history.map((day, i) => {
-                const val = toNumber(day.total, 0);
-                const heightPct = range === 0 ? 50 : Math.max(6, ((val - minVal) / range) * 90 + 10);
+              const maxVal = Math.max(0, ...history.map((m) => toNumber(m.total, 0)));
+              return history.map((m, i) => {
+                const val = toNumber(m.total, 0);
+                const heightPct = maxVal > 0 ? Math.max(val > 0 ? 6 : 2, (val / maxVal) * 100) : 2;
                 return (
-                  <View key={day.date || i} style={s.chartBarWrap}>
-                    <View
-                      style={[s.chartBar, { height: `${heightPct}%`, backgroundColor: accent }]}
-                    />
+                  <View key={m.month || i} style={s.chartBarWrap}>
+                    <View style={[s.chartBar, { height: `${heightPct}%`, backgroundColor: accent, opacity: m.closed === false ? 0.5 : 1 }]} />
+                    <Text style={{ color: C.textMuted, fontSize: 9, marginTop: 3 }}>{monthName(m.month, true)}</Text>
                   </View>
                 );
               });
@@ -651,7 +704,7 @@ const EarningsScreen: React.FC = () => {
         ) : (
           <View style={s.emptyChart}>
             <Text style={s.emptyChartText}>
-              No earnings activity yet. Share your referral code to start earning!
+              No earnings yet. Your first share shows up here after the first month is closed. Share your referral code to grow your network.
             </Text>
           </View>
         )}
@@ -665,8 +718,7 @@ const EarningsScreen: React.FC = () => {
             <View style={s.splitInfo}>
               <Text style={s.splitTitle}>Referral Income (up to 17%)</Text>
               <Text style={s.splitBody}>
-                Level 1: 10% from users you directly referred. Level 2: 5% from their referrals.
-                Level 3: 2% from their referrals' referrals. Lifetime passive income — forever.
+                Every month, Unis shares what it earned with the community, based on listening. You get 10% of the share from each person you invited, 5% from the people they invite, and 2% from the level after that. Your place in the chain is permanent.
               </Text>
             </View>
           </View>
@@ -676,7 +728,7 @@ const EarningsScreen: React.FC = () => {
               <View style={s.splitInfo}>
                 <Text style={s.splitTitle}>Supporter Income (15%)</Text>
                 <Text style={s.splitBody}>
-                  Users who chose to support you contribute 15% of their ad revenue to your career.
+                  15% of each supporter's monthly slice of the Community Share goes to you, for every month they support you and listen.
                 </Text>
               </View>
             </View>
@@ -684,10 +736,9 @@ const EarningsScreen: React.FC = () => {
           <View style={s.splitItem}>
             <View style={[s.splitDot, { backgroundColor: C.gold }]} />
             <View style={s.splitInfo}>
-              <Text style={s.splitTitle}>Audio Ad Revenue (Coming Soon)</Text>
+              <Text style={s.splitTitle}>Unis Plus (half to the supported artist)</Text>
               <Text style={s.splitBody}>
-                Pre-roll ads on songs. Artists earn 60% of net revenue. Referral pool splits
-                10/5/2% across 3 levels.
+                Each month, half of every Unis Plus member's fee ($2.50 of $4.99) goes to the artist that member supports, whatever they played. Of the rest after Stripe's fees, half ($1.00) goes to the artists they played, divided by their plays (to their supported artist too if they played no one), and half joins the monthly Community Share. Audio ads, when they arrive, will pay artists 60% of the ads played with their songs.
               </Text>
             </View>
           </View>
@@ -711,7 +762,7 @@ const EarningsScreen: React.FC = () => {
                 />
                 <View style={s.referralInfo}>
                   <Text style={s.referralName} numberOfLines={1}>{ref.username}</Text>
-                  <Text style={s.referralViews}>{ref.adViews || 0} ad views</Text>
+                  <Text style={s.referralViews}>{ref.leftUnis ? 'Left Unis' : `${plural(toNumber(ref.playsThisMonth, 0), 'play')} this month`}</Text>
                 </View>
                 <View style={s.referralEarnings}>
                   <Text style={s.referralAmount}>{formatMoney(ref.earnings)}</Text>
@@ -820,20 +871,13 @@ const EarningsScreen: React.FC = () => {
   const renderHowItWorks = () => (
     <View style={s.tabPanel}>
       <View style={s.card}>
-        <Text style={s.cardHeading}>Display Ad Revenue Split</Text>
-        {renderSplitBar(DISPLAY_AD_SPLIT)}
-        <Text style={s.howNote}>
-          Every ad view is tracked and attributed. If any referral level doesn't exist, that share
-          goes to Unis.
+        <Text style={s.cardHeading}>The Community Share</Text>
+        <Text style={[s.howNote, { marginTop: 0, marginBottom: 10 }]}>
+          Every month, Unis adds up what it kept — ad income, other income, and what's left of its fees on song sales and support after card costs — and divides that pot by listening. Each listener's slice is the pot × their plays ÷ everyone's plays, and each slice is split like this:
         </Text>
-      </View>
-
-      <View style={s.card}>
-        <Text style={s.cardHeading}>Audio Ad Revenue Split (Coming Soon)</Text>
-        {renderSplitBar(AUDIO_AD_SPLIT)}
+        {renderSplitBar(COMMUNITY_SPLIT)}
         <Text style={s.howNote}>
-          Pre-roll audio ads before songs. After compulsory royalty payments, net revenue splits
-          across the artist, Unis, and the 3-level referral chain.
+          A play counts when you're signed in and listening to someone else's song, up to {dailyPlayCap} plays a day. You don't earn from your own listening or from seeing ads; you earn when the people you brought listen, and artists earn when their supporters listen. If a referral level is empty, or the person can't be paid, that share stays with Unis.
         </Text>
       </View>
 
@@ -846,33 +890,32 @@ const EarningsScreen: React.FC = () => {
           <Text style={s.chainArrow}>↓ refers</Text>
           <View style={[s.chainNode, { backgroundColor: hexToRgba(C.blue, 0.12), borderColor: hexToRgba(C.blue, 0.3) }]}>
             <Text style={s.chainNodeText}>User A</Text>
-            <Text style={s.chainTag}>You earn 10%</Text>
+            <Text style={s.chainTag}>You get 10% of their share</Text>
           </View>
           <Text style={s.chainArrow}>↓ refers</Text>
           <View style={[s.chainNode, { backgroundColor: hexToRgba(C.violet, 0.12), borderColor: hexToRgba(C.violet, 0.3) }]}>
             <Text style={s.chainNodeText}>User B</Text>
-            <Text style={s.chainTag}>You earn 5%</Text>
+            <Text style={s.chainTag}>You get 5% of their share</Text>
           </View>
           <Text style={s.chainArrow}>↓ refers</Text>
           <View style={[s.chainNode, { backgroundColor: hexToRgba(C.cyan, 0.12), borderColor: hexToRgba(C.cyan, 0.3) }]}>
             <Text style={s.chainNodeText}>User C</Text>
-            <Text style={s.chainTag}>You earn 2%</Text>
+            <Text style={s.chainTag}>You get 2% of their share</Text>
           </View>
         </View>
         <Text style={s.howNote}>
-          When anyone in your 3-level chain browses Unis and sees ads, you earn. This is lifetime
-          passive income.
+          Your place in the chain is permanent. Every month that anyone in your 3 levels listens on Unis, part of their share comes to you.
         </Text>
       </View>
 
       <View style={s.card}>
         <Text style={s.cardHeading}>Payout Rules</Text>
         {[
-          `Minimum payout: ${formatMoney(payoutThreshold)}`,
-          'Payout frequency: Monthly (first week of following month)',
-          `Earnings under ${formatMoney(payoutThreshold)} roll over — nothing is lost`,
-          'Payment via Stripe Connect (direct bank deposit)',
-          '1099-NEC issued for US users earning over $600/year',
+          'Earnings are added once a month, after the month ends and Unis has been paid for it (usually in the second half of the following month)',
+          `Minimum payout: ${formatMoney(payoutThreshold)} — withdraw any time once your balance reaches it`,
+          `Balances under ${formatMoney(payoutThreshold)} roll over — nothing is lost`,
+          "Payment via Stripe Connect: Stripe pays your bank once a month, on the 1st, and Unis covers Stripe's payout fees",
+          "Unis files 1099 tax forms through Stripe when US tax law requires it (for 2026: Community Share once you're paid $2,000 or more in the year; song sales and support over $20,000 and 200 payments)",
         ].map((rule) => (
           <View key={rule} style={s.ruleRow}>
             <Text style={[s.ruleArrow, { color: accent }]}>→</Text>
@@ -898,8 +941,7 @@ const EarningsScreen: React.FC = () => {
       <View style={s.header}>
         <Text style={s.headerTitle} accessibilityRole="header">Earnings</Text>
         <Text style={s.headerSub}>
-          Track your revenue from referrals{isArtist ? ', supporters,' : ''} and community
-          engagement.
+          Your monthly Community Share from your referrals{isArtist ? ' and supporters' : ''}.
         </Text>
       </View>
 
@@ -928,7 +970,9 @@ const EarningsScreen: React.FC = () => {
             <Text style={s.cardLabel}>CURRENT BALANCE</Text>
             <Text style={s.cardValue}>{formatMoney(summary?.currentBalance)}</Text>
             <Text style={s.cardSub}>
-              This month: {formatMoney(summary?.totalEarnings?.thisMonth)}
+              {lastClosed
+                ? `${monthName(lastClosed)}: ${formatMoney(summary?.totalEarnings?.lastMonth)}`
+                : 'Added once a month, after each month closes'}
             </Text>
           </View>
         </View>
@@ -941,8 +985,7 @@ const EarningsScreen: React.FC = () => {
             <Text style={s.cardLabel}>REFERRAL EARNINGS</Text>
             <Text style={s.cardValue}>{formatMoney(summary?.referralEarnings?.lifetime)}</Text>
             <Text style={s.cardSub}>
-              {summary?.referralCount || 0} referrals · {summary?.referralViewsThisMonth || 0} views
-              this month
+              {summary?.referralCount || 0} referrals · {networkPlays.toLocaleString('en-US')} plays in your network this month
             </Text>
           </View>
         </View>
@@ -956,6 +999,19 @@ const EarningsScreen: React.FC = () => {
               <Text style={s.cardLabel}>SUPPORTER EARNINGS</Text>
               <Text style={s.cardValue}>{formatMoney(summary?.supporterEarnings?.lifetime)}</Text>
               <Text style={s.cardSub}>{summary?.supporterCount || 0} supporters backing you</Text>
+            </View>
+          </View>
+        )}
+
+        {isArtist && (
+          <View style={s.summaryCard}>
+            <View style={[s.iconWrap, { backgroundColor: hexToRgba(C.purple, 0.15) }]}>
+              <Shield size={22} color={C.purple} />
+            </View>
+            <View style={s.cardBody}>
+              <Text style={s.cardLabel}>UNIS PLUS</Text>
+              <Text style={s.cardValue}>{formatMoney(summary?.plusEarnings?.lifetime)}</Text>
+              <Text style={s.cardSub}>Half of every ad-free member who supports you, plus a share by plays of your songs</Text>
             </View>
           </View>
         )}
@@ -1045,8 +1101,7 @@ const EarningsScreen: React.FC = () => {
               <View style={s.bannerTextWrap}>
                 <Text style={s.bannerTitle}>Payouts Enabled</Text>
                 <Text style={s.bannerBody}>
-                  Your bank account is connected. Earnings above {formatMoney(payoutThreshold)} can
-                  be withdrawn.
+                  Your bank account is connected. Withdraw once your balance reaches {formatMoney(payoutThreshold)}; Stripe pays your bank on the 1st of each month.
                 </Text>
               </View>
             </View>

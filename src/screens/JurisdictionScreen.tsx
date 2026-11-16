@@ -42,7 +42,6 @@ import {
   Image,
   ImageBackground,
   ActivityIndicator,
-  Animated,
   Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -54,6 +53,17 @@ import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
 import { buildUrl } from '../utils/buildUrl';
 import WinnersTimeline from '../components/WinnersTimeline';
+import AdSlot from '../components/AdSlot';
+import RankMove from '../components/RankMove';
+import { useFeedback } from '../context/FeedbackContext';
+import { fetchStandings, describeBoard } from '../utils/standings';
+
+// Rankings (Oct 2026): the boards and hero stats come from
+// /v1/awards/standings (utils/standings.ts) — this week, all genres, ranked
+// by the same formula that decides awards, with movement since last week.
+// Before anyone scores in a new week they show last week's final, and the
+// labels say so. Play tracking is deliberately absent: the Player counts
+// plays after real listening.
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -65,7 +75,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (theme?: string): string =>
   THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
@@ -93,7 +103,6 @@ const INK_4 = 'rgba(255,255,255,0.32)';
 const PANEL = 'rgba(255,255,255,0.045)';
 const ETCH = 'rgba(255,255,255,0.08)';
 
-const TOAST_MS = 4500;
 
 // ─── Hero backdrop imagery ──────────────────────────────────────────────────
 // One stock photo per jurisdiction. To add a real photo: drop it in /assets and
@@ -124,6 +133,8 @@ interface RankedArtist {
   genre: string;
   score: number;
   thumbnail: string | null;
+  movement?: number | null;
+  isNew?: boolean;
 }
 
 interface RankedSong {
@@ -135,6 +146,8 @@ interface RankedSong {
   score: number;
   thumbnail: string | null;
   fileUrl: string | null;
+  movement?: number | null;
+  isNew?: boolean;
 }
 
 interface JurisdictionData {
@@ -142,6 +155,11 @@ interface JurisdictionData {
   description: string;
   isLeaf: boolean;
   heroImage: any;
+  status: ReturnType<typeof describeBoard> | null;
+  finished: boolean;
+  artistsCharting: number;
+  artistsChartingMore: boolean;
+  pointsThisWeek: number;
   topArtistName: string | null;
   songOfWeek: {
     id: string;
@@ -170,38 +188,9 @@ const JurisdictionScreen: React.FC = () => {
   const [data, setData] = useState<JurisdictionData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const toastOpacity = useRef(new Animated.Value(0)).current;
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = useCallback(
-    (message: string) => {
-      setToast(message);
-      Animated.timing(toastOpacity, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }).start();
-
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => {
-        Animated.timing(toastOpacity, {
-          toValue: 0,
-          duration: 220,
-          useNativeDriver: true,
-        }).start(() => setToast(null));
-      }, TOAST_MS);
-    },
-    [toastOpacity]
-  );
-
-  useEffect(
-    () => () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-    },
-    []
-  );
+  const feedback = useFeedback();
+  // Replaces this screen's own toast — the app-wide one now carries it.
+  const showToast = useCallback((message: string) => feedback.info(message), [feedback]);
 
   // ── Fetch jurisdiction + weekly tops ──
   useEffect(() => {
@@ -228,12 +217,18 @@ const JurisdictionScreen: React.FC = () => {
 
         if (!jurId) throw new Error('Jurisdiction not found');
 
-        const topsRes = await axiosInstance.get(`/v1/jurisdictions/${jurId}/tops`);
+        // This week's boards, ranked by the same formula as awards. Before
+        // anyone scores in a new week they show last week's final.
+        const [artistBoard, songBoard] = await Promise.all([
+          fetchStandings({ type: 'artist', jurisdictionId: jurId, genre: 'all', period: 'weekly', limit: 25 }),
+          fetchStandings({ type: 'song', jurisdictionId: jurId, genre: 'all', period: 'weekly', limit: 10 }),
+        ]);
         if (!active) return;
 
-        const raw = topsRes.data || {};
-        const topArtist = raw.topArtist || (raw.topArtists || [])[0];
-        const topSong = raw.topSong || (raw.topSongs || [])[0];
+        const scoredArtists = artistBoard.entries.filter((e) => e.points > 0);
+        const scoredSongs = songBoard.entries.filter((e) => e.points > 0);
+        const topArtist = scoredArtists[0];
+        const topSong = scoredSongs[0];
 
         const normalized: JurisdictionData = {
           jurisdictionId: jurId,
@@ -249,39 +244,48 @@ const JurisdictionScreen: React.FC = () => {
             ? { uri: buildUrl(jurDetails.symbolUrl) }
             : heroImageFor(jurName),
 
-          topArtistName: topArtist?.username || null,
+          status: describeBoard(artistBoard),
+          finished: artistBoard.state !== 'LIVE',
+
+          topArtistName: topArtist?.name || null,
 
           songOfWeek: topSong
             ? {
-                id: topSong.songId,
-                title: topSong.title,
-                artist: topSong.artist?.username || 'Unknown',
-                artistId: topSong.artist?.userId,
-                image: buildUrl(topSong.artworkUrl),
-                fileUrl: buildUrl(topSong.fileUrl),
+                id: topSong.id,
+                title: topSong.name,
+                artist: topSong.artistName || 'Unknown',
+                artistId: topSong.artistId || undefined,
+                image: topSong.artwork || null,
+                fileUrl: topSong.fileUrl || null,
               }
             : null,
 
-          topArtists: (raw.topArtists || []).map((a: any, i: number) => ({
-            id: a.userId,
-            rank: i + 1,
-            name: a.username,
-            genre: a.genre?.name || '',
-            score: a.score || 0,
-            thumbnail: buildUrl(a.photoUrl),
+          artistsCharting: scoredArtists.length,
+          artistsChartingMore: scoredArtists.length === 25 && artistBoard.total > 25,
+          pointsThisWeek: scoredArtists.reduce((sum, a) => sum + a.points, 0),
+
+          topArtists: scoredArtists.slice(0, 10).map((a: any) => ({
+            id: a.id,
+            rank: a.rank,
+            name: a.name,
+            genre: a.homeJurisdictionName || '',
+            score: a.points,
+            movement: a.movement,
+            isNew: a.isNew,
+            thumbnail: a.artwork || null,
           })),
 
-          // Songs rank by the same weighted-vote score as artists, so both
-          // boards read "pts" — no invented "plays" figure.
-          topSongs: (raw.topSongs || []).map((s: any, i: number) => ({
-            id: s.songId,
-            rank: i + 1,
-            title: s.title,
-            artist: s.artist?.username || 'Unknown',
-            artistId: s.artist?.userId,
-            score: s.score ?? s.plays ?? 0,
-            thumbnail: buildUrl(s.artworkUrl),
-            fileUrl: buildUrl(s.fileUrl),
+          topSongs: scoredSongs.map((s) => ({
+            id: s.id,
+            rank: s.rank,
+            title: s.name,
+            artist: s.artistName || 'Unknown',
+            artistId: s.artistId || undefined,
+            score: s.points,
+            movement: s.movement,
+            isNew: s.isNew,
+            thumbnail: s.artwork || null,
+            fileUrl: s.fileUrl || null,
           })),
         };
 
@@ -390,8 +394,12 @@ const JurisdictionScreen: React.FC = () => {
     );
   }
 
-  const artistsCharting = data.topArtists.length;
-  const pointsThisWeek = data.topArtists.reduce((sum, a) => sum + (a.score || 0), 0);
+  const artistsCharting = `${data.artistsCharting}${data.artistsChartingMore ? '+' : ''}`;
+  const pointsThisWeek = data.pointsThisWeek;
+  const placeKey = jurName.trim().toLowerCase().replace(/\s+/g, '-');
+  const chartPlace = ['harlem', 'uptown-harlem', 'downtown-harlem'].includes(placeKey) ? placeKey : 'harlem';
+  const openChart = (type: 'artist' | 'song') =>
+    navigation.navigate('Charts', { type, period: 'weekly', genre: 'all', place: chartPlace });
 
   const renderRow = (
     key: string,
@@ -402,7 +410,9 @@ const JurisdictionScreen: React.FC = () => {
     score: number,
     onPress: () => void,
     onPlay: () => void,
-    playLabel: string
+    playLabel: string,
+    movement?: number | null,
+    isNew?: boolean
   ) => (
     <TouchableOpacity
       key={key}
@@ -412,7 +422,10 @@ const JurisdictionScreen: React.FC = () => {
       accessibilityRole="button"
       accessibilityLabel={`View ${primary}`}
     >
-      <Text style={styles.rowRank}>{String(rank).padStart(2, '0')}</Text>
+      <View style={{ alignItems: 'center' }}>
+        <Text style={styles.rowRank}>{String(rank).padStart(2, '0')}</Text>
+        <RankMove movement={movement} isNew={isNew} />
+      </View>
 
       {art ? (
         <Image source={{ uri: art }} style={styles.rowArt} />
@@ -529,7 +542,7 @@ const JurisdictionScreen: React.FC = () => {
                 <Text style={styles.statValue}>{artistsCharting}</Text>
               </View>
               <View style={[styles.stat, styles.statLast]}>
-                <Text style={styles.statLabel}>POINTS THIS WEEK</Text>
+                <Text style={styles.statLabel}>{data.finished ? 'POINTS LAST WEEK' : 'POINTS THIS WEEK'}</Text>
                 <Text style={styles.statValue}>{pointsThisWeek.toLocaleString()}</Text>
               </View>
             </View>
@@ -580,7 +593,7 @@ const JurisdictionScreen: React.FC = () => {
 
             <View style={styles.featuredOverlay}>
               <View style={styles.featuredKicker}>
-                <Text style={styles.featuredKickerText}>SONG OF THE WEEK</Text>
+                <Text style={styles.featuredKickerText}>{data.finished ? 'LAST WEEK\u2019S NUMBER ONE' : 'NUMBER ONE THIS WEEK'}</Text>
               </View>
 
               <Text style={styles.featuredTitle} numberOfLines={1}>
@@ -616,7 +629,7 @@ const JurisdictionScreen: React.FC = () => {
         <View style={styles.section}>
           <View style={styles.eyebrowRow}>
             <View style={[styles.eyebrowDot, { backgroundColor: accentLight }]} />
-            <Text style={styles.eyebrow}>THIS WEEK'S CHART</Text>
+            <Text style={styles.eyebrow}>{(data.status?.title || 'This week\u2019s chart').toUpperCase()}</Text>
           </View>
           <Text style={styles.sectionTitle}>
             Who {jurName} is{' '}
@@ -639,14 +652,19 @@ const JurisdictionScreen: React.FC = () => {
                   artist.score,
                   () => viewArtist(artist.id),
                   () => playArtist(artist),
-                  `Play ${artist.name}`
+                  `Play ${artist.name}`,
+                  artist.movement,
+                  artist.isNew
                 )
               )
             ) : (
               <Text style={styles.empty}>
-                No artists charting yet in {jurName}. The first vote starts the chart.
+                No artists charting yet in {jurName}. The first play, like or vote starts the chart.
               </Text>
             )}
+            <TouchableOpacity style={styles.fullChart} onPress={() => openChart('artist')} accessibilityRole="button">
+              <Text style={[styles.fullChartText, { color: accentLight }]}>See the full artist chart</Text>
+            </TouchableOpacity>
           </View>
 
           <View style={styles.board}>
@@ -665,7 +683,9 @@ const JurisdictionScreen: React.FC = () => {
                   song.score,
                   () => viewSong(song.id),
                   () => playSong(song),
-                  `Play ${song.title}`
+                  `Play ${song.title}`,
+                  song.movement,
+                  song.isNew
                 )
               )
             ) : (
@@ -673,6 +693,9 @@ const JurisdictionScreen: React.FC = () => {
                 No tracks charting yet in {jurName}. Upload one and claim the top spot.
               </Text>
             )}
+            <TouchableOpacity style={styles.fullChart} onPress={() => openChart('song')} accessibilityRole="button">
+              <Text style={[styles.fullChartText, { color: accentLight }]}>See the full song chart</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -687,22 +710,11 @@ const JurisdictionScreen: React.FC = () => {
             initialCount={5}
           />
         </View>
+
+        {/* ═══════ AD SPACE (none for Unis Plus) ═══════ */}
+        <AdSlot placement="jurisdiction" />
       </ScrollView>
 
-      {/* Toast — replaces the old Alert calls */}
-      {toast && (
-        <Animated.View
-          style={[
-            styles.toast,
-            { opacity: toastOpacity, borderColor: hexToRgba(accent, 0.6) },
-          ]}
-          accessibilityLiveRegion="polite"
-          accessibilityRole="alert"
-          pointerEvents="none"
-        >
-          <Text style={styles.toastText}>{toast}</Text>
-        </Animated.View>
-      )}
     </View>
   );
 };
@@ -911,20 +923,8 @@ const styles = StyleSheet.create({
 
   empty: { color: INK_3, fontSize: 14, lineHeight: 21, paddingVertical: 12 },
 
-  // ── Toast ──
-  toast: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 96,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 14,
-    borderWidth: 1,
-    backgroundColor: 'rgba(12,14,20,0.96)',
-    alignItems: 'center',
-  },
-  toastText: { color: INK, fontSize: 14, fontWeight: '600', textAlign: 'center', lineHeight: 20 },
+  fullChart: { alignSelf: 'flex-start', paddingVertical: 10, marginTop: 4 },
+  fullChartText: { fontSize: 13, fontWeight: '800' },
 });
 
 export default JurisdictionScreen;

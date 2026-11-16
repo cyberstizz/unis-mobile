@@ -1,800 +1,591 @@
 // src/screens/FindScreen.tsx
-// Territory discovery — drill down through jurisdictions to find local artists.
+// ─────────────────────────────────────────────────────────────
+// Territory discovery — mobile port of web src/findpage.jsx.
 //
-// The map is src/map/UnisMap.tsx. @maplibre/maplibre-react-native and the
-// CartoDB raster tiles are gone: no tile provider, no API key, no attribution,
-// and nothing fetched from a third party at render time. State outlines ship
-// pre-projected in the bundle; jurisdiction polygons come from our own API and
-// are projected into the same space on arrival.
+// The map is src/components/UnisMap.tsx (no tile provider, no API key; state
+// outlines ship pre-projected, jurisdiction polygons come from our API).
 //
-// Three things that were wrong in the MapLibre version and are fixed here:
+// Which places are open comes from the backend, never from this file:
+// GET /v1/jurisdictions/open → [{ jurisdictionId, name, chain: [...] }].
+// Opening a neighborhood is a one-line UPDATE in Supabase.
 //
-//   1. handlePlay called playMedia() directly, which bypasses PlayChoiceModal.
-//      Every other play surface in the app goes through requestPlay(). It does
-//      now too.
-//   2. US state outlines were fetched from raw.githubusercontent.com on mount.
-//      A core screen had a hard runtime dependency on a third party.
-//   3. Only New York was enterable; every other state produced an Alert. All
-//      states now open one level so a visitor can see their own region mapped.
-
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Image,
-  ImageBackground,
-  ActivityIndicator,
-  Dimensions,
-  Animated,
-} from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ChevronLeft } from 'lucide-react-native';
+//   • Every state is enterable; a dormant one opens one level and stops.
+//   • Tapping a live state (or a place above exactly one open place) walks
+//     the map down to it a level at a time, so you see where it is.
+//   • Top 3 songs and artists come from /v1/awards/standings: this week, in
+//     the selected genre, ranked by the award formula, with rank movement.
+//   • Plays go through playEntry → requestPlay; the Player counts them.
+// ─────────────────────────────────────────────────────────────
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import * as SecureStore from 'expo-secure-store';
-
+import Svg, { Circle, Rect } from 'react-native-svg';
 import { usePlayer } from '../context/PlayerContext';
-import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
-import UnisMap, { MapTerritory } from '../map/UnisMap';
+import { useFeedback } from '../context/FeedbackContext';
+import axiosInstance from '../services/axiosInstance';
+import { CANONICAL_GENRES } from '../utils/IdMappings';
+import { fetchStandings, describeBoard, playEntry } from '../utils/standings';
+import { useUnisTheme, UnisTheme } from '../theme/unisTheme';
+import { webUrl } from '../config/links';
+import UnisMap, { MapTerritory } from '../components/UnisMap';
+import AdSlot from '../components/AdSlot';
+import RankMove from '../components/RankMove';
+import { Linking } from 'react-native';
 
-// Local fallback art. The original screen pointed at picsum.photos, which is a
-// third-party network request per missing image — on cellular, for a
-// placeholder. A bundled asset costs nothing and works offline.
-const FALLBACK_ART = require('../../assets/randomrapper.jpeg');
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const IS_MOBILE = SCREEN_WIDTH < 768;
-
-const COLORS = {
-  bgBlack: '#000000',
-  subtleBlack: '#1a1a1a',
-  textSilver: '#C0C0C0',
-  textGray: '#A9A9A9',
-  accentWhite: '#FFFFFF',
-  unisBlue: '#163387',
-  unisBlueBright: '#2E5AAC',
-  borderSilver: 'rgba(192, 192, 192, 0.2)',
+type OpenEntry = { jurisdictionId: string; name: string; chain?: { jurisdictionId: string; name: string }[] };
+type OpenIndex = {
+  list: OpenEntry[];
+  openIds: Set<string>;
+  openNames: string[];
+  pathIds: Set<string>;
+  pathNames: Set<string>;
+  liveStates: string[];
 };
 
-const ACTIVE_STATES = ['New York'];
-const ACTIVE_JURISDICTIONS = ['Harlem', 'Uptown Harlem', 'Downtown Harlem'];
-const HARLEM_PARENT_CHAIN = [
-  'Unis', 'New York', 'New York City Metro', 'New York City',
-  'Manhattan', 'Upper Manhattan', 'Harlem', 'Uptown Harlem', 'Downtown Harlem',
-];
-
-// The web build reads these from idMappings.js, which exports CANONICAL_GENRES
-// precisely so no screen hardcodes a list. src/utils/IdMappings.ts here has no
-// such export yet — worth lifting across, at which point this should import it
-// rather than restate it. Note 'rap', not the legacy 'rap-hiphop' alias.
-const GENRES = [
-  { value: 'rap', label: 'Rap' },
-  { value: 'rock', label: 'Rock' },
-  { value: 'pop', label: 'Pop' },
-];
-
-// KNOWN GAP — the genre control is inert, exactly as on web.
-// /v1/jurisdictions/{id}/tops takes no genre parameter. Genre filtering lives
-// on /v1/vote/leaderboards, which does accept genreId. Until /tops grows the
-// same parameter, changing this pill updates local state and nothing else.
-
-const ROOT_CRUMB = { name: 'United States', jurisdictionId: null as string | null, tier: 0 };
-
-interface NavItem {
-  name: string;
-  jurisdictionId: string | null;
-  tier: number;
-}
-
-interface TopResult {
-  id: string;
-  name?: string;
-  title?: string;
-  artist?: string;
-  artistId?: string;
-  votes: number;
-  artwork: string;
-  fileUrl?: string;
-}
-
-const decodeJwt = (token: string): any | null => {
-  try {
-    const part = token.split('.')[1];
-    const json = decodeURIComponent(
-      atob(part.replace(/-/g, '+').replace(/_/g, '/'))
-        .split('')
-        .map((c) => `%${`00${c.charCodeAt(0).toString(16)}`.slice(-2)}`)
-        .join('')
-    );
-    return JSON.parse(json);
-  } catch {
-    return null;
+function buildOpenIndex(list: OpenEntry[]): OpenIndex {
+  const openIds = new Set<string>();
+  const openNames: string[] = [];
+  const pathIds = new Set<string>();
+  const pathNames = new Set<string>();
+  for (const o of list) {
+    openIds.add(o.jurisdictionId);
+    openNames.push(o.name);
+    for (const link of o.chain || []) {
+      pathIds.add(link.jurisdictionId);
+      pathNames.add(link.name);
+    }
   }
-};
+  return { list, openIds, openNames, pathIds, pathNames, liveStates: [...pathNames] };
+}
+const EMPTY_OPEN = buildOpenIndex([]);
 
-const isInHarlemChain = (n: string) => HARLEM_PARENT_CHAIN.includes(n);
-const isActiveJurisdiction = (n: string) => ACTIVE_JURISDICTIONS.includes(n);
+/** The one open place at or below `id`, and the steps to reach it; null if none or the way splits. */
+function openTargetBelow(index: OpenIndex, id?: string | null) {
+  if (!id || !index.pathIds.has(id)) return null;
+  const found = new Map<string, { target: any; steps: any[] }>();
+  for (const o of index.list) {
+    const chain = o.chain || [];
+    const at = chain.findIndex((link) => link.jurisdictionId === id);
+    if (at === -1) continue;
+    const rest = chain.slice(at);
+    const hit = rest.findIndex((link) => index.openIds.has(link.jurisdictionId));
+    if (hit === -1) continue;
+    const target = rest[hit];
+    if (!found.has(target.jurisdictionId)) found.set(target.jurisdictionId, { target, steps: rest.slice(1, hit + 1) });
+  }
+  return found.size === 1 ? [...found.values()][0] : null;
+}
+
+const DRILL_STEP_MS = 400;
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const ROOT_CRUMB = { name: 'United States', jurisdictionId: null as string | null, tier: 0 };
+const titleCase = (k: string) => k.charAt(0).toUpperCase() + k.slice(1);
+const GENRES = (CANONICAL_GENRES as readonly string[]).map((key) => ({ value: key, label: titleCase(key) }));
+
+type Top = { id: string; rank: number; title?: string; name?: string; artist?: string; artistId?: string | null; movement?: number | null; isNew?: boolean; fileUrl?: string | null; artwork?: string | null };
+
+const Art: React.FC<{ uri?: string | null; label: string; t: UnisTheme }> = ({ uri, label, t }) => {
+  const [broken, setBroken] = useState(false);
+  if (!uri || broken) {
+    return <View style={[styles.art, { backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }]}><Text style={{ color: t.textAccent, fontWeight: '900', fontSize: 18 }}>{(label || '?').trim().charAt(0).toUpperCase()}</Text></View>;
+  }
+  return <Image source={{ uri }} style={styles.art} onError={() => setBroken(true)} />;
+};
 
 const FindScreen: React.FC = () => {
   const navigation = useNavigation<any>();
+  const feedback = useFeedback();
+  const t = useUnisTheme();
   const { requestPlay } = usePlayer();
 
-  const [userId, setUserId] = useState<string | null>(null);
-  const [genre, setGenre] = useState(GENRES[0].value);
-  const [showGenreDropdown, setShowGenreDropdown] = useState(false);
-
-  const [navigationStack, setNavigationStack] = useState<NavItem[]>([ROOT_CRUMB]);
+  const [navigationStack, setNavigationStack] = useState([ROOT_CRUMB]);
   const [currentJurisdictions, setCurrentJurisdictions] = useState<MapTerritory[]>([]);
   const [selectedJurisdiction, setSelectedJurisdiction] = useState<any>(null);
   const [focusState, setFocusState] = useState<string | null>(null);
-
-  const [topArtists, setTopArtists] = useState<TopResult[]>([]);
-  const [topSongs, setTopSongs] = useState<TopResult[]>([]);
+  const [rawTops, setRawTops] = useState<{ artists: Top[]; songs: Top[]; status: any }>({ artists: [], songs: [], status: null });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasSelected, setHasSelected] = useState(false);
+  const [hasSelectedJurisdiction, setHasSelectedJurisdiction] = useState(false);
+  const [genre, setGenre] = useState<string>(GENRES[0].value);
+  const genreRef = useRef(genre);
+  const lastTopsIdRef = useRef<string | null>(null);
+  const [isAnimating, setIsAnimating] = useState(false);
+  const spinTimer = useRef<any>(null);
+  const unmountedRef = useRef(false);
+  const [openIndex, setOpenIndex] = useState<OpenIndex>(EMPTY_OPEN);
+  const openPromiseRef = useRef<Promise<OpenIndex | null> | null>(null);
+  const drillingRef = useRef(false);
+  const [drilling, setDrilling] = useState(false);
 
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const isOpen = (j: any) => Boolean(j && openIndex.openIds.has(j.jurisdictionId));
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = await SecureStore.getItemAsync('token');
-        if (token) setUserId(decodeJwt(token)?.userId ?? null);
-      } catch (err) {
-        console.warn('[FindScreen] token read failed:', err);
-      }
-    })();
+  const showComingSoonToast = useCallback((name: string) => {
+    feedback.info(`Unis isn't in ${name} yet`, {
+      id: 'findpage-coming-soon',
+      action: { label: 'Join the waitlist', onClick: () => Linking.openURL(webUrl('/waitlist')) },
+    } as any);
+  }, [feedback]);
+
+  useEffect(() => () => {
+    unmountedRef.current = true;
+    if (spinTimer.current) clearInterval(spinTimer.current);
   }, []);
 
-  /* --------------------------------------------------------------- api -- */
+  const loadOpenIndex = useCallback(() => {
+    if (!openPromiseRef.current) {
+      openPromiseRef.current = axiosInstance.get('/v1/jurisdictions/open')
+        .then((res) => {
+          const index = buildOpenIndex(Array.isArray(res?.data) ? res.data : []);
+          if (!unmountedRef.current) setOpenIndex(index);
+          return index;
+        })
+        .catch((err) => {
+          console.error('[find] open jurisdictions fetch failed:', err?.message || err);
+          openPromiseRef.current = null;
+          return null;
+        });
+    }
+    return openPromiseRef.current;
+  }, []);
 
-  const fetchChildren = useCallback(async (id: string): Promise<MapTerritory[]> => {
+  useEffect(() => { loadOpenIndex(); }, [loadOpenIndex]);
+
+  const fetchChildren = useCallback(async (jurisdictionId: string): Promise<MapTerritory[]> => {
     try {
-      const res = await axiosInstance.get(`/v1/jurisdictions/${id}/children/detailed`);
+      const res = await axiosInstance.get(`/v1/jurisdictions/${jurisdictionId}/children/detailed`);
       return res.data || [];
-    } catch {
+    } catch (err: any) {
+      console.warn(`[find] children/detailed failed for ${jurisdictionId}:`, err?.message || err);
       try {
-        const fb = await axiosInstance.get(`/v1/jurisdictions/${id}/children`);
+        const fb = await axiosInstance.get(`/v1/jurisdictions/${jurisdictionId}/children`);
         return (fb.data || []).map((j: any) => ({ ...j, hasChildren: true }));
-      } catch (err) {
-        console.warn('[FindScreen] children fetch failed:', err);
+      } catch (e: any) {
+        console.error('[find] children fetch failed:', e?.message || e);
         return [];
       }
     }
   }, []);
 
-  const fetchTopsById = useCallback(async (id: string) => {
+  const fetchTopResultsById = useCallback(async (jurisdictionId: string) => {
     setLoading(true);
     setError(null);
-    setHasSelected(true);
-    fadeAnim.setValue(0);
+    setHasSelectedJurisdiction(true);
+    lastTopsIdRef.current = jurisdictionId;
+    const wanted = genreRef.current;
     try {
-      const res = await axiosInstance.get(`/v1/jurisdictions/${id}/tops`);
-      const raw = res.data || {};
-
-      setTopArtists(
-        (raw.topArtists || []).slice(0, 3).map((a: any, i: number) => ({
-          id: a.userId || String(i),
-          name: a.username,
-          votes: a.score || 0,
-          artwork: getMediaUrl(a.photoUrl) || '',   // '' => <Image> falls back below
-        }))
-      );
-      setTopSongs(
-        (raw.topSongs || []).slice(0, 3).map((s: any, i: number) => ({
-          id: s.songId || String(i),
-          title: s.title,
-          artist: s.artist?.username || 'Unknown',
-          artistId: s.artist?.userId,
-          votes: s.score || 0,
-          fileUrl: getMediaUrl(s.fileUrl),
-          artwork: getMediaUrl(s.artworkUrl) || '',
-        }))
-      );
-    } catch (err) {
-      console.warn('[FindScreen] tops fetch failed:', err);
-      setError('Top results are unavailable right now.');
-      setTopArtists([]);
-      setTopSongs([]);
+      const [artistBoard, songBoard] = await Promise.all([
+        fetchStandings({ type: 'artist', jurisdictionId, genre: wanted, period: 'weekly', limit: 3 }),
+        fetchStandings({ type: 'song', jurisdictionId, genre: wanted, period: 'weekly', limit: 3 }),
+      ]);
+      if (lastTopsIdRef.current !== jurisdictionId || genreRef.current !== wanted) return;
+      setRawTops({
+        status: describeBoard(songBoard),
+        artists: artistBoard.entries.filter((e) => e.points > 0).map((a) => ({ id: a.id, rank: a.rank, name: a.name, movement: a.movement, isNew: a.isNew, artwork: a.artwork })),
+        songs: songBoard.entries.filter((e) => e.points > 0).map((s) => ({
+          id: s.id, rank: s.rank, title: s.name, artist: s.artistName || 'Unknown', artistId: s.artistId, movement: s.movement, isNew: s.isNew, fileUrl: s.fileUrl, artwork: s.artwork,
+        })),
+      });
+    } catch (err: any) {
+      console.error('[find] standings fetch failed:', err?.message || err);
+      setError('Top results are unavailable right now. Try again in a moment.');
+      setRawTops({ artists: [], songs: [], status: null });
     } finally {
       setLoading(false);
-      Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }).start();
     }
-  }, [fadeAnim]);
+  }, []);
 
-  const fetchTopsByName = useCallback(async (name: string) => {
-    const resolved = !isActiveJurisdiction(name) && isInHarlemChain(name) ? 'Harlem' : name;
+  useEffect(() => {
+    genreRef.current = genre;
+    if (lastTopsIdRef.current && hasSelectedJurisdiction) fetchTopResultsById(lastTopsIdRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genre]);
+
+  const clearTops = useCallback(() => {
+    lastTopsIdRef.current = null;
+    setRawTops({ artists: [], songs: [], status: null });
+    setLoading(false);
+  }, []);
+
+  const autoDrill = useCallback(async (siblings: MapTerritory[], steps: any[]) => {
+    if (!steps.length) return;
+    drillingRef.current = true;
+    setDrilling(true);
+    setLoading(true);
+    setHasSelectedJurisdiction(true);
+    let onScreen = siblings;
     try {
-      const res = await axiosInstance.get(
-        `/v1/jurisdictions/byName/${encodeURIComponent(resolved)}`
-      );
-      const id = res.data?.[0]?.jurisdictionId;
-      if (!id) throw new Error('not found');
-      await fetchTopsById(id);
-    } catch (err) {
-      console.warn('[FindScreen] byName failed:', err);
-      setError('Top results are unavailable right now.');
+      for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i];
+        const isTarget = i === steps.length - 1;
+        await wait(DRILL_STEP_MS);
+        if (unmountedRef.current) return;
+        const full: any = onScreen.find((j) => j.jurisdictionId === step.jurisdictionId) || step;
+        setSelectedJurisdiction(full);
+        const [children] = await Promise.all([
+          full.hasChildren === false ? Promise.resolve([]) : fetchChildren(step.jurisdictionId),
+          isTarget ? fetchTopResultsById(step.jurisdictionId) : Promise.resolve(),
+        ]);
+        if (unmountedRef.current) return;
+        if (children.length > 0) {
+          setNavigationStack((prev) => [...prev, { name: step.name, jurisdictionId: step.jurisdictionId, tier: prev[prev.length - 1].tier + 1 }]);
+          setCurrentJurisdictions(children);
+          onScreen = children;
+        }
+      }
+    } finally {
+      drillingRef.current = false;
+      if (!unmountedRef.current) setDrilling(false);
+    }
+  }, [fetchChildren, fetchTopResultsById]);
+
+  const handleStateSelect = useCallback(async (stateName: string) => {
+    if (drillingRef.current || focusState === stateName) return;
+    setLoading(true);
+    setHasSelectedJurisdiction(true);
+    setError(null);
+    try {
+      const [stateRes, index] = await Promise.all([
+        axiosInstance.get(`/v1/jurisdictions/byName/${encodeURIComponent(stateName)}`),
+        loadOpenIndex(),
+      ]);
+      const jurisdiction = stateRes.data?.[0];
+      if (!index) {
+        setLoading(false);
+        setHasSelectedJurisdiction(false);
+        setError('The map could not load right now. Try again in a moment.');
+        return;
+      }
+      if (!jurisdiction) {
+        setLoading(false);
+        setHasSelectedJurisdiction(false);
+        showComingSoonToast(stateName);
+        return;
+      }
+      const isLive = index.pathIds.has(jurisdiction.jurisdictionId);
+      const way = isLive ? openTargetBelow(index, jurisdiction.jurisdictionId) : null;
+      const opensHere = Boolean(way && way.steps.length === 0);
+      const [children] = await Promise.all([
+        fetchChildren(jurisdiction.jurisdictionId),
+        opensHere ? fetchTopResultsById(jurisdiction.jurisdictionId) : Promise.resolve(),
+      ]);
+      setFocusState(stateName);
+      setNavigationStack([ROOT_CRUMB, { name: stateName, jurisdictionId: jurisdiction.jurisdictionId, tier: 2 }]);
+      setCurrentJurisdictions(children);
+      setSelectedJurisdiction(jurisdiction);
+      if (way && way.steps.length > 0) await autoDrill(children, way.steps);
+      else if (!opensHere) clearTops();
+    } catch (err: any) {
+      console.error('[find] state select failed:', err?.message || err);
+      setError(`${stateName} could not be loaded. Try again in a moment.`);
       setLoading(false);
     }
-  }, [fetchTopsById]);
+  }, [fetchChildren, fetchTopResultsById, showComingSoonToast, focusState, loadOpenIndex, autoDrill, clearTops]);
 
-  /* ------------------------------------------------------ interactions -- */
-
-  const handleStateSelect = useCallback(
-    async (stateName: string) => {
-      if (focusState === stateName) return;
-      const isLive = ACTIVE_STATES.includes(stateName);
-
-      setLoading(true);
-      setHasSelected(true);
-      setError(null);
-
-      try {
-        const res = await axiosInstance.get(
-          `/v1/jurisdictions/byName/${encodeURIComponent(stateName)}`
-        );
-        const jur = res.data?.[0];
-        if (!jur) {
-          setLoading(false);
-          setHasSelected(false);
-          setError(`Unis isn't in ${stateName} yet.`);
-          return;
-        }
-
-        // Charts only for live states — a dormant state has nothing to rank,
-        // so asking for its tops is a guaranteed empty round trip.
-        const [children] = await Promise.all([
-          fetchChildren(jur.jurisdictionId),
-          isLive ? fetchTopsById(jur.jurisdictionId) : Promise.resolve(),
-        ]);
-
-        setFocusState(stateName);
-        setNavigationStack([
-          ROOT_CRUMB,
-          { name: stateName, jurisdictionId: jur.jurisdictionId, tier: 2 },
-        ]);
-        setCurrentJurisdictions(children);
-        setSelectedJurisdiction(jur);
-
-        if (!isLive) {
-          setTopArtists([]);
-          setTopSongs([]);
-          setLoading(false);
-        }
-      } catch (err) {
-        console.warn('[FindScreen] state select failed:', err);
-        setError(`${stateName} could not be loaded.`);
-        setLoading(false);
-      }
-    },
-    [focusState, fetchChildren, fetchTopsById]
-  );
-
-  const handleTerritorySelect = useCallback(
-    async (jur: MapTerritory) => {
-      setSelectedJurisdiction(jur);
-
-      // Inside a dormant state there is only one level of geometry, so a tap
-      // highlights the region and stops rather than flying into an empty frame.
-      if (!ACTIVE_STATES.includes(focusState || '')) return;
-
-      const resolved =
-        !isActiveJurisdiction(jur.name) && isInHarlemChain(jur.name) ? 'Harlem' : jur.name;
-
-      const childrenPromise = jur.hasChildren
-        ? fetchChildren(jur.jurisdictionId)
-        : Promise.resolve([] as MapTerritory[]);
-      const topsPromise =
-        resolved === jur.name ? fetchTopsById(jur.jurisdictionId) : fetchTopsByName(jur.name);
-
-      const [children] = await Promise.all([childrenPromise, topsPromise]);
-
-      if (jur.hasChildren && children.length > 0) {
-        setNavigationStack((prev) => [
-          ...prev,
-          {
-            name: jur.name,
-            jurisdictionId: jur.jurisdictionId,
-            tier: prev[prev.length - 1].tier + 1,
-          },
-        ]);
-        setCurrentJurisdictions(children);
-      }
-    },
-    [focusState, fetchChildren, fetchTopsById, fetchTopsByName]
-  );
+  const handleTerritorySelect = useCallback(async (jurisdiction: MapTerritory) => {
+    if (drillingRef.current) return;
+    const { jurisdictionId, name, hasChildren } = jurisdiction;
+    setSelectedJurisdiction(jurisdiction);
+    if (!openIndex.pathNames.has(focusState || '')) {
+      showComingSoonToast(name);
+      return;
+    }
+    setHasSelectedJurisdiction(true);
+    setError(null);
+    const way = openTargetBelow(openIndex, jurisdictionId);
+    const opensHere = Boolean(way && way.steps.length === 0);
+    const drillTo = way && way.steps.length > 0 ? way.steps : null;
+    if (drillTo) setLoading(true);
+    const [children] = await Promise.all([
+      hasChildren ? fetchChildren(jurisdictionId) : Promise.resolve([] as MapTerritory[]),
+      opensHere ? fetchTopResultsById(jurisdictionId) : Promise.resolve(),
+    ]);
+    if (!opensHere && !drillTo) clearTops();
+    if (hasChildren && children.length > 0) {
+      setNavigationStack((prev) => [...prev, { name, jurisdictionId, tier: prev[prev.length - 1].tier + 1 }]);
+      setCurrentJurisdictions(children);
+    }
+    if (drillTo) await autoDrill(children, drillTo);
+  }, [fetchChildren, fetchTopResultsById, focusState, showComingSoonToast, openIndex, autoDrill, clearTops]);
 
   const resetToNational = useCallback(() => {
     setNavigationStack([ROOT_CRUMB]);
     setCurrentJurisdictions([]);
     setSelectedJurisdiction(null);
     setFocusState(null);
-    setHasSelected(false);
-    setTopArtists([]);
-    setTopSongs([]);
+    setHasSelectedJurisdiction(false);
+    setRawTops({ artists: [], songs: [], status: null });
+    lastTopsIdRef.current = null;
     setError(null);
   }, []);
 
-  const handleBack = useCallback(async () => {
-    if (navigationStack.length <= 1) return;
-    const stack = navigationStack.slice(0, -1);
-    const prev = stack[stack.length - 1];
-
-    if (prev.tier === 0) {
-      resetToNational();
-      return;
-    }
-
-    setNavigationStack(stack);
+  const navigateToCrumb = useCallback(async (targetIndex: number) => {
+    if (drillingRef.current) return;
+    if (targetIndex >= navigationStack.length - 1) return;
+    const target = navigationStack[targetIndex];
+    if (target.tier === 0 || !target.jurisdictionId) { resetToNational(); return; }
+    setNavigationStack(navigationStack.slice(0, targetIndex + 1));
+    const way = openTargetBelow(openIndex, target.jurisdictionId);
     const [children] = await Promise.all([
-      fetchChildren(prev.jurisdictionId as string),
-      fetchTopsByName(prev.name),
+      fetchChildren(target.jurisdictionId),
+      way ? fetchTopResultsById(way.target.jurisdictionId) : Promise.resolve(clearTops()),
     ]);
     setCurrentJurisdictions(children);
-
     try {
-      const res = await axiosInstance.get(`/v1/jurisdictions/${prev.jurisdictionId}`);
+      const res = await axiosInstance.get(`/v1/jurisdictions/${target.jurisdictionId}`);
       setSelectedJurisdiction(res.data);
-    } catch (err) {
-      console.warn('[FindScreen] parent fetch failed:', err);
+    } catch (err: any) {
+      console.warn('[find] crumb detail fetch failed:', err?.message || err);
     }
-  }, [navigationStack, fetchChildren, fetchTopsByName, resetToNational]);
+  }, [navigationStack, fetchChildren, fetchTopResultsById, resetToNational, openIndex, clearTops]);
 
-  /* ------------------------------------------------------------ play --- */
+  const handleBack = useCallback(() => {
+    if (drillingRef.current || navigationStack.length <= 1) return;
+    navigateToCrumb(navigationStack.length - 2);
+  }, [navigationStack, navigateToCrumb]);
 
-  // requestPlay, not playMedia. requestPlay routes through PlayChoiceModal
-  // when a queue already exists, which is the standard every other play
-  // surface in the app follows.
-  const handlePlay = useCallback(
-    async (item: TopResult) => {
-      let trackingId: string | null = null;
-
-      if (item.fileUrl) {
-        requestPlay({
-          id: item.id,
-          songId: item.id,
-          title: item.title || item.name || 'Unknown',
-          artist: item.artist || item.name,
-          url: item.fileUrl,
-          fileUrl: item.fileUrl,
-          artwork: item.artwork,
-          artworkUrl: item.artwork,
-        });
-        trackingId = item.id;
-      } else if (item.id && item.name) {
-        try {
-          const res = await axiosInstance.get(`/v1/users/${item.id}/default-song`);
-          const song = res.data;
-          if (!song?.fileUrl) {
-            setError(`${item.name} has no default song yet.`);
-            return;
-          }
-          const url = getMediaUrl(song.fileUrl) as string;
-          const art = getMediaUrl(song.artworkUrl) || item.artwork;
-          requestPlay({
-            id: song.songId || item.id,
-            songId: song.songId || item.id,
-            title: song.title,
-            artist: item.name,
-            url,
-            fileUrl: url,
-            artwork: art,
-            artworkUrl: art,
-          });
-          trackingId = song.songId;
-        } catch (err) {
-          console.warn('[FindScreen] default song failed:', err);
-          setError('Could not load that artist\u2019s song.');
-          return;
-        }
+  const handleRandom = useCallback(() => {
+    if (isAnimating || drillingRef.current) return;
+    setIsAnimating(true);
+    const pool = ['California', 'Texas', 'Georgia', 'Illinois', 'New York', 'Florida'];
+    let count = 0;
+    spinTimer.current = setInterval(() => {
+      count += 1;
+      if (count >= 8) {
+        clearInterval(spinTimer.current);
+        setIsAnimating(false);
+        const landed = pool[Math.floor(Math.random() * pool.length)];
+        if (openIndex.pathNames.has(landed)) handleStateSelect(landed);
+        else showComingSoonToast(landed);
       }
+    }, 110);
+  }, [isAnimating, handleStateSelect, showComingSoonToast, openIndex]);
 
-      if (trackingId && userId) {
-        try {
-          await axiosInstance.post(`/v1/media/song/${trackingId}/play?userId=${userId}`);
-        } catch (err) {
-          console.warn('[FindScreen] play tracking failed:', err);
-        }
-      }
-    },
-    [requestPlay, userId]
-  );
+  const handlePlay = useCallback((item: Top, kind: 'song' | 'artist') => playEntry(
+    kind === 'song'
+      ? { type: 'song', id: item.id, name: item.title, artistName: item.artist, artistId: item.artistId, fileUrl: item.fileUrl, artwork: item.artwork } as any
+      : { type: 'artist', id: item.id, name: item.name, artwork: item.artwork } as any,
+    requestPlay as any,
+    'findpage',
+  ).then((played: boolean) => { if (!played) feedback.info(`${item.name || item.title} hasn’t picked a song to feature yet`); }), [requestPlay, feedback]);
 
-  const handleView = (item: TopResult, type: 'artist' | 'song') => {
-    if (type === 'artist') {
-      navigation.navigate('Home', { screen: 'Artist', params: { artistId: item.id } });
-    } else {
-      navigation.navigate('Home', { screen: 'Song', params: { songId: item.id, type: 'song' } });
-    }
+  const genreLabel = titleCase(genre);
+  const mapMode = useMemo<'US' | 'STATE' | 'TERRITORY'>(() => (navigationStack.length <= 1 ? 'US' : navigationStack.length === 2 ? 'STATE' : 'TERRITORY'), [navigationStack]);
+  const atNationalLevel = mapMode === 'US';
+  const displayTerritory = selectedJurisdiction?.name || navigationStack[navigationStack.length - 1]?.name || 'Select a state';
+  const showComingSoonPanel = Boolean(selectedJurisdiction) && !openIndex.pathIds.has(selectedJurisdiction?.jurisdictionId);
+  const showPickPanel = !drilling && Boolean(selectedJurisdiction) && !showComingSoonPanel && !isOpen(selectedJurisdiction)
+    && openTargetBelow(openIndex, selectedJurisdiction?.jurisdictionId) === null;
+  const songs = rawTops.songs.slice(0, 3);
+  const artists = rawTops.artists.slice(0, 3);
+  const chartPlace = (() => {
+    const key = String(displayTerritory || '').trim().toLowerCase().replace(/\s+/g, '-');
+    return ['harlem', 'uptown-harlem', 'downtown-harlem'].includes(key) ? key : 'harlem';
+  })();
+  const openChart = () => navigation.navigate('Charts', { type: 'song', period: 'weekly', genre, place: chartPlace });
+  const openJurisdiction = () => {
+    if (!selectedJurisdiction?.name) return;
+    navigation.navigate('Home', { screen: 'Jurisdiction', params: { jurisdictionName: selectedJurisdiction.name, jurisdictionId: selectedJurisdiction.jurisdictionId } });
   };
+  const openItem = (item: Top, kind: 'song' | 'artist') =>
+    navigation.navigate('Home', kind === 'song' ? { screen: 'Song', params: { songId: item.id } } : { screen: 'Artist', params: { artistId: item.id } });
 
-  /* --------------------------------------------------------- derived --- */
-
-  const mapMode = useMemo<'US' | 'STATE' | 'TERRITORY'>(() => {
-    if (navigationStack.length <= 1) return 'US';
-    if (navigationStack.length === 2) return 'STATE';
-    return 'TERRITORY';
-  }, [navigationStack]);
-
-  const atNational = mapMode === 'US';
-  const displayTerritory =
-    selectedJurisdiction?.name ||
-    navigationStack[navigationStack.length - 1]?.name ||
-    'Select a state';
-
-  const showComingSoon =
-    !!selectedJurisdiction && !isInHarlemChain(selectedJurisdiction.name);
-
-  const renderCard = (item: TopResult, index: number, type: 'artist' | 'song') => (
-    <Animated.View key={item.id} style={[styles.card, { opacity: fadeAnim }]}>
-      <Image
-        source={item.artwork ? { uri: item.artwork } : FALLBACK_ART}
-        style={styles.ambient}
-        blurRadius={40}
-      />
-      <LinearGradient
-        colors={['rgba(0,0,0,0.45)', 'rgba(0,0,0,0.12)']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.cardInner}
-      >
-        <Text style={styles.rank}>{index + 1}</Text>
-        <Image
-          source={item.artwork ? { uri: item.artwork } : FALLBACK_ART}
-          defaultSource={FALLBACK_ART}
-          style={styles.art}
-        />
-        <View style={styles.meta}>
-          <Text style={styles.title} numberOfLines={1}>
-            {type === 'song' ? item.title : item.name}
-          </Text>
-          {type === 'song' && (
-            <Text style={styles.sub} numberOfLines={1}>
-              {item.artist}
-            </Text>
-          )}
+  const renderColumn = (heading: string, items: Top[], kind: 'song' | 'artist', emptyCopy: string) => (
+    <View style={styles.column}>
+      <Pressable onPress={openJurisdiction}>
+        <Text style={styles.colTitle}>{heading} {rawTops.status?.tone === 'final' ? 'last week' : 'this week'} in {displayTerritory}</Text>
+      </Pressable>
+      {loading ? (
+        <View style={[styles.row, styles.skel]} />
+      ) : items.length > 0 ? items.map((item, i) => (
+        <View key={item.id || i} style={styles.row}>
+          {!!item.artwork && <Image source={{ uri: item.artwork }} style={styles.ambient} blurRadius={40} />}
+          <View style={styles.rank}>
+            <Text style={styles.rankNum}>{item.rank || i + 1}</Text>
+            <RankMove movement={item.movement} isNew={item.isNew} />
+          </View>
+          <Art uri={item.artwork} label={(kind === 'song' ? item.title : item.name) || '?'} t={t} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title} numberOfLines={1}>{kind === 'song' ? item.title : item.name}</Text>
+            {kind === 'song' && <Text style={styles.sub} numberOfLines={1}>{item.artist}</Text>}
+          </View>
+          <Pressable style={[styles.playBtn, { backgroundColor: t.primary }]} onPress={() => handlePlay(item, kind)} accessibilityLabel={`Play ${kind === 'song' ? item.title : item.name}`}>
+            <Text style={styles.btnTxt}>Play</Text>
+          </Pressable>
+          <Pressable style={styles.viewBtn} onPress={() => openItem(item, kind)}>
+            <Text style={styles.btnTxt}>View</Text>
+          </Pressable>
         </View>
-        <TouchableOpacity style={styles.playBtn} onPress={() => handlePlay(item)}>
-          <Text style={styles.playTxt}>Play</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.viewBtn} onPress={() => handleView(item, type)}>
-          <Text style={styles.viewTxt}>View</Text>
-        </TouchableOpacity>
-      </LinearGradient>
-    </Animated.View>
+      )) : (
+        <View style={[styles.row, { justifyContent: 'center' }]}><Text style={styles.sub}>{emptyCopy}</Text></View>
+      )}
+    </View>
   );
 
   return (
-    <View style={styles.container}>
-      <ImageBackground
-        source={require('../../assets/randomrapper.jpeg')}
-        style={StyleSheet.absoluteFill as never}
-        resizeMode="cover"
-      >
-        <LinearGradient
-          colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.92)']}
-          style={StyleSheet.absoluteFill as never}
-        />
-      </ImageBackground>
+    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+      <View style={styles.filters}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+          {GENRES.map((g) => {
+            const on = genre === g.value;
+            return (
+              <Pressable key={g.value} onPress={() => setGenre(g.value)} style={[styles.pill, on && { backgroundColor: t.primary, borderColor: t.primary }]} accessibilityState={{ selected: on }}>
+                <Text style={[styles.pillText, on && { color: '#fff' }]}>{g.label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <Pressable style={styles.random} onPress={handleRandom} disabled={isAnimating || loading}>
+          <Svg width={15} height={15} viewBox="0 0 24 24" fill="none">
+            <Rect x={3} y={3} width={18} height={18} rx={4} stroke="#fff" strokeWidth={2} />
+            <Circle cx={8.5} cy={8.5} r={1.3} fill="#fff" />
+            <Circle cx={15.5} cy={15.5} r={1.3} fill="#fff" />
+            <Circle cx={15.5} cy={8.5} r={1.3} fill="#fff" />
+            <Circle cx={8.5} cy={15.5} r={1.3} fill="#fff" />
+          </Svg>
+          <Text style={styles.randomText}>{isAnimating ? 'Spinning' : 'Surprise me'}</Text>
+        </Pressable>
+      </View>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* ── filters ── */}
-        <View style={[styles.filters, { zIndex: 100 }]}>
-          <View style={styles.filterWrap}>
-            <TouchableOpacity
-              style={[styles.filterBtn, showGenreDropdown && styles.filterBtnActive]}
-              onPress={() => setShowGenreDropdown(!showGenreDropdown)}
-            >
-              <Text style={styles.filterTxt}>
-                {GENRES.find((g) => g.value === genre)?.label || 'Rap'}
-              </Text>
-            </TouchableOpacity>
-            {showGenreDropdown && (
-              <View style={styles.dropdown}>
-                {GENRES.map((g) => (
-                  <TouchableOpacity
-                    key={g.value}
-                    style={[styles.option, genre === g.value && styles.optionActive]}
-                    onPress={() => {
-                      setGenre(g.value);
-                      setShowGenreDropdown(false);
-                    }}
-                  >
-                    <Text
-                      style={[styles.optionTxt, genre === g.value && styles.optionTxtActive]}
-                    >
-                      {g.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+      <View pointerEvents={drilling ? 'none' : 'auto'}>
+        <View style={styles.crumbs} accessibilityLabel="Territory path">
+          {navigationStack.map((level, i) => {
+            const isLast = i === navigationStack.length - 1;
+            return (
+              <View key={`${level.name}-${i}`} style={styles.crumbGroup}>
+                {isLast ? <Text style={styles.here}>{level.name}</Text> : (
+                  <Pressable onPress={() => navigateToCrumb(i)} hitSlop={4}><Text style={styles.crumb}>{level.name}</Text></Pressable>
+                )}
+                {!isLast && <Text style={styles.sep}>›</Text>}
               </View>
-            )}
-          </View>
+            );
+          })}
         </View>
 
-        {/* ── map ── */}
-        <View style={styles.mapSection}>
-          <Text style={styles.territory} numberOfLines={1}>
-            {displayTerritory}
-          </Text>
+        <View style={styles.heroRow}>
+          <Text style={styles.territory} numberOfLines={1}>{displayTerritory}</Text>
+          {(loading || drilling) && <ActivityIndicator color={t.textAccent} size="small" />}
+        </View>
 
-          {!atNational && (
-            <TouchableOpacity style={styles.backBtn} onPress={handleBack}>
-              <ChevronLeft size={15} color={COLORS.unisBlue} />
-              <Text style={styles.backTxt}>Back</Text>
-            </TouchableOpacity>
-          )}
+        <Pressable onPress={handleBack} style={[styles.back, atNationalLevel && { opacity: 0 }]} disabled={atNationalLevel}>
+          <Text style={styles.backText}>← Back</Text>
+        </Pressable>
 
-          <View style={styles.mapBox}>
-            <UnisMap
-              mode={mapMode}
-              focusState={focusState}
-              territories={currentJurisdictions}
-              selectedId={selectedJurisdiction?.jurisdictionId || null}
-              liveStates={ACTIVE_STATES}
-              liveTerritories={ACTIVE_JURISDICTIONS}
-              primary={COLORS.unisBlue}
-              primaryBright={COLORS.unisBlueBright}
-              onStateSelect={handleStateSelect}
-              onTerritorySelect={handleTerritorySelect}
-            />
-          </View>
-
+        <View style={styles.mapFrame}>
+          <UnisMap
+            mode={mapMode}
+            focusState={focusState}
+            territories={currentJurisdictions}
+            selectedId={selectedJurisdiction?.jurisdictionId || null}
+            liveStates={openIndex.liveStates}
+            liveTerritories={openIndex.openNames}
+            primary={t.primary}
+            primaryBright={t.primary2}
+            onStateSelect={handleStateSelect}
+            onTerritorySelect={handleTerritorySelect}
+          />
           <View style={styles.key}>
-            <View style={styles.keyItem}>
-              <View style={[styles.keyDot, { backgroundColor: COLORS.unisBlue }]} />
-              <Text style={styles.keyTxt}>Live on Unis</Text>
-            </View>
-            <View style={styles.keyItem}>
-              <View style={[styles.keyDot, styles.keyDotDark]} />
-              <Text style={styles.keyTxt}>Not open yet</Text>
-            </View>
+            <View style={styles.keyItem}><View style={[styles.keyDot, { backgroundColor: t.primary2 }]} /><Text style={styles.keyText}>Live on Unis</Text></View>
+            <View style={styles.keyItem}><View style={[styles.keyDot, { backgroundColor: '#2a2e3a' }]} /><Text style={styles.keyText}>Not open yet</Text></View>
           </View>
-
-          {/* The rail is the reliable way in on a phone. Small states are hard
-              to hit accurately with a thumb, and a tap that lands on the wrong
-              one is worse than a list. */}
-          {currentJurisdictions.length > 0 && (
-            <View style={styles.rail}>
-              <Text style={styles.railTitle}>
-                Regions in {navigationStack[navigationStack.length - 1]?.name}
-              </Text>
-              <View style={styles.pills}>
-                {currentJurisdictions.map((j) => {
-                  const sel = selectedJurisdiction?.jurisdictionId === j.jurisdictionId;
-                  return (
-                    <TouchableOpacity
-                      key={j.jurisdictionId}
-                      style={[styles.pill, sel && styles.pillSel]}
-                      onPress={() => handleTerritorySelect(j)}
-                    >
-                      <Text style={[styles.pillTxt, sel && styles.pillTxtSel]}>{j.name}</Text>
-                      {isActiveJurisdiction(j.name) && <Text style={styles.liveDot}>●</Text>}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          )}
         </View>
 
-        {!!error && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorTxt}>{error}</Text>
+        {currentJurisdictions.length > 0 && (
+          <View style={styles.rail}>
+            <Text style={styles.railTitle}>Regions in {navigationStack[navigationStack.length - 1]?.name}</Text>
+            <View style={styles.chips}>
+              {currentJurisdictions.map((j) => {
+                const sel = selectedJurisdiction?.jurisdictionId === j.jurisdictionId;
+                return (
+                  <Pressable key={j.jurisdictionId} onPress={() => handleTerritorySelect(j)} style={[styles.chip, sel && { borderColor: t.primary, backgroundColor: t.soft }]}>
+                    <Text style={styles.chipText}>{j.name}</Text>
+                    {isOpen(j) && <View style={styles.liveDot} accessibilityLabel="live" />}
+                  </Pressable>
+                );
+              })}
+            </View>
           </View>
         )}
+      </View>
 
-        {/* ── results ── */}
-        {hasSelected && (
-          <View style={styles.results}>
-            {showComingSoon ? (
-              <View style={styles.soon}>
-                <Text style={styles.soonTitle}>{selectedJurisdiction?.name}</Text>
-                <Text style={styles.soonTxt}>
-                  No charts here yet. Join the waitlist and we'll tell you the day it opens.
-                </Text>
-              </View>
-            ) : loading ? (
-              <View style={styles.loading}>
-                <ActivityIndicator size="large" color={COLORS.unisBlue} />
-              </View>
-            ) : (
-              <>
-                <View style={styles.column}>
-                  <Text style={styles.colTitle}>Top songs in {displayTerritory}</Text>
-                  {topSongs.length > 0 ? (
-                    topSongs.map((s, i) => renderCard(s, i, 'song'))
-                  ) : (
-                    <Text style={styles.empty}>No songs charted here yet.</Text>
-                  )}
-                </View>
+      {!!error && <Text style={styles.error} accessibilityRole="alert">{error}</Text>}
 
-                <View style={styles.column}>
-                  <Text style={styles.colTitle}>Top artists in {displayTerritory}</Text>
-                  {topArtists.length > 0 ? (
-                    topArtists.map((a, i) => renderCard(a, i, 'artist'))
-                  ) : (
-                    <Text style={styles.empty}>No artists charted here yet.</Text>
-                  )}
-                </View>
-              </>
-            )}
-          </View>
-        )}
+      {hasSelectedJurisdiction && (
+        <View style={styles.results}>
+          {showComingSoonPanel ? (
+            <View style={styles.soon}>
+              <Text style={styles.soonTitle}>{selectedJurisdiction?.name}</Text>
+              <Text style={styles.soonText}>No charts here yet. Join the waitlist and we'll tell you the day it opens.</Text>
+              <Pressable style={[styles.cta, { backgroundColor: t.primary }]} onPress={() => Linking.openURL(webUrl('/waitlist'))}><Text style={styles.btnTxt}>Join the waitlist</Text></Pressable>
+            </View>
+          ) : showPickPanel ? (
+            <View style={styles.soon}>
+              <Text style={styles.soonTitle}>{selectedJurisdiction?.name}</Text>
+              <Text style={styles.soonText}>Pick a neighborhood on the map to see its charts.</Text>
+            </View>
+          ) : (
+            <>
+              {renderColumn('Top songs', songs, 'song', `No ${genreLabel} songs charted here yet.`)}
+              {renderColumn('Top artists', artists, 'artist', `No ${genreLabel} artists charted here yet.`)}
+              <Pressable style={styles.fullChart} onPress={openChart}>
+                <Text style={styles.btnTxt}>See the full {genreLabel} chart for {displayTerritory}</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      )}
 
-        <View style={{ height: 120 }} />
-      </ScrollView>
-    </View>
+      <View style={{ marginTop: 18 }}><AdSlot placement="find" /></View>
+    </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bgBlack },
-  scroll: { flex: 1 },
-  scrollContent: { paddingTop: 20, paddingHorizontal: 12 },
-
-  filters: { flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 18 },
-  filterWrap: { position: 'relative' },
-  filterBtn: {
-    paddingVertical: 9,
-    paddingHorizontal: 20,
-    backgroundColor: COLORS.bgBlack,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    borderRadius: 999,
-    minWidth: 100,
-  },
-  filterBtnActive: { borderColor: COLORS.unisBlue },
-  filterTxt: { color: COLORS.textSilver, fontSize: 13, textAlign: 'center' },
-  dropdown: {
-    position: 'absolute',
-    top: 42,
-    left: 0,
-    right: 0,
-    backgroundColor: COLORS.subtleBlack,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.borderSilver,
-    overflow: 'hidden',
-    zIndex: 1000,
-    elevation: 10,
-  },
-  option: { paddingVertical: 10, paddingHorizontal: 15 },
-  optionActive: { backgroundColor: 'rgba(22,51,135,0.25)' },
-  optionTxt: { color: COLORS.textSilver, fontSize: 13 },
-  optionTxtActive: { color: COLORS.accentWhite },
-
-  mapSection: { width: '100%', alignItems: 'center' },
-  territory: {
-    color: COLORS.accentWhite,
-    fontSize: IS_MOBILE ? 22 : 30,
-    fontFamily: 'BitcountGridDouble',
-    textAlign: 'center',
-    marginBottom: 8,
-    maxWidth: '100%',
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 5,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: COLORS.unisBlue,
-    borderRadius: 999,
-    marginBottom: 10,
-  },
-  backTxt: { color: COLORS.unisBlue, fontSize: 12, marginLeft: 4 },
-  mapBox: { width: '100%', aspectRatio: 4 / 3 },
-
-  key: { flexDirection: 'row', gap: 14, marginTop: 10 },
+  page: { padding: 16, paddingBottom: 160 },
+  filters: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  pill: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.04)' },
+  pillText: { color: 'rgba(255,255,255,0.8)', fontWeight: '700', fontSize: 13 },
+  random: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.08)' },
+  randomText: { color: '#fff', fontWeight: '700', fontSize: 12.5 },
+  crumbs: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 4 },
+  crumbGroup: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  crumb: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5, fontWeight: '600', textDecorationLine: 'underline' },
+  here: { color: '#fff', fontSize: 12.5, fontWeight: '800' },
+  sep: { color: 'rgba(255,255,255,0.35)', fontSize: 12.5 },
+  heroRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
+  territory: { color: '#fff', fontSize: 28, fontWeight: '900', letterSpacing: -0.6, flexShrink: 1 },
+  back: { alignSelf: 'flex-start', paddingVertical: 6, marginTop: 2 },
+  backText: { color: 'rgba(255,255,255,0.8)', fontWeight: '700', fontSize: 14 },
+  mapFrame: { borderRadius: 20, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.03)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  key: { flexDirection: 'row', gap: 14, padding: 10 },
   keyItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  keyDot: { width: 8, height: 8, borderRadius: 4 },
-  keyDotDark: {
-    backgroundColor: '#151822',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-  },
-  keyTxt: { color: '#8b8f9e', fontSize: 10 },
-
-  rail: { width: '100%', marginTop: 16 },
-  railTitle: { color: '#7d818f', fontSize: 11, marginBottom: 8, letterSpacing: 1 },
-  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  pill: {
-    backgroundColor: 'rgba(22,51,135,0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(22,51,135,0.45)',
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 15,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  pillSel: { backgroundColor: COLORS.unisBlue, borderColor: COLORS.unisBlue },
-  pillTxt: { color: COLORS.textSilver, fontSize: 13 },
-  pillTxtSel: { color: COLORS.accentWhite },
-  liveDot: { color: '#4CAF50', fontSize: 9 },
-
-  errorBox: {
-    marginTop: 14,
-    padding: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,107,107,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,107,107,0.28)',
-  },
-  errorTxt: { color: '#ff9b9b', fontSize: 12 },
-
-  results: { width: '100%', marginTop: 22, gap: 22 },
-  column: { width: '100%' },
-  colTitle: {
-    color: COLORS.textGray,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 2,
-    marginBottom: 12,
-  },
-  loading: { alignItems: 'center', paddingVertical: 40 },
-  empty: { color: '#7d818f', fontSize: 12, paddingVertical: 16, textAlign: 'center' },
-
-  soon: {
-    width: '100%',
-    alignItems: 'center',
-    padding: 24,
-    backgroundColor: 'rgba(22,51,135,0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(22,51,135,0.28)',
-    borderRadius: 14,
-  },
-  soonTitle: { color: COLORS.unisBlueBright, fontSize: 22, marginBottom: 8, fontWeight: '600' },
-  soonTxt: { color: '#8b8f9e', textAlign: 'center', fontSize: 13 },
-
-  card: {
-    position: 'relative',
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(20,20,20,0.6)',
-    marginBottom: 12,
-  },
-  ambient: {
-    position: 'absolute',
-    top: -50,
-    left: -50,
-    width: SCREEN_WIDTH * 2,
-    height: 300,
-    opacity: 0.3,
-  },
-  cardInner: { flexDirection: 'row', alignItems: 'center', padding: 10, gap: 10 },
-  rank: { fontSize: 13, color: 'rgba(255,255,255,0.32)', minWidth: 18, textAlign: 'center' },
-  art: { width: 45, height: 45, borderRadius: 8 },
-  meta: { flex: 1, minWidth: 0 },
-  title: { color: COLORS.accentWhite, fontSize: 14, fontWeight: '500' },
-  sub: { color: COLORS.textSilver, fontSize: 12 },
-  playBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    backgroundColor: COLORS.unisBlue,
-    borderRadius: 999,
-  },
-  playTxt: { color: COLORS.accentWhite, fontSize: 11, fontWeight: '600' },
-  viewBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 14,
-    backgroundColor: COLORS.bgBlack,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 999,
-  },
-  viewTxt: { color: COLORS.textSilver, fontSize: 11, fontWeight: '600' },
+  keyDot: { width: 9, height: 9, borderRadius: 5 },
+  keyText: { color: 'rgba(255,255,255,0.6)', fontSize: 11.5 },
+  rail: { marginTop: 14 },
+  railTitle: { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)' },
+  chipText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#4ade80' },
+  error: { color: '#fca5a5', fontSize: 13.5, textAlign: 'center', marginTop: 14 },
+  results: { marginTop: 18, gap: 18 },
+  column: { gap: 8 },
+  colTitle: { color: '#fff', fontSize: 17, fontWeight: '800', textDecorationLine: 'underline' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', minHeight: 68 },
+  skel: { backgroundColor: 'rgba(255,255,255,0.06)' },
+  ambient: { ...StyleSheet.absoluteFillObject, opacity: 0.22 },
+  rank: { width: 28, alignItems: 'center', gap: 2 },
+  rankNum: { color: '#fff', fontWeight: '900', fontSize: 16 },
+  art: { width: 46, height: 46, borderRadius: 10 },
+  title: { color: '#fff', fontWeight: '700', fontSize: 14.5 },
+  sub: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5, marginTop: 1 },
+  playBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999 },
+  viewBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.1)' },
+  btnTxt: { color: '#fff', fontWeight: '800', fontSize: 13 },
+  fullChart: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.08)' },
+  soon: { alignItems: 'center', padding: 20, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.04)', gap: 8 },
+  soonTitle: { color: '#fff', fontSize: 20, fontWeight: '900' },
+  soonText: { color: 'rgba(255,255,255,0.7)', fontSize: 14, textAlign: 'center', lineHeight: 20 },
+  cta: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 999, marginTop: 4 },
 });
 
 export default FindScreen;

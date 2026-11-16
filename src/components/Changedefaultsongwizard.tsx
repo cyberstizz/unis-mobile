@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import {
   Modal,
   View,
@@ -49,6 +50,7 @@ const ChangeDefaultSongWizard: React.FC<ChangeDefaultSongWizardProps> = ({
   songs,
   currentDefaultSongId,
 }) => {
+  const feedback = useFeedback();
   const [selectedSongId, setSelectedSongId] = useState<string | null>(
     currentDefaultSongId ?? null
   );
@@ -90,11 +92,13 @@ const ChangeDefaultSongWizard: React.FC<ChangeDefaultSongWizardProps> = ({
         throw new Error(`Failed to set featured song: ${response.status}`);
       }
 
+      const picked = songs.find((s) => s.songId === selectedSongId);
+      feedback.success(picked?.title ? `\u201C${picked.title}\u201D is now your featured song` : 'Featured song updated');
       onSuccess();
       onClose();
     } catch (err) {
       console.error('Change default song error:', err);
-      Alert.alert('Error', 'Failed to set featured song. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't update your featured song. Try again."));
     } finally {
       setLoading(false);
     }

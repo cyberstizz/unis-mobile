@@ -6,6 +6,7 @@
 // Calls onVerified() once Twilio approves the code.
 
 import React, { useState, useRef, useEffect } from 'react';
+import { useFeedback } from '../context/FeedbackContext';
 import {
   View,
   Text,
@@ -32,6 +33,7 @@ const PhoneVerificationModal: React.FC<PhoneVerificationModalProps> = ({
   onClose,
   onVerified,
 }) => {
+  const feedback = useFeedback();
   const [step, setStep] = useState<Step>('phone');
   const [phone, setPhone] = useState('');
   const [maskedPhone, setMaskedPhone] = useState('');
@@ -67,6 +69,7 @@ const PhoneVerificationModal: React.FC<PhoneVerificationModalProps> = ({
     try {
       const res = await axiosInstance.post('/v1/phone/start', { phoneNumber: phone });
       if (res.data?.alreadyVerified) {
+        feedback.info('That number is already verified');
         onVerified?.();
         onClose?.();
         return;
@@ -87,6 +90,8 @@ const PhoneVerificationModal: React.FC<PhoneVerificationModalProps> = ({
     try {
       const res = await axiosInstance.post('/v1/phone/check', { code });
       if (res.data?.verified) {
+        // The modal closes on success — the toast is what confirms it.
+        feedback.success('Phone verified — voting, commenting and earnings are unlocked');
         onVerified?.();
         onClose?.();
       } else {

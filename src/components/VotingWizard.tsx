@@ -1,619 +1,564 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+// src/components/VotingWizard.tsx
+// ─────────────────────────────────────────────────────────────
+// Mobile port of web src/votingWizard.jsx.
+//
+//   Step 1 Review  — nominee, genre/category locked, interval chips, "Counts in"
+//   Step 2 Confirm — summary + "cannot be undone"
+//   Step 3 Secure  — type the name forward and backward, Cast Vote
+//   Success        — full-bleed takeover: artwork, +pts tag, before → after
+//
+// Same rules as web:
+//   • ONE VOTE, COUNTED UP THE CHAIN. The voter doesn't pick a jurisdiction —
+//     the vote counts once in every open race the voter and the nominee share
+//     (nominee breadcrumb ∩ /v1/vote/eligible-jurisdictions, most local first).
+//   • Problems (guest, phone not verified, race couldn't load, outside your
+//     area) are shown on step 1, before anyone types a name.
+//   • Every ID is resolved up front; a doomed request is never sent.
+//   • Name check folds smart quotes/dashes and extra spaces, so iPhone "Smart
+//     Punctuation" can't block a vote.
+//   • Can't close mid-submit (the result would be hidden).
+//   • Artwork: every candidate URL is tried in order, then the app's standard
+//     placeholder, so an image always appears.
+// ─────────────────────────────────────────────────────────────
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
   Modal,
   StyleSheet,
   Animated,
   Easing,
-  Dimensions,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  ActivityIndicator,
   Pressable,
+  Image,
+  ImageBackground,
 } from 'react-native';
-import Svg, { Path, Circle, G } from 'react-native-svg';
-import { X } from 'lucide-react-native';
+import Svg, { Path, Circle } from 'react-native-svg';
+import { LinearGradient } from 'expo-linear-gradient';
 import axiosInstance from '../services/axiosInstance';
 import { useAuth } from '../context/AuthContext';
-import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
-import PremiumPicker from './Premiumpicker';
+import { useReward, formatScore } from '../context/RewardContext';
+import { GENRE_IDS, GENRE_NAMES, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
+import { VOTE_POINTS, INTERVAL_WEIGHTS } from '../data/helpFigures';
+import { buildUrl } from '../utils/buildUrl';
+import { useUnisTheme, rgba } from '../theme/unisTheme';
+import PhoneVerificationModal from './PhoneVerificationModal';
 import ConfettiCannon from './Confetticannon';
+import UnisLogo from '../../assets/unisLogoThree.svg';
+import type { Nominee, VoteResult, VotingWizardProps } from '../types/voting';
 
-import type {
-  Nominee,
-  VoteFilters,
-  VoteResult,
-  VotingWizardProps,
-} from '../types/voting';
+const TOTAL_STEPS = 3;
 
-// ─────────────────────────────────────────────
-// CONSTANTS
-// ─────────────────────────────────────────────
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+// The app's standard "no artwork" image (same file web uses).
+const FALLBACK_ART = require('../../assets/theQuiet.jpg');
 
-const UNIS_BLUE = '#163387';
-const SILVER = '#C0C0C0';
-const GRAY = '#A9A9A9';
-const SUBTLE_BLACK = '#1a1a1a';
+const LOGO_MAP: Record<string, any> = {
+  orange: require('../../assets/brand/logo-orange.png'),
+  red: require('../../assets/brand/logo-red.png'),
+  green: require('../../assets/brand/logo-green.png'),
+  purple: require('../../assets/brand/logo-purple.png'),
+  yellow: require('../../assets/brand/logo-gold.png'),
+  dianna: require('../../assets/brand/logo-dianna.png'),
+};
 
-const INTERVAL_OPTIONS = [
-  { label: 'Day', value: 'daily' },
-  { label: 'Week', value: 'weekly' },
-  { label: 'Month', value: 'monthly' },
-  { label: 'Quarter', value: 'quarterly' },
-  { label: 'Year', value: 'annual' },
-];
+const ThemeLogo: React.FC<{ theme: string; size: number }> = ({ theme, size }) => {
+  const src = LOGO_MAP[theme];
+  if (!src) return <UnisLogo width={size} height={size} />;
+  return <Image source={src} style={{ width: size, height: size }} resizeMode="contain" accessibilityLabel="UNIS" />;
+};
 
-const formatText = (str: string): string =>
-  str ? str.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
+// ── Artwork ─────────────────────────────────────────────────
+const ARTWORK_KEYS = ['imageUrl', 'artworkUrl', 'photoUrl', 'artwork', 'image', 'coverUrl', 'cover', 'thumbnailUrl', 'pictureUrl'];
 
-// ─────────────────────────────────────────────
-// ANIMATED SVG ICON FOR RESULTS
-// ─────────────────────────────────────────────
-const AnimatedResultIcon: React.FC<{ status: string }> = ({ status }) => {
-  const drawAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.sequence([
-      Animated.spring(scaleAnim, {
-        toValue: 1,
-        damping: 15,
-        stiffness: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(drawAnim, {
-        toValue: 1,
-        duration: 600,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, []);
-
-  let borderColor = '#F44336';
-  let icon = null;
-
-  switch (status) {
-    case 'success':
-      borderColor = UNIS_BLUE;
-      icon = (
-        <Svg width={36} height={36} viewBox="0 0 24 24" fill="none">
-          <Path
-            d="M20 6L9 17l-5-5"
-            stroke={UNIS_BLUE}
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </Svg>
-      );
-      break;
-    case 'duplicate':
-      borderColor = '#FFC107';
-      icon = (
-        <Svg width={36} height={36} viewBox="0 0 24 24" fill="none">
-          <Path
-            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-            stroke="#FFC107"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </Svg>
-      );
-      break;
-    case 'ineligible':
-      borderColor = '#FF5722';
-      icon = (
-        <Svg width={36} height={36} viewBox="0 0 24 24" fill="none">
-          <Circle cx={12} cy={12} r={10} stroke="#FF5722" strokeWidth={2} />
-          <Path d="M4.93 4.93l14.14 14.14" stroke="#FF5722" strokeWidth={2} />
-        </Svg>
-      );
-      break;
-    default:
-      borderColor = '#F44336';
-      icon = (
-        <Svg width={36} height={36} viewBox="0 0 24 24" fill="none">
-          <Path
-            d="M18 6L6 18M6 6l12 12"
-            stroke="#F44336"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </Svg>
-      );
+function toImageSrc(raw: any): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^(data:|file:|content:|asset:)/i.test(value)) return value;
+  try {
+    return buildUrl(value) || null;
+  } catch {
+    return value;
   }
+}
 
+function collectArtwork(obj: any, out: string[]) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const k of ARTWORK_KEYS) {
+    const src = toImageSrc(obj[k]);
+    if (src && !out.includes(src)) out.push(src);
+  }
+}
+
+function artworkCandidatesFor(n: any): string[] {
+  const out: string[] = [];
+  if (!n) return out;
+  collectArtwork(n, out);
+  collectArtwork(n.song || n.track || n.artistProfile || n.user, out);
+  return out;
+}
+
+const probeImage = (uri: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    Image.getSize(uri, () => resolve(true), () => resolve(false));
+  });
+
+// ── Name check helpers ──────────────────────────────────────
+function normalizeName(s: string) {
+  return String(s || '')
+    .normalize('NFC')
+    .replace(/[‘’‚‛′`´]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐-―−]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function reverseGraphemes(s: string) {
+  const str = String(s || '');
+  const Seg = (Intl as any)?.Segmenter;
+  if (typeof Seg === 'function') {
+    try {
+      const seg = new Seg(undefined, { granularity: 'grapheme' });
+      return Array.from(seg.segment(str), (part: any) => part.segment).reverse().join('');
+    } catch {
+      /* fall through */
+    }
+  }
+  return Array.from(str).reverse().join('');
+}
+
+// ── Intervals ───────────────────────────────────────────────
+const INTERVAL_LABEL: Record<string, string> = {
+  daily: 'Day', weekly: 'Week', monthly: 'Month', quarterly: 'Quarter', midterm: 'Midterm', annual: 'Year',
+};
+
+const INTERVAL_OPTIONS = INTERVAL_WEIGHTS
+  .filter((w) => INTERVAL_IDS[w.key])
+  .map((w) => ({ value: w.key, label: INTERVAL_LABEL[w.key] || w.label }));
+
+const INTERVAL_ALIASES: Record<string, string> = {
+  day: 'daily', week: 'weekly', month: 'monthly', quarter: 'quarterly', 'semi-annual': 'midterm', year: 'annual', yearly: 'annual',
+};
+
+function normalizeInterval(value: any) {
+  const k = String(value || '').toLowerCase();
+  const key = INTERVAL_ALIASES[k] || k;
+  return INTERVAL_IDS[key] ? key : 'daily';
+}
+
+const INTERVAL_NOUN: Record<string, string> = {
+  daily: 'day', weekly: 'week', monthly: 'month', quarterly: 'quarter', midterm: 'half-year', annual: 'year',
+};
+
+function nomineeHomeJurisdictionId(n: any): string | null {
+  if (!n) return null;
+  if (n.jurisdictionId) return n.jurisdictionId;
+  if (n.jurisdiction && typeof n.jurisdiction === 'object' && n.jurisdiction.jurisdictionId) return n.jurisdiction.jurisdictionId;
+  if (typeof n.jurisdiction === 'string') {
+    const slug = n.jurisdiction.toLowerCase().trim().replace(/\s+/g, '-');
+    return JURISDICTION_IDS[slug] || null;
+  }
+  return null;
+}
+
+const formatText = (str: any) => (str ? String(str).replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '');
+
+type Extras = { genreId: string | null; artwork: string | null; pending: boolean };
+const EMPTY_EXTRAS: Extras = { genreId: null, artwork: null, pending: false };
+type JStatus = 'loading' | 'ready' | 'unresolved' | 'none';
+
+// ── Result icons ────────────────────────────────────────────
+const ResultIcon: React.FC<{ status: string; color: string }> = ({ status, color }) => {
+  const scale = useRef(new Animated.Value(0.6)).current;
+  useEffect(() => {
+    Animated.spring(scale, { toValue: 1, damping: 14, stiffness: 200, useNativeDriver: true }).start();
+  }, [scale]);
+  let icon;
+  if (status === 'duplicate') {
+    icon = <Path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />;
+  } else if (status === 'ineligible') {
+    icon = (
+      <>
+        <Circle cx={12} cy={12} r={9} stroke={color} strokeWidth={2} fill="none" />
+        <Path d="M5.6 5.6l12.8 12.8" stroke={color} strokeWidth={2} strokeLinecap="round" />
+      </>
+    );
+  } else {
+    icon = <Path d="M18 6L6 18M6 6l12 12" stroke={color} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" />;
+  }
   return (
-    <Animated.View
-      style={[
-        styles.iconContainer,
-        {
-          borderColor,
-          transform: [{ scale: scaleAnim }],
-        },
-      ]}
-    >
-      {icon}
+    <Animated.View style={[styles.resultIcon, { borderColor: color, transform: [{ scale }] }]}>
+      <Svg width={40} height={40} viewBox="0 0 24 24" fill="none">{icon}</Svg>
     </Animated.View>
   );
 };
 
-// ─────────────────────────────────────────────
-// STEP INDICATOR (the 3 dots at top)
-// ─────────────────────────────────────────────
-const StepIndicator: React.FC<{ currentStep: number; totalSteps: number }> = ({
-  currentStep,
-  totalSteps,
-}) => {
-  return (
-    <View style={styles.stepIndicatorContainer}>
-      {Array.from({ length: totalSteps }, (_, i) => {
-        const stepNum = i + 1;
-        const isActive = stepNum === currentStep;
-        const isCompleted = stepNum < currentStep;
-        return (
-          <View key={i} style={styles.stepIndicatorItem}>
-            {i > 0 && (
-              <View
-                style={[
-                  styles.stepLine,
-                  (isCompleted || isActive) && styles.stepLineActive,
-                ]}
-              />
-            )}
-            <View
-              style={[
-                styles.stepDot,
-                isActive && styles.stepDotActive,
-                isCompleted && styles.stepDotCompleted,
-              ]}
-            >
-              {isCompleted ? (
-                <Svg width={10} height={10} viewBox="0 0 24 24" fill="none">
-                  <Path d="M20 6L9 17l-5-5" stroke="#FFF" strokeWidth={3} strokeLinecap="round" />
-                </Svg>
-              ) : (
-                <Text
-                  style={[
-                    styles.stepNumber,
-                    (isActive || isCompleted) && styles.stepNumberActive,
-                  ]}
-                >
-                  {stepNum}
-                </Text>
-              )}
-            </View>
-          </View>
-        );
-      })}
-    </View>
-  );
-};
+const CloseGlyph: React.FC = () => (
+  <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+    <Path d="M6 6l12 12M6 18L18 6" stroke="#fff" strokeWidth={2} strokeLinecap="round" />
+  </Svg>
+);
 
-// ─────────────────────────────────────────────
-// MAIN COMPONENT
-// ─────────────────────────────────────────────
-const VotingWizard: React.FC<VotingWizardProps> = ({
-  visible,
-  onClose,
-  onVoteSuccess,
-  nominee,
-  userId,
-  filters,
-}) => {
-  // --- State ---
+const CheckGlyph: React.FC<{ color: string }> = ({ color }) => (
+  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+    <Path d="M20 6L9 17l-5-5" stroke={color} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+// ─────────────────────────────────────────────────────────────
+const VotingWizard: React.FC<VotingWizardProps> = ({ visible, onClose, onVoteSuccess, nominee, userId, filters }) => {
+  const show = visible;
+  const t = useUnisTheme();
+  // No useNavigation(): the Player mounts this wizard outside the navigator.
+  const { theme, user, isGuest, refreshUser, logout } = useAuth() as any;
+  const { setScoreTotal, displayedScore } = useReward();
+
   const [step, setStep] = useState(1);
-  const [currentFilters, setCurrentFilters] = useState<VoteFilters>({
-    selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap',
-    selectedType: nominee?.type || filters?.selectedType || 'artist',
-    selectedInterval: filters?.selectedInterval || 'daily',
-    selectedJurisdiction: '',
-  });
+  const [currentFilters, setCurrentFilters] = useState({ selectedGenre: 'rap', selectedType: 'artist', selectedInterval: 'daily' });
   const [artistNameForward, setArtistNameForward] = useState('');
   const [artistNameBackward, setArtistNameBackward] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  // ★ ironclad (ported from web): the picker is built from real API
-  //   jurisdiction objects ({jurisdictionId, name}) instead of the hardcoded
-  //   3-slug map, and the selection IS the UUID — no slug→UUID re-mapping at
-  //   submit time.
+  const submittingRef = useRef(false);
+
   const [jurisdictionOptions, setJurisdictionOptions] = useState<{ jurisdictionId: string; name: string }[]>([]);
   const [selectedJurisdictionId, setSelectedJurisdictionId] = useState('');
-  const [isFetchingJurisdictions, setIsFetchingJurisdictions] = useState(false);
+  const [jurisdictionStatus, setJurisdictionStatus] = useState<JStatus>('loading');
+  const [reloadKey, setReloadKey] = useState(0);
+  const preferredJurisdictionsRef = useRef<string[]>([]);
+
+  const [nomineeExtras, setNomineeExtras] = useState<Extras>(EMPTY_EXTRAS);
   const [voteResult, setVoteResult] = useState<VoteResult>({ status: 'idle', message: '', details: '' });
-  const [showConfetti, setShowConfetti] = useState(false);
-  const { user } = useAuth();
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [artworkSrc, setArtworkSrc] = useState<string | null>(null);
+  const [useFallbackArt, setUseFallbackArt] = useState(false);
 
-  // --- Animations ---
-  const backdropAnim = useRef(new Animated.Value(0)).current;
-  const modalScale = useRef(new Animated.Value(0.85)).current;
-  const modalOpacity = useRef(new Animated.Value(0)).current;
-  const contentFade = useRef(new Animated.Value(1)).current;
-  const glowAnim = useRef(new Animated.Value(0)).current;
-  const backwardInputRef = useRef<TextInput>(null);
+  const backwardRef = useRef<TextInput>(null);
+  const stepAnim = useRef(new Animated.Value(1)).current;
 
-  const glowWrapperOpacity = useRef(new Animated.Value(0)).current;
+  const prevShowRef = useRef(false);
+  const latestRef = useRef({ nominee, filters });
+  latestRef.current = { nominee, filters };
 
-  const selectedNominee = nominee;
+  const selectedNominee: Nominee | null = nominee;
+  const nomineeName = (selectedNominee?.name || '').trim();
+  const reversedNomineeName = useMemo(() => reverseGraphemes(nomineeName.normalize('NFC')), [nomineeName]);
 
-  // Reversed name for Step 3 verification
-  const reversedNomineeName = useMemo(
-    () => (selectedNominee ? selectedNominee.name.split('').reverse().join('') : ''),
-    [selectedNominee]
-  );
-
-  // Picker options derived straight from the API-sourced jurisdiction list.
-  const pickerJurisdictionOptions = useMemo(
-    () => jurisdictionOptions.map(o => ({ label: o.name, value: o.jurisdictionId })),
-    [jurisdictionOptions]
-  );
-
-  // ★ ironclad: display name comes from the selected option itself.
-  const selectedJurisdictionName =
-    jurisdictionOptions.find(o => o.jurisdictionId === selectedJurisdictionId)?.name || '…';
-
-  // ─── MODAL OPEN/CLOSE ANIMATIONS ───
+  // --- Reset only on the open transition ---------------------------------
   useEffect(() => {
-    if (visible) {
-      Animated.parallel([
-        Animated.timing(backdropAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }),
-        Animated.spring(modalScale, {
-          toValue: 1,
-          damping: 22,
-          stiffness: 400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(modalOpacity, {
-          toValue: 1,
-          duration: 250,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(backdropAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-        Animated.timing(modalScale, { toValue: 0.85, duration: 200, useNativeDriver: true }),
-        Animated.timing(modalOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
-      ]).start();
-    }
-  }, [visible]);
-
-  // ─── STEP TRANSITION ANIMATION ───
-  const animateStepChange = useCallback((newStep: number) => {
-    Animated.timing(contentFade, {
-      toValue: 0,
-      duration: 120,
-      useNativeDriver: true,
-    }).start(() => {
-      setStep(newStep);
-      Animated.timing(contentFade, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true,
-      }).start();
-    });
-  }, []);
-
-  // ─── SUCCESS GLOW ANIMATION ───
-  useEffect(() => {
-    if (voteResult.status === 'success') {
-      setShowConfetti(true);
-      
-      // Fade in the glow wrapper
-      Animated.timing(glowWrapperOpacity, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: false,
-      }).start();
-      
-      // Pulsing glow loop
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(glowAnim, {
-            toValue: 1,
-            duration: 1500,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-          Animated.timing(glowAnim, {
-            toValue: 0,
-            duration: 1500,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: false,
-          }),
-        ])
-      ).start();
-      
-      const timer = setTimeout(() => setShowConfetti(false), 3000);
-      return () => clearTimeout(timer);
-    } else {
-      glowAnim.setValue(0);
-      glowWrapperOpacity.setValue(0);
-      setShowConfetti(false);
-    }
-  }, [voteResult.status]);
-
-  // ─── RESET STATE ON OPEN ───
-  // CRITICAL FIX: Split into two effects.
-  // Effect 1: Full reset ONLY when the modal opens (visible changes to true).
-  // This prevents the wizard from resetting step/inputs when Player re-renders
-  // (which happens every ~250ms due to playback position updates).
-  useEffect(() => {
-    if (visible) {
+    if (show && !prevShowRef.current) {
+      const { nominee: n, filters: f } = latestRef.current;
       setStep(1);
       setVoteResult({ status: 'idle', message: '', details: '' });
       setArtistNameForward('');
       setArtistNameBackward('');
       setSubmitting(false);
-      setJurisdictionOptions([]); // ★ ironclad
+      submittingRef.current = false;
+      setShowPhoneModal(false);
+      setArtworkSrc(null);
+      setUseFallbackArt(false);
+      setJurisdictionOptions([]);
+      setSelectedJurisdictionId('');
+      setJurisdictionStatus('loading');
+      preferredJurisdictionsRef.current = [
+        f?.selectedJurisdiction ? JURISDICTION_IDS[f.selectedJurisdiction] : null,
+        nomineeHomeJurisdictionId(n),
+      ].filter(Boolean) as string[];
+      setCurrentFilters({
+        selectedGenre: (n as any)?.genreKey || f?.selectedGenre || 'rap',
+        selectedType: (n as any)?.type || f?.selectedType || 'artist',
+        selectedInterval: normalizeInterval(f?.selectedInterval),
+      });
     }
-  }, [visible]);
+    prevShowRef.current = show;
+  }, [show]); // only `show` — never nominee/filters
 
-  // Effect 2: Update filters when nominee changes, but do NOT reset step.
-  // Uses nominee?.id as dep instead of the full nominee object to avoid
-  // firing on every re-render when Player passes a new object reference.
+  // --- Resolve nominee context + eligible jurisdictions -------------------
   useEffect(() => {
-    if (visible && nominee) {
-      // ★ ironclad: prefer the nominee's REAL jurisdiction UUID; the hardcoded
-      //   map is only a bootstrap fallback until the breadcrumb fetch resolves.
-      const homeSlug =
-        nominee?.jurisdiction && typeof nominee.jurisdiction === 'string'
-          ? nominee.jurisdiction.toLowerCase().replace(/\s+/g, '-')
-          : null;
-      setSelectedJurisdictionId(
-        (nominee as any)?.jurisdictionId
-          || (typeof nominee?.jurisdiction === 'object'
-                ? (nominee.jurisdiction as any)?.jurisdictionId
-                : undefined)
-          || (homeSlug ? JURISDICTION_IDS[homeSlug] : undefined)
-          || (filters?.selectedJurisdiction ? JURISDICTION_IDS[filters.selectedJurisdiction] : undefined)
-          || ''
-      );
-      setCurrentFilters(prev => ({
-        ...prev,
-        selectedGenre: nominee?.genreKey || filters?.selectedGenre || 'rap',
-        selectedType: nominee?.type || filters?.selectedType || 'artist',
-      }));
-    }
-  }, [visible, nominee?.id]);
+    if (!show || !nominee) return undefined;
+    let cancelled = false;
 
-  // ─── FETCH ELIGIBLE JURISDICTIONS (BREADCRUMB) ───
-  useEffect(() => {
-    if (!visible || !nominee) return;
+    const run = async () => {
+      setJurisdictionStatus('loading');
+      let homeId = nomineeHomeJurisdictionId(nominee);
+      const hasArtwork = artworkCandidatesFor(nominee).length > 0;
+      const canFetchDetails = Boolean(nominee.id) && (nominee.type === 'artist' || nominee.type === 'song');
+      const needDetails = canFetchDetails && (!homeId || !nominee.genreId || !hasArtwork);
 
-    const fetchEligibleJurisdictions = async () => {
-      setIsFetchingJurisdictions(true);
+      setNomineeExtras({ ...EMPTY_EXTRAS, pending: needDetails });
 
-      // Determine nominee's jurisdiction ID
-      let nomineeJurisdictionId: string | null = null;
-
-      if (nominee.jurisdiction) {
-        if (typeof nominee.jurisdiction === 'object' && (nominee.jurisdiction as any).jurisdictionId) {
-          nomineeJurisdictionId = (nominee.jurisdiction as any).jurisdictionId;
-        } else if (typeof nominee.jurisdiction === 'string') {
-          const jurisdictionName = nominee.jurisdiction.toLowerCase().replace(/\s+/g, '-');
-          nomineeJurisdictionId = JURISDICTION_IDS[jurisdictionName] || null;
-        }
-      }
-
-      // If missing, fetch from backend
-      if (!nomineeJurisdictionId && nominee.id && nominee.type) {
+      if (needDetails) {
         try {
-          const endpoint = nominee.type === 'artist'
-            ? `/v1/users/${nominee.id}`
-            : `/v1/media/song/${nominee.id}`;
-          const response = await axiosInstance.get(endpoint);
-          const fetchedJurisdiction = response.data.jurisdiction;
-          if (fetchedJurisdiction?.jurisdictionId) {
-            nomineeJurisdictionId = fetchedJurisdiction.jurisdictionId;
-          }
+          const url = nominee.type === 'artist' ? `/v1/users/profile/${nominee.id}` : `/v1/media/song/${nominee.id}`;
+          const res = await axiosInstance.get(url);
+          if (cancelled) return;
+          const d = res?.data || {};
+          homeId = homeId || d.jurisdiction?.jurisdictionId || null;
+          setNomineeExtras({
+            genreId: d.genre?.genreId || null,
+            artwork: toImageSrc(nominee.type === 'artist' ? d.photoUrl : d.artworkUrl),
+            pending: false,
+          });
         } catch (err) {
-          console.error('Failed to fetch nominee jurisdiction:', err);
+          if (cancelled) return;
+          console.error('[VotingWizard] Could not load nominee details:', { nomineeId: nominee.id, err });
+          setNomineeExtras(EMPTY_EXTRAS);
         }
       }
 
-      // ★ ironclad: shared fallback — options come from the bootstrap map,
-      //   with readable names via formatText, so the picker is never empty.
-      const mapFallbackOptions = Object.entries(JURISDICTION_IDS).map(([slug, id]) => ({
-        jurisdictionId: id,
-        name: formatText(slug),
-      }));
-
-      if (!nomineeJurisdictionId) {
-        console.warn('[VotingWizard] Could not resolve nominee jurisdiction; using bootstrap options.'); // ★ checklist: logging
-        setJurisdictionOptions(mapFallbackOptions);
-        setSelectedJurisdictionId(prev => prev || mapFallbackOptions[0]?.jurisdictionId || '');
-        setIsFetchingJurisdictions(false);
+      if (!homeId) {
+        console.error('[VotingWizard] Nominee jurisdiction unresolved — refusing to guess.', { nomineeId: nominee.id, type: nominee.type });
+        setJurisdictionOptions([]);
+        setJurisdictionStatus('unresolved');
         return;
       }
 
-      try {
-        const response = await axiosInstance.get(`/v1/jurisdictions/${nomineeJurisdictionId}/breadcrumb`);
+      const [crumbRes, eligibleRes] = await Promise.allSettled([
+        axiosInstance.get(`/v1/jurisdictions/${homeId}/breadcrumb`),
+        axiosInstance.get('/v1/vote/eligible-jurisdictions'),
+      ]);
+      if (cancelled) return;
 
-        // ★ ironclad: the option list IS the API's voting-enabled breadcrumb —
-        //   any jurisdiction the backend deems eligible is selectable, with its
-        //   real name and real UUID. Nothing outside it ever reaches submit.
-        const options = (response.data || [])
-          .filter((j: any) => j.votingEnabled !== false)
-          .map((j: any) => ({ jurisdictionId: j.jurisdictionId, name: j.name }));
-
-        if (options.length === 0) {
-          console.warn('[VotingWizard] Breadcrumb returned no voting-enabled jurisdictions.'); // ★
-          setJurisdictionOptions(mapFallbackOptions);
-          setSelectedJurisdictionId(prev => prev || mapFallbackOptions[0]?.jurisdictionId || '');
-          return;
-        }
-
-        setJurisdictionOptions(options);
-        setSelectedJurisdictionId(prev =>
-          options.some((o: { jurisdictionId: string }) => o.jurisdictionId === prev)
-            ? prev
-            : (options.find((o: { jurisdictionId: string }) => o.jurisdictionId === nomineeJurisdictionId)?.jurisdictionId
-              || options[0].jurisdictionId)
-        );
-      } catch (err) {
-        console.error('Failed to fetch eligible jurisdictions:', err);
-        setJurisdictionOptions(mapFallbackOptions);
-        setSelectedJurisdictionId(prev =>
-          mapFallbackOptions.some(o => o.jurisdictionId === prev)
-            ? prev
-            : mapFallbackOptions[0]?.jurisdictionId || ''
-        );
-      } finally {
-        setIsFetchingJurisdictions(false);
+      if (crumbRes.status !== 'fulfilled') {
+        console.error('[VotingWizard] Failed to load nominee jurisdiction chain:', (crumbRes as any).reason);
+        setJurisdictionOptions([]);
+        setJurisdictionStatus('unresolved');
+        return;
       }
+
+      const chain = (Array.isArray(crumbRes.value?.data) ? crumbRes.value.data : [])
+        .filter((j: any) => j && j.jurisdictionId && j.votingEnabled !== false)
+        .map((j: any) => ({ jurisdictionId: j.jurisdictionId, name: j.name }))
+        .reverse();
+
+      let options = chain;
+      if (eligibleRes.status === 'fulfilled' && Array.isArray(eligibleRes.value?.data)) {
+        const eligible = new Set(eligibleRes.value.data.map((j: any) => j?.jurisdictionId).filter(Boolean));
+        options = chain.filter((o: any) => eligible.has(o.jurisdictionId));
+      } else {
+        console.warn('[VotingWizard] Could not load your eligible jurisdictions; server will validate.');
+      }
+
+      if (options.length === 0) {
+        setJurisdictionOptions([]);
+        setJurisdictionStatus(chain.length > 0 ? 'none' : 'unresolved');
+        return;
+      }
+
+      setJurisdictionOptions(options);
+      const preferred = [...preferredJurisdictionsRef.current, homeId];
+      setSelectedJurisdictionId((prev) => {
+        if (options.some((o: any) => o.jurisdictionId === prev)) return prev;
+        const match = preferred.find((id) => options.some((o: any) => o.jurisdictionId === id));
+        return match || options[0].jurisdictionId;
+      });
+      setJurisdictionStatus('ready');
     };
 
-    fetchEligibleJurisdictions();
-  }, [visible, nominee?.id]);
+    run();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, nominee?.id, nominee?.type, reloadKey]);
 
-  // ─── HANDLERS ───
+  // --- Artwork: try each candidate until one loads ------------------------
+  const artCandidates = useMemo(() => {
+    const list = artworkCandidatesFor(selectedNominee);
+    if (nomineeExtras.artwork && !list.includes(nomineeExtras.artwork)) list.push(nomineeExtras.artwork);
+    return list;
+  }, [selectedNominee, nomineeExtras.artwork]);
+  const artKey = JSON.stringify(artCandidates);
+
+  useEffect(() => {
+    if (!show) return undefined;
+    let active = true;
+    (async () => {
+      const list: string[] = JSON.parse(artKey);
+      for (const src of list) {
+        // eslint-disable-next-line no-await-in-loop
+        const ok = await probeImage(src);
+        if (!active) return;
+        if (ok) {
+          setArtworkSrc(src);
+          setUseFallbackArt(false);
+          return;
+        }
+        console.warn('[VotingWizard] Artwork failed to load, trying next source:', src);
+      }
+      if (!active) return;
+      setArtworkSrc(null);
+      // Hold the placeholder back while the details fetch might still find the real image.
+      setUseFallbackArt(!nomineeExtras.pending);
+    })();
+    return () => { active = false; };
+  }, [show, artKey, nomineeExtras.pending]);
+
+  const artSource = artworkSrc ? { uri: artworkSrc } : useFallbackArt ? FALLBACK_ART : null;
+  const showArtwork = Boolean(artSource);
+
+  // --- Step transition ----------------------------------------------------
+  const animateStep = (dir: 1 | -1) => {
+    stepAnim.setValue(dir);
+    Animated.timing(stepAnim, { toValue: 0, duration: 260, easing: Easing.bezier(0.22, 1, 0.36, 1), useNativeDriver: true }).start();
+  };
+
+  // --- Close (never mid-submit) -------------------------------------------
+  const handleClose = () => {
+    if (submittingRef.current) return;
+    onClose?.();
+  };
+
+  // --- Derived ------------------------------------------------------------
+  const resolvedGenreId =
+    selectedNominee?.genreId ||
+    nomineeExtras.genreId ||
+    GENRE_IDS[currentFilters.selectedGenre] ||
+    GENRE_IDS[String(currentFilters.selectedGenre || '').toLowerCase()] ||
+    null;
+  const genreLabel = formatText((resolvedGenreId && GENRE_NAMES[resolvedGenreId]) || currentFilters.selectedGenre);
+  const typeWord = formatText(currentFilters.selectedType);
+  const intervalKey = currentFilters.selectedInterval;
+  const intervalNoun = INTERVAL_NOUN[intervalKey] || formatText(intervalKey);
+  const category = `${typeWord} of the ${intervalNoun}`;
+  const selectedJurisdictionName = jurisdictionOptions.length > 0 ? jurisdictionOptions.map((o) => o.name).join(' · ') : '…';
+
+  let issue: null | { kind: string; title: string; body: string; actionLabel?: string; onAction?: () => void } = null;
+  if (isGuest) {
+    issue = {
+      kind: 'guest',
+      title: 'Sign in to vote',
+      body: 'Voting is for Unis members. Sign in or create a free account to cast your vote.',
+      actionLabel: 'Sign in',
+      onAction: () => {
+        onClose?.();
+        // The mobile app shows the sign-in screen whenever there's no session.
+        logout?.();
+      },
+    };
+  } else if (user && !user.phoneVerified) {
+    issue = {
+      kind: 'phone',
+      title: 'Verify your phone to vote',
+      body: 'A quick phone check keeps voting fair — one person, one vote. It takes about a minute.',
+      actionLabel: 'Verify phone',
+      onAction: () => setShowPhoneModal(true),
+    };
+  } else if (jurisdictionStatus === 'unresolved') {
+    issue = {
+      kind: 'load',
+      title: 'Couldn’t load this race',
+      body: `We couldn’t confirm where ${nomineeName || 'this nominee'} can be voted on, so we won’t guess. Check your connection and try again.`,
+      actionLabel: 'Try again',
+      onAction: () => setReloadKey((k) => k + 1),
+    };
+  } else if (jurisdictionStatus === 'none') {
+    issue = {
+      kind: 'area',
+      title: 'Outside your voting area',
+      body: `You and ${nomineeName || 'this nominee'} aren’t in any open race together yet, so this vote can’t be counted. You can vote for artists and songs from your own area and the areas around it.`,
+    };
+  }
+
+  const canProceed = !issue && jurisdictionStatus === 'ready' && Boolean(selectedJurisdictionId) && Boolean(resolvedGenreId) && Boolean(INTERVAL_IDS[intervalKey]);
+  const forwardMatches = artistNameForward.trim().length > 0 && normalizeName(artistNameForward) === normalizeName(nomineeName);
+  const backwardMatches = artistNameBackward.trim().length > 0 && normalizeName(artistNameBackward) === normalizeName(reversedNomineeName);
+  const canSubmit = forwardMatches && backwardMatches && !submitting;
+
+  // --- Nav ----------------------------------------------------------------
   const handleNext = () => {
-    setVoteResult({ status: 'idle', message: '', details: '' });
-    if (step < 3) animateStepChange(step + 1);
+    if (step === 1 && !canProceed) return;
+    setVoteResult({ status: 'idle', message: '' });
+    if (step < TOTAL_STEPS) {
+      setStep(step + 1);
+      animateStep(1);
+    }
   };
-
   const handleBack = () => {
-    if (step > 1) animateStepChange(step - 1);
+    if (step > 1) {
+      setStep(step - 1);
+      animateStep(-1);
+    }
   };
 
+  // --- Submit -------------------------------------------------------------
   const handleConfirmVote = async () => {
-    if (!selectedNominee) return;
-    setVoteResult({ status: 'idle', message: '', details: '' });
+    if (submittingRef.current) return;
+    setVoteResult({ status: 'idle', message: '' });
 
-    if (artistNameForward.toLowerCase() !== selectedNominee.name.toLowerCase()) {
+    if (!forwardMatches) {
+      setVoteResult({ status: 'error', message: 'Name Forward Invalid', details: 'The name entered forward does not match.' });
+      return;
+    }
+    if (!backwardMatches) {
+      setVoteResult({ status: 'error', message: 'Name Backward Invalid', details: 'The name entered backward does not match.' });
+      return;
+    }
+    if (!user?.phoneVerified) {
       setVoteResult({
-        status: 'error',
-        message: 'Name Forward Invalid',
-        details: 'The name entered forward does not match.',
+        status: 'ineligible',
+        message: isGuest ? 'Sign In Required' : 'Phone Not Verified',
+        details: isGuest ? 'Sign in to vote.' : 'Verify your phone number to vote.',
       });
       return;
     }
-    if (artistNameBackward.toLowerCase() !== reversedNomineeName.toLowerCase()) {
-      setVoteResult({
-        status: 'error',
-        message: 'Name Backward Invalid',
-        details: 'The name entered backward does not match.',
-      });
-      return;
-    }
 
-    setSubmitting(true);
-
-    // ★ ironclad (ported from web): resolve every ID up front — real UUIDs
-    //   first, bootstrap map as fallback — and refuse to send a doomed
-    //   request. Each missing piece gets its own named message instead of a
-    //   mystery failure downstream.
-    const genreId =
-      (selectedNominee as any).genreId
-      || GENRE_IDS[currentFilters.selectedGenre]
-      || GENRE_IDS[(currentFilters.selectedGenre || '').toLowerCase()];
-    const jurisdictionId = selectedJurisdictionId;
-    const intervalId = INTERVAL_IDS[currentFilters.selectedInterval];
-
-    const missing =
-      (!genreId && 'genre') || (!jurisdictionId && 'jurisdiction') || (!intervalId && 'interval');
+    const genreId = resolvedGenreId;
+    const jurisdictionId = jurisdictionOptions.some((o) => o.jurisdictionId === selectedJurisdictionId) ? selectedJurisdictionId : null;
+    const intervalId = INTERVAL_IDS[intervalKey];
+    const missing = (!genreId && 'genre') || (!jurisdictionId && 'jurisdiction') || (!intervalId && 'interval');
     if (missing) {
-      console.error(`[VotingWizard] Vote blocked — unresolved ${missing}:`, { // ★ checklist: logging
-        genreId, jurisdictionId, intervalId, filters: currentFilters, nominee: selectedNominee,
-      });
+      console.error(`[VotingWizard] Vote blocked — unresolved ${missing}:`, { genreId, jurisdictionId, intervalId, nomineeId: selectedNominee?.id });
       setVoteResult({
         status: 'error',
         message: 'Vote Not Sent',
         details: `We couldn't identify this vote's ${missing}. Please close and reopen the wizard — if it keeps happening, contact support.`,
       });
-      setSubmitting(false);
       return;
     }
 
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
       const voteData = {
         userId,
         targetType: currentFilters.selectedType,
-        targetId: selectedNominee.id,
+        targetId: selectedNominee!.id,
         genreId,
         jurisdictionId,
         intervalId,
-        // ★ ironclad: voteDate removed — the server stamps the date in the
-        //   platform timezone. The old client-side UTC date rolled to
-        //   "tomorrow" after ~8pm New York time, causing phantom duplicate
-        //   rejections and window mismatches.
+        // No voteDate — the server stamps the date in the platform timezone.
       };
-
-      if (!user?.phoneVerified) {
-        setVoteResult({
-          status: 'ineligible',
-          message: 'Phone Not Verified',
-          details: 'Verify your phone number to vote.',
-        });
-        setSubmitting(false);
-        return;
-      }
-
       await axiosInstance.post('/v1/vote/submit', voteData);
 
-      // Animate to result with a brief delay for dramatic effect
-      Animated.timing(contentFade, {
-        toValue: 0,
-        duration: 150,
-        useNativeDriver: true,
-      }).start(() => {
-        setVoteResult({ status: 'success', message: 'Vote Recorded' });
-        Animated.timing(contentFade, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }).start();
-      });
+      const rawBefore = displayedScore ?? user?.score ?? user?.totalScore ?? user?.points ?? null;
+      let scoreBefore: number | null = null;
+      let scoreAfter: number | null = null;
+      if (rawBefore != null && Number.isFinite(Number(rawBefore))) {
+        scoreBefore = Number(rawBefore);
+        scoreAfter = scoreBefore + VOTE_POINTS;
+        setScoreTotal(scoreAfter);
+      }
+      setVoteResult({ status: 'success', message: 'Vote Recorded', points: VOTE_POINTS, scoreBefore, scoreAfter });
     } catch (err: any) {
-      const resp = err.response;
+      const resp = err?.response;
       const status = resp?.status;
       const data = resp?.data;
-      // ★ ironclad: the backend now always sends {code, message} JSON, but we
-      //   also accept legacy plain-string bodies so no message is ever lost.
       const serverMsg =
-        (data && typeof data === 'object' && (data.message || data.error))
-        || (typeof data === 'string' && data.trim() ? data.trim() : '');
-
-      console.error('Vote submission failed:', { status, serverMsg, data, err }); // ★ checklist: logging
+        (data && typeof data === 'object' && (data.message || data.error)) ||
+        (typeof data === 'string' && data.trim() ? data.trim() : '');
+      console.error('Vote submission failed:', { status, serverMsg });
 
       if (!resp) {
-        // ★ ironclad: ONLY a request that never reached the server is called a
-        //   connection problem. Every server response shows the server's words.
-        setVoteResult({
-          status: 'network',
-          message: 'Connection Failed',
-          details: 'We could not reach the server. Check your connection and try again — your vote was not counted.',
-        });
+        setVoteResult({ status: 'network', message: 'Connection Failed', details: 'We could not reach the server. Check your connection and try again — your vote was not counted.' });
       } else if (status === 409) {
-        setVoteResult({
-          status: 'duplicate',
-          message: 'Already Voted',
-          details: serverMsg || 'You have already cast a vote in this category for this interval.',
-        });
+        setVoteResult({ status: 'duplicate', message: 'Already Voted', details: serverMsg || 'You have already cast a vote in this category for this interval.' });
       } else if (status === 403) {
-        setVoteResult({
-          status: 'ineligible',
-          message: 'Vote Rejected',
-          details: serverMsg || 'You are not eligible to cast this vote.',
-        });
+        setVoteResult({ status: 'ineligible', message: 'Vote Rejected', details: serverMsg || 'You are not eligible to cast this vote.' });
       } else if (status >= 400 && status < 500) {
-        setVoteResult({
-          status: 'error',
-          message: 'Vote Rejected',
-          details: serverMsg || `The server rejected this vote (code ${status}). Please close the wizard and try again.`,
-        });
+        setVoteResult({ status: 'error', message: 'Vote Rejected', details: serverMsg || `The server rejected this vote (code ${status}). Please close the wizard and try again.` });
       } else {
         setVoteResult({
           status: 'error',
@@ -624,767 +569,426 @@ const VotingWizard: React.FC<VotingWizardProps> = ({
         });
       }
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
-  // ─── RENDER: RESULT SCREEN ───
+  // --- Renderers ------------------------------------------------------------
   const renderResult = () => {
     const { status, message, details } = voteResult;
-    const isSuccess = status === 'success';
-    const statusColor =
-      status === 'success' ? UNIS_BLUE :
-      status === 'duplicate' ? '#FFC107' :
-      status === 'ineligible' ? '#FF5722' : '#F44336';
-
+    const iconColor = status === 'duplicate' ? '#E0A93C' : '#D85A3B';
+    const changeSelection = status === 'duplicate' || status === 'ineligible';
     return (
-      <ScrollView
-        contentContainerStyle={styles.stepContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Logo placeholder - use text since we handle SVG imports as components */}
-        <Text style={styles.resultLogoText}>UNIS</Text>
-
-        <AnimatedResultIcon status={status} />
-
-        <Text style={[styles.resultHeader, { color: statusColor }]}>
-          {message}
-        </Text>
-
-        {isSuccess && selectedNominee ? (
-          <View style={styles.voteReceipt}>
-            <Text style={styles.receiptLabel}>CONFIRMED NOMINEE</Text>
-            <Text style={styles.receiptName}>{selectedNominee.name}</Text>
-
-            {/* Gradient divider */}
-            <View style={styles.receiptDivider} />
-
-            <View style={styles.receiptMetaGrid}>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Type</Text>
-                <Text style={styles.metaValue}>{formatText(currentFilters.selectedType)}</Text>
-              </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Interval</Text>
-                <Text style={styles.metaValue}>{formatText(currentFilters.selectedInterval)}</Text>
-              </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Jurisdiction</Text>
-                <Text style={styles.metaValue}>{selectedJurisdictionName}</Text>
-              </View>
-              <View style={styles.metaItem}>
-                <Text style={styles.metaLabel}>Genre</Text>
-                <Text style={styles.metaValue}>{formatText(currentFilters.selectedGenre)}</Text>
-              </View>
-            </View>
-          </View>
-        ) : (
-          <Text style={styles.errorDetails}>{details}</Text>
-        )}
-
-        <View style={styles.buttonGroupResult}>
-          {isSuccess ? (
-            <TouchableOpacity
-              style={styles.doneButton}
-              onPress={() => onVoteSuccess(selectedNominee!.id)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.doneButtonText}>Done</Text>
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity
-              style={styles.backButton}
-              onPress={() => {
-                setVoteResult({ status: 'idle', message: '', details: '' });
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.backButtonText}>Try Again</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </ScrollView>
+      <View style={styles.result} accessibilityRole="alert">
+        <ResultIcon status={status} color={iconColor} />
+        <Text style={[styles.resultHeading, { color: iconColor }]}>{message}</Text>
+        <Text style={styles.resultDetails}>{details}</Text>
+        <Pressable
+          style={styles.ghostBtn}
+          onPress={() => {
+            setVoteResult({ status: 'idle', message: '' });
+            if (changeSelection) {
+              setStep(1);
+              animateStep(-1);
+            }
+          }}
+        >
+          <Text style={styles.ghostText}>{changeSelection ? 'Change Selection' : 'Try Again'}</Text>
+        </Pressable>
+      </View>
     );
   };
 
-  // ─── RENDER: STEP 1 — CONFIRM SELECTIONS ───
-  const renderStep1 = () => (
-    <ScrollView
-      contentContainerStyle={styles.stepContent}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.stepTitle}>Confirm Your Vote For</Text>
-      <Text style={styles.nomineeName}>{selectedNominee?.name}</Text>
-      <Text style={styles.wizardIntro}>Please review your selections below.</Text>
+  const renderSuccessTakeover = () => {
+    const { points = VOTE_POINTS, scoreBefore, scoreAfter } = voteResult;
+    const hasScore = typeof scoreBefore === 'number' && typeof scoreAfter === 'number';
+    const body = (
+      <>
+        <LinearGradient colors={['rgba(5,7,13,0.35)', 'rgba(5,7,13,0.55)', 'rgba(5,7,13,0.94)']} style={StyleSheet.absoluteFill} />
+        <View style={[styles.winAccent, { backgroundColor: t.primary }]} />
+        <ScrollView contentContainerStyle={styles.winFrame} bounces={false}>
+          <View style={styles.winTop}>
+            <ThemeLogo theme={theme} size={40} />
+            <Pressable onPress={handleClose} style={styles.closeBtn} accessibilityLabel="Close" hitSlop={8}><CloseGlyph /></Pressable>
+          </View>
 
-      <View style={styles.filterGrid}>
-        {/* Genre — Locked */}
-        <Text style={styles.filterLabel}>Genre</Text>
-        <View style={styles.lockedInput}>
-          <Text style={styles.lockedInputText}>
-            {currentFilters.selectedGenre.replace(/-/g, ' ').toUpperCase()}
+          <View style={styles.winBadgeRow}>
+            <View style={[styles.winBadge, { borderColor: t.border }]}>
+              <Text style={styles.winBadgeText}>{category}</Text>
+              <Text style={styles.winBadgeSmall} numberOfLines={2}>{selectedJurisdictionName}</Text>
+            </View>
+            <View style={{ alignItems: 'flex-end', gap: 6 }}>
+              <LinearGradient colors={[t.primary, t.primaryDeep]} style={styles.winTag}>
+                <Text style={styles.winTagPts}>+{points}<Text style={styles.winTagSup}> pts</Text></Text>
+                <Text style={styles.winTagEarned}>earned</Text>
+              </LinearGradient>
+              {hasScore && (
+                <Text style={styles.winScore}>
+                  <Text style={{ textDecorationLine: 'line-through' }}>{formatScore(scoreBefore)}</Text>
+                  {'  →  '}
+                  <Text style={{ color: '#fff', fontWeight: '800' }}>{formatScore(scoreAfter)}</Text>
+                </Text>
+              )}
+            </View>
+          </View>
+
+          <View style={{ flex: 1, minHeight: 40 }} />
+
+          {showArtwork && <Image source={artSource as any} style={styles.winCover} accessibilityLabel={nomineeName} />}
+
+          <Text style={[styles.winEyebrow, { color: t.textAccent }]}>Vote locked in</Text>
+          <Text style={styles.winHead}>
+            You backed <Text style={{ color: t.textAccent, fontStyle: 'italic' }}>{nomineeName}</Text> for the {intervalNoun}
           </Text>
-        </View>
-
-        {/* Category — Locked */}
-        <Text style={styles.filterLabel}>Category</Text>
-        <View style={styles.lockedInput}>
-          <Text style={styles.lockedInputText}>
-            {currentFilters.selectedType.toUpperCase()}
+          <Text style={styles.winBody}>
+            Your vote counted toward {category} in {selectedJurisdictionName}. One vote per category per interval — results post at 12:00{' '}AM ET when the {intervalNoun} closes.
           </Text>
-        </View>
 
-        {/* Interval — Selectable */}
-        <Text style={styles.filterLabel}>Interval</Text>
-        <PremiumPicker
-          options={INTERVAL_OPTIONS}
-          selectedValue={currentFilters.selectedInterval}
-          onValueChange={(val) => setCurrentFilters(prev => ({ ...prev, selectedInterval: val }))}
-        />
-
-        {/* Jurisdiction — Selectable, options ARE the API's voting-enabled
-            breadcrumb; the value is the real UUID (no slug re-mapping). */}
-        <Text style={styles.filterLabel}>Jurisdiction</Text>
-        <PremiumPicker
-          options={pickerJurisdictionOptions}
-          selectedValue={selectedJurisdictionId}
-          onValueChange={(val) => setSelectedJurisdictionId(val)}
-          loading={isFetchingJurisdictions}
-          disabled={isFetchingJurisdictions}
-        />
-      </View>
-    </ScrollView>
-  );
-
-  // ─── RENDER: STEP 2 — FINAL CONFIRMATION ───
-  const renderStep2 = () => (
-    <View style={styles.stepContent}>
-      <Text style={styles.stepTitle}>Final Confirmation</Text>
-      <Text style={styles.wizardIntro}>You are about to cast your vote for:</Text>
-
-      <View style={styles.confirmationSummary}>
-        <Text style={styles.confirmationName}>{selectedNominee?.name}</Text>
-        <View style={styles.confirmationDividerThin} />
-        <Text style={styles.confirmationDetail}>
-          as <Text style={styles.confirmationBold}>{formatText(currentFilters.selectedType)}</Text>
-        </Text>
-        <Text style={styles.confirmationDetail}>
-          of the <Text style={styles.confirmationBold}>{formatText(currentFilters.selectedInterval)}</Text>
-        </Text>
-        <Text style={styles.confirmationDetail}>
-          in <Text style={styles.confirmationBold}>{formatText(currentFilters.selectedGenre)}</Text>
-        </Text>
-      </View>
-
-      <View style={styles.warningContainer}>
-        <Text style={styles.warningText}>⚠ This vote cannot be undone.</Text>
-      </View>
-    </View>
-  );
-
-  // ─── RENDER: STEP 3 — NAME VERIFICATION ───
-  const renderStep3 = () => (
-    <ScrollView
-      contentContainerStyle={styles.stepContent}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.stepTitle}>Secure Your Vote</Text>
-      <Text style={styles.wizardIntro}>
-        To prevent errors, please confirm by typing the name forward and backward.
-      </Text>
-
-      <View style={styles.formGroup}>
-        <Text style={styles.filterLabel}>
-          Name (Forward) — <Text style={styles.hintText}>{selectedNominee?.name}</Text>
-        </Text>
-        <TextInput
-          style={styles.textInput}
-          value={artistNameForward}
-          onChangeText={setArtistNameForward}
-          placeholder="Type the name forward..."
-          placeholderTextColor="#555"
-          editable={!submitting}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="next"
-          onSubmitEditing={() => backwardInputRef.current?.focus()}
-        />
-      </View>
-
-      <View style={styles.formGroup}>
-        <Text style={styles.filterLabel}>
-          (Backward) — <Text style={[styles.hintText, { color: '#4477CC' }]}>{reversedNomineeName}</Text>
-        </Text>
-        <TextInput
-          ref={backwardInputRef}
-          style={styles.textInput}
-          value={artistNameBackward}
-          onChangeText={setArtistNameBackward}
-          placeholder="Type the name backward..."
-          placeholderTextColor="#555"
-          editable={!submitting}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="done"
-          onSubmitEditing={handleConfirmVote}
-        />
-      </View>
-
-      <TouchableOpacity
-        style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
-        onPress={handleConfirmVote}
-        disabled={submitting}
-        activeOpacity={0.8}
-      >
-        {submitting ? (
-          <ActivityIndicator color="#FFF" size="small" />
-        ) : (
-          <Text style={styles.submitButtonText}>Confirm Vote</Text>
-        )}
-      </TouchableOpacity>
-    </ScrollView>
-  );
-
-  // ─── RENDER: STEP ROUTER ───
-  const renderStep = () => {
-    if (voteResult.status !== 'idle') return renderResult();
-    if (!selectedNominee) return null;
-
-    switch (step) {
-      case 1: return renderStep1();
-      case 2: return renderStep2();
-      case 3: return renderStep3();
-      default: return null;
-    }
+          <Pressable style={[styles.winCta, { backgroundColor: t.primary }]} onPress={() => onVoteSuccess?.(selectedNominee?.id as string)}>
+            <Text style={styles.winCtaText}>Done</Text>
+          </Pressable>
+          <Text style={styles.winSub}>+{points} points added to your score.</Text>
+        </ScrollView>
+        <ConfettiCannon colors={[t.primary, '#ffffff', '#C0C0C0', t.textAccent]} />
+      </>
+    );
+    return showArtwork ? (
+      <ImageBackground source={artSource as any} style={styles.win} resizeMode="cover">{body}</ImageBackground>
+    ) : (
+      <View style={[styles.win, { backgroundColor: '#05070d' }]}>{body}</View>
+    );
   };
 
-  // ─── DYNAMIC GLOW BORDER ───
-  const glowShadowOpacity = glowAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.3, 0.8],
-  });
+  const renderIssue = () => {
+    if (!issue) return null;
+    const tone = issue.kind === 'area' || issue.kind === 'load' ? '#E0A93C' : t.textAccent;
+    return (
+      <View style={[styles.notice, { borderColor: rgba(tone, 0.4), backgroundColor: rgba(tone, 0.08) }]} accessibilityRole="summary">
+        <View style={[styles.noticeDot, { backgroundColor: tone }]} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.noticeTitle}>{issue.title}</Text>
+          <Text style={styles.noticeBody}>{issue.body}</Text>
+          {issue.actionLabel && (
+            <Pressable onPress={issue.onAction} style={[styles.noticeBtn, { backgroundColor: t.primary }]}>
+              <Text style={styles.noticeBtnText}>{issue.actionLabel}</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    );
+  };
 
-  const glowBorderColor = glowAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['rgba(22, 51, 135, 0.4)', 'rgba(22, 51, 135, 1)'],
-  });
+  const renderStepContent = () => {
+    if (!selectedNominee) return null;
+    if (step === 1) {
+      return (
+        <View>
+          <View style={styles.stepHead}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.eyebrow, { color: t.textAccent }]}>Step 1 — Review</Text>
+              <Text style={styles.title}>Confirm your vote for</Text>
+              <Text style={styles.nominee} numberOfLines={2}>{nomineeName}</Text>
+            </View>
+            <View style={[styles.thumb, { borderColor: t.border }]}>
+              {showArtwork && <Image source={artSource as any} style={StyleSheet.absoluteFill} accessibilityLabel={nomineeName} />}
+            </View>
+          </View>
 
-  if (!visible) return null;
+          {renderIssue()}
+
+          <View style={styles.fields}>
+            <View style={styles.fieldHalf}>
+              <Text style={styles.label}>Genre</Text>
+              <View style={styles.chipLocked}><Text style={styles.chipText}>{genreLabel}</Text></View>
+            </View>
+            <View style={styles.fieldHalf}>
+              <Text style={styles.label}>Category</Text>
+              <View style={styles.chipLocked}><Text style={styles.chipText}>{typeWord}</Text></View>
+            </View>
+          </View>
+
+          <Text style={[styles.label, { marginTop: 14 }]}>Interval</Text>
+          <View style={styles.intervalRow} accessibilityRole="radiogroup">
+            {INTERVAL_OPTIONS.map((o) => {
+              const on = currentFilters.selectedInterval === o.value;
+              return (
+                <Pressable
+                  key={o.value}
+                  onPress={() => setCurrentFilters({ ...currentFilters, selectedInterval: o.value })}
+                  style={[styles.intervalChip, on && { backgroundColor: t.primary, borderColor: t.primary }]}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: on }}
+                >
+                  <Text style={[styles.intervalText, on && { color: '#fff' }]}>{o.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.label, { marginTop: 14 }]}>Counts in</Text>
+          <View style={styles.countsIn}>
+            <Text style={styles.chipText}>{jurisdictionStatus === 'loading' ? 'Loading…' : selectedJurisdictionName}</Text>
+          </View>
+        </View>
+      );
+    }
+    if (step === 2) {
+      const rows = [
+        ['Nominee', nomineeName],
+        ['As', category],
+        ['Counts in', selectedJurisdictionName],
+        ['Genre', genreLabel],
+      ];
+      return (
+        <View>
+          <Text style={[styles.eyebrow, { color: t.textAccent }]}>Step 2 — Confirm</Text>
+          <Text style={styles.title}>Final confirmation</Text>
+          <View style={styles.summary}>
+            {rows.map(([k, v], i) => (
+              <View key={k} style={[styles.summaryRow, i > 0 && styles.summaryDivider]}>
+                <Text style={styles.summaryKey}>{k}</Text>
+                <Text style={styles.summaryVal}>{v}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={styles.warning}>
+            <View style={styles.warningDot} />
+            <Text style={styles.warningText}>This vote cannot be undone for the selected interval.</Text>
+          </View>
+        </View>
+      );
+    }
+    return (
+      <View>
+        <Text style={[styles.eyebrow, { color: t.textAccent }]}>Step 3 — Secure</Text>
+        <Text style={styles.title}>
+          Type the name <Text style={{ fontStyle: 'italic', color: t.textAccent }}>forward</Text> and <Text style={{ fontStyle: 'italic', color: t.textAccent }}>backward</Text>
+        </Text>
+        <Text style={styles.sub}>A small check to prevent mistaken votes.</Text>
+
+        {[
+          { key: 'f', label: 'Forward', ref: nomineeName, value: artistNameForward, set: setArtistNameForward, match: forwardMatches, placeholder: 'Type the name…' },
+          { key: 'b', label: 'Backward', ref: reversedNomineeName, value: artistNameBackward, set: setArtistNameBackward, match: backwardMatches, placeholder: 'Type the name reversed…' },
+        ].map((g) => (
+          <View key={g.key} style={{ marginTop: 14 }}>
+            <View style={styles.inputMeta}>
+              <Text style={styles.label}>{g.label}</Text>
+              <Text style={styles.ref} numberOfLines={1}>{g.ref}</Text>
+            </View>
+            <View style={[styles.inputWrap, g.match && { borderColor: t.primary, backgroundColor: rgba(t.primary, 0.12) }]}>
+              <TextInput
+                ref={g.key === 'b' ? backwardRef : undefined}
+                value={g.value}
+                onChangeText={g.set}
+                placeholder={g.placeholder}
+                placeholderTextColor="rgba(255,255,255,0.35)"
+                editable={!submitting}
+                autoComplete="off"
+                autoCorrect={false}
+                autoCapitalize="none"
+                spellCheck={false}
+                returnKeyType={g.key === 'f' ? 'next' : 'done'}
+                onSubmitEditing={() => (g.key === 'f' ? backwardRef.current?.focus() : canSubmit && handleConfirmVote())}
+                style={styles.input}
+                accessibilityLabel={`Name ${g.label.toLowerCase()}`}
+              />
+              {g.match && <View style={[styles.check, { backgroundColor: t.primary }]}><CheckGlyph color="#fff" /></View>}
+            </View>
+          </View>
+        ))}
+
+        <Pressable
+          style={[styles.primaryBtn, styles.fullBtn, { backgroundColor: t.primary }, !canSubmit && styles.disabled]}
+          onPress={handleConfirmVote}
+          disabled={!canSubmit}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryText}>{submitting ? 'Submitting…' : 'Cast Vote'}</Text>
+        </Pressable>
+      </View>
+    );
+  };
+
+  const isResult = voteResult.status !== 'idle';
+  const isSuccess = voteResult.status === 'success';
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={onClose}
-      statusBarTranslucent
-    >
-      <View style={styles.overlay}>
-        {/* Confetti layer */}
-        {showConfetti && <ConfettiCannon />}
-
-        {/* Backdrop */}
-        <Animated.View style={[styles.backdrop, { opacity: backdropAnim }]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        </Animated.View>
-
-        {/* Modal Card */}
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.keyboardAvoid}
-        >
-          <Animated.View
-            style={[
-              styles.wizardCard,
-              {
-                opacity: modalOpacity,
-                transform: [{ scale: modalScale }],
-              },
-            ]}
-          >
-            {/* Glow border overlay — separate from native-driven animations */}
-            {voteResult.status === 'success' && (
-              <Animated.View
-                pointerEvents="none"
-                style={{
-                  ...StyleSheet.absoluteFillObject,
-                  borderRadius: 20,
-                  borderWidth: 2,
-                  borderColor: glowBorderColor as any,
-                  shadowColor: UNIS_BLUE,
-                  shadowOpacity: glowShadowOpacity as any,
-                  shadowRadius: 20,
-                  elevation: 20,
-                  opacity: glowWrapperOpacity,
-                }}
-              />
-            )}
-
-            {/* Close Button */}
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={onClose}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+    <>
+      <Modal visible={show} transparent animationType="fade" onRequestClose={handleClose} statusBarTranslucent>
+        <Pressable style={styles.overlay} onPress={handleClose}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.kav}>
+            <Pressable
+              onPress={() => {}}
+              style={[styles.modal, isSuccess && styles.modalSuccess, { borderColor: t.border }]}
+              accessibilityViewIsModal
+              accessibilityLabel={nomineeName ? `Vote for ${nomineeName}` : 'Vote'}
             >
-              <X size={22} color={GRAY} />
-            </TouchableOpacity>
+              {isSuccess ? (
+                renderSuccessTakeover()
+              ) : (
+                <>
+                  {showArtwork && (
+                    <Image source={artSource as any} style={styles.ambient} blurRadius={40} />
+                  )}
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(8,10,16,0.82)' }]} />
+                  <View style={styles.inner}>
+                    <View style={styles.header}>
+                      <View style={styles.brand}>
+                        <ThemeLogo theme={theme} size={34} />
+                        <Text style={styles.brandStep}>{isResult ? 'Result' : `${step} of ${TOTAL_STEPS}`}</Text>
+                      </View>
+                      <Pressable onPress={handleClose} style={styles.closeBtn} accessibilityLabel="Close" disabled={submitting} hitSlop={8}>
+                        <CloseGlyph />
+                      </Pressable>
+                    </View>
 
-            {/* Step Indicator */}
-            {voteResult.status === 'idle' && (
-              <StepIndicator currentStep={step} totalSteps={3} />
-            )}
+                    {!isResult && (
+                      <View style={styles.progress} accessibilityRole="progressbar" accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: step }}>
+                        {[1, 2, 3].map((n) => (
+                          <View key={n} style={styles.progressSeg}>
+                            {n <= step && <View style={[StyleSheet.absoluteFill, { backgroundColor: t.primary, borderRadius: 2 }]} />}
+                          </View>
+                        ))}
+                      </View>
+                    )}
 
-            {/* Step Content */}
-            <Animated.View style={{ opacity: contentFade, flex: 1 }}>
-              {renderStep()}
-            </Animated.View>
+                    <ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: 8 }} keyboardShouldPersistTaps="handled" bounces={false}>
+                      <Animated.View
+                        style={{
+                          opacity: stepAnim.interpolate({ inputRange: [-1, 0, 1], outputRange: [0, 1, 0] }),
+                          transform: [{ translateX: stepAnim.interpolate({ inputRange: [-1, 0, 1], outputRange: [-24, 0, 24] }) }],
+                        }}
+                      >
+                        {isResult ? renderResult() : renderStepContent()}
+                      </Animated.View>
+                    </ScrollView>
 
-            {/* Navigation Buttons (only when in wizard flow) */}
-            {voteResult.status === 'idle' && (
-              <View style={styles.buttonGroup}>
-                {step > 1 && (
-                  <TouchableOpacity
-                    style={styles.backButton}
-                    onPress={handleBack}
-                    disabled={submitting}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.backButtonText}>Back</Text>
-                  </TouchableOpacity>
-                )}
-                {step < 3 && (
-                  <TouchableOpacity
-                    style={[styles.nextButton, step === 1 && { flex: 1 }]}
-                    onPress={handleNext}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.nextButtonText}>Next</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
-          </Animated.View>
-        </KeyboardAvoidingView>
-      </View>
-    </Modal>
+                    {!isResult && step < 3 && (
+                      <View style={styles.footer}>
+                        {step > 1 ? (
+                          <Pressable onPress={handleBack} style={styles.ghostBtn} disabled={submitting}><Text style={styles.ghostText}>Back</Text></Pressable>
+                        ) : <View />}
+                        <Pressable
+                          onPress={handleNext}
+                          style={[styles.primaryBtn, { backgroundColor: t.primary }, step === 1 && !canProceed && styles.disabled]}
+                          disabled={step === 1 && !canProceed}
+                        >
+                          <Text style={styles.primaryText}>Next</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                    {!isResult && step === 3 && (
+                      <View style={styles.footer}>
+                        <Pressable onPress={handleBack} style={styles.ghostBtn} disabled={submitting}><Text style={styles.ghostText}>Back</Text></Pressable>
+                        <Text style={styles.footerHint}>{!forwardMatches || !backwardMatches ? 'Type both names exactly to enable' : 'Ready to cast'}</Text>
+                      </View>
+                    )}
+                  </View>
+                </>
+              )}
+            </Pressable>
+          </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
+
+      <PhoneVerificationModal
+        show={showPhoneModal}
+        onClose={() => setShowPhoneModal(false)}
+        onVerified={async () => {
+          setShowPhoneModal(false);
+          try {
+            await refreshUser?.();
+          } catch (e) {
+            console.error('[VotingWizard] refreshUser after phone verification failed:', e);
+          }
+        }}
+      />
+    </>
   );
 };
 
-// ─────────────────────────────────────────────
-// STYLES
-// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
-  // -- Overlay & Backdrop --
-  overlay: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.88)',
-  },
-  keyboardAvoid: {
-    width: '100%',
-    maxWidth: 500,
-    maxHeight: SCREEN_HEIGHT * 0.85,
-    flex: 1,
-    justifyContent: 'center',
-  },
-
-  // -- Wizard Card --
-  wizardCard: {
-    backgroundColor: '#0D0D0F',
-    borderRadius: 20,
-    paddingTop: 24,
-    paddingHorizontal: 24,
-    paddingBottom: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(192, 192, 192, 0.08)',
-    // Subtle inner glow
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 30,
-    elevation: 15,
-    maxHeight: SCREEN_HEIGHT * 0.88,
-    minHeight: SCREEN_HEIGHT * 0.79,
-  },
-
-  // -- Close Button --
-  closeButton: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    zIndex: 10,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  // -- Step Indicator --
-  stepIndicatorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    marginTop: 4,
-  },
-  stepIndicatorItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  stepLine: {
-    width: 40,
-    height: 2,
-    backgroundColor: 'rgba(192, 192, 192, 0.15)',
-    marginHorizontal: 4,
-    borderRadius: 1,
-  },
-  stepLineActive: {
-    backgroundColor: UNIS_BLUE,
-  },
-  stepDot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(192, 192, 192, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepDotActive: {
-    borderColor: UNIS_BLUE,
-    backgroundColor: 'rgba(22, 51, 135, 0.2)',
-  },
-  stepDotCompleted: {
-    backgroundColor: UNIS_BLUE,
-    borderColor: UNIS_BLUE,
-  },
-  stepNumber: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: 'rgba(192, 192, 192, 0.5)',
-  },
-  stepNumberActive: {
-    color: '#FFF',
-  },
-
-  // -- Step Content --
-  stepContent: {
-    alignItems: 'center',
-    paddingBottom: 10,
-  },
-  stepTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-    textAlign: 'center',
-  },
-  nomineeName: {
-    color: UNIS_BLUE,
-    fontSize: 28,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginVertical: 8,
-    textAlign: 'center',
-  },
-  wizardIntro: {
-    color: GRAY,
-    fontSize: 13,
-    lineHeight: 20,
-    marginBottom: 22,
-    textAlign: 'center',
-  },
-
-  // -- Filter Grid (Step 1) --
-  filterGrid: {
-    width: '100%',
-  },
-  filterLabel: {
-    color: SILVER,
-    fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom: 6,
-    marginLeft: 2,
-  },
-  lockedInput: {
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'transparent',
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    marginBottom: 14,
-  },
-  lockedInputText: {
-    color: '#666',
-    fontSize: 14,
-    fontWeight: '500',
-    fontStyle: 'italic',
-  },
-
-  // -- Confirmation Summary (Step 2) --
-  confirmationSummary: {
-    backgroundColor: 'rgba(22, 51, 135, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(22, 51, 135, 0.25)',
-    borderRadius: 14,
-    paddingVertical: 24,
-    paddingHorizontal: 20,
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  confirmationName: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 14,
-  },
-  confirmationDividerThin: {
-    width: '60%',
-    height: 1,
-    backgroundColor: 'rgba(22, 51, 135, 0.3)',
-    marginBottom: 14,
-  },
-  confirmationDetail: {
-    color: SILVER,
-    fontSize: 15,
-    lineHeight: 26,
-    textAlign: 'center',
-  },
-  confirmationBold: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  warningContainer: {
-    backgroundColor: 'rgba(255, 193, 7, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 193, 7, 0.2)',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    width: '100%',
-  },
-  warningText: {
-    color: '#FFC107',
-    fontSize: 13,
-    fontWeight: '600',
-    textAlign: 'center',
-    letterSpacing: 0.3,
-  },
-
-  // -- Form (Step 3) --
-  formGroup: {
-    width: '100%',
-    marginBottom: 16,
-  },
-  hintText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 12,
-    textTransform: 'none',
-    letterSpacing: 0,
-  },
-  textInput: {
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    borderWidth: 1,
-    borderColor: 'rgba(192, 192, 192, 0.15)',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  submitButton: {
-    backgroundColor: UNIS_BLUE,
-    borderRadius: 10,
-    paddingVertical: 16,
-    width: '100%',
-    alignItems: 'center',
-    marginTop: 8,
-    shadowColor: UNIS_BLUE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#444',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-  },
-
-  // -- Result Screen --
-  resultLogoText: {
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 24,
-    fontWeight: '900',
-    letterSpacing: 6,
-    marginBottom: 20,
-  },
-  iconContainer: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 3,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    marginBottom: 16,
-  },
-  resultHeader: {
-    fontSize: 20,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom: 16,
-  },
-  voteReceipt: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderWidth: 1,
-    borderColor: 'rgba(22, 51, 135, 0.3)',
-    borderRadius: 14,
-    padding: 20,
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  receiptLabel: {
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 3,
-    color: GRAY,
-    marginBottom: 6,
-  },
-  receiptName: {
-    fontSize: 22,
-    color: '#FFFFFF',
-    fontWeight: '800',
-    marginBottom: 14,
-  },
-  receiptDivider: {
-    width: '100%',
-    height: 1,
-    marginBottom: 16,
-    backgroundColor: 'rgba(22, 51, 135, 0.3)',
-  },
-  receiptMetaGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    width: '100%',
-  },
-  metaItem: {
-    width: '50%',
-    marginBottom: 12,
-  },
-  metaLabel: {
-    fontSize: 10,
-    color: '#918f8f',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 2,
-  },
-  metaValue: {
-    fontSize: 13,
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  errorDetails: {
-    color: GRAY,
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 20,
-    paddingHorizontal: 10,
-  },
-
-  // -- Buttons --
-  buttonGroup: {
-    flexDirection: 'row',
-    gap: 12,
-    paddingTop: 8,
-  },
-  buttonGroupResult: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  nextButton: {
-    flex: 1,
-    backgroundColor: UNIS_BLUE,
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-    shadowColor: UNIS_BLUE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  nextButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  backButton: {
-    borderWidth: 1,
-    borderColor: 'rgba(169, 169, 169, 0.4)',
-    borderRadius: 10,
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-  },
-  backButtonText: {
-    color: SILVER,
-    fontSize: 14,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  doneButton: {
-    backgroundColor: UNIS_BLUE,
-    borderRadius: 10,
-    paddingVertical: 16,
-    paddingHorizontal: 48,
-    alignItems: 'center',
-    shadowColor: UNIS_BLUE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  doneButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-  },
+  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', padding: 14 },
+  kav: { width: '100%', alignItems: 'center' },
+  modal: { width: '100%', maxWidth: 520, maxHeight: '92%', borderRadius: 24, overflow: 'hidden', backgroundColor: '#0b0e16', borderWidth: 1 },
+  modalSuccess: { height: '92%' },
+  ambient: { ...StyleSheet.absoluteFillObject, opacity: 0.55, transform: [{ scale: 1.3 }] },
+  inner: { padding: 18 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  brandStep: { color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase' },
+  closeBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.08)' },
+  progress: { flexDirection: 'row', gap: 6, marginTop: 14 },
+  progressSeg: { flex: 1, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.1)', overflow: 'hidden' },
+  body: { marginTop: 16, flexGrow: 0 },
+  stepHead: { flexDirection: 'row', gap: 14, alignItems: 'center' },
+  eyebrow: { fontSize: 11.5, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+  title: { color: 'rgba(255,255,255,0.86)', fontSize: 18, fontWeight: '700', marginTop: 6 },
+  nominee: { color: '#fff', fontSize: 28, fontWeight: '900', letterSpacing: -0.5, marginTop: 2 },
+  thumb: { width: 78, height: 78, borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1 },
+  notice: { flexDirection: 'row', gap: 10, padding: 12, borderRadius: 14, borderWidth: 1, marginTop: 14 },
+  noticeDot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
+  noticeTitle: { color: '#fff', fontWeight: '800', fontSize: 14.5 },
+  noticeBody: { color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 19, marginTop: 3 },
+  noticeBtn: { alignSelf: 'flex-start', marginTop: 10, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
+  noticeBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  fields: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  fieldHalf: { flex: 1 },
+  label: { color: 'rgba(255,255,255,0.55)', fontSize: 11.5, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 6 },
+  chipLocked: { paddingHorizontal: 12, paddingVertical: 11, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  chipText: { color: '#fff', fontSize: 14.5, fontWeight: '600' },
+  intervalRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  intervalChip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.04)' },
+  intervalText: { color: 'rgba(255,255,255,0.75)', fontWeight: '700', fontSize: 13.5 },
+  countsIn: { paddingHorizontal: 12, paddingVertical: 11, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  summary: { marginTop: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 14 },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 12 },
+  summaryDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.12)' },
+  summaryKey: { color: 'rgba(255,255,255,0.55)', fontSize: 13.5 },
+  summaryVal: { color: '#fff', fontWeight: '700', fontSize: 14, flex: 1, textAlign: 'right' },
+  warning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14 },
+  warningDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#E0A93C' },
+  warningText: { color: 'rgba(255,255,255,0.7)', fontSize: 13 },
+  sub: { color: 'rgba(255,255,255,0.6)', fontSize: 13.5, marginTop: 4 },
+  inputMeta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 },
+  ref: { color: 'rgba(255,255,255,0.45)', fontSize: 12.5, flexShrink: 1 },
+  inputWrap: { flexDirection: 'row', alignItems: 'center', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.05)', paddingRight: 10 },
+  input: { flex: 1, color: '#fff', fontSize: 16, paddingHorizontal: 14, paddingVertical: Platform.OS === 'ios' ? 13 : 10 },
+  check: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  footer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, gap: 10 },
+  footerHint: { color: 'rgba(255,255,255,0.5)', fontSize: 12.5, flexShrink: 1, textAlign: 'right' },
+  primaryBtn: { paddingHorizontal: 24, paddingVertical: 12, borderRadius: 999, alignItems: 'center' },
+  fullBtn: { marginTop: 18, alignSelf: 'stretch' },
+  primaryText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  ghostBtn: { paddingHorizontal: 18, paddingVertical: 11, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.08)' },
+  ghostText: { color: 'rgba(255,255,255,0.88)', fontWeight: '700', fontSize: 14.5 },
+  disabled: { opacity: 0.45 },
+  result: { alignItems: 'center', paddingVertical: 12, gap: 10 },
+  resultIcon: { width: 76, height: 76, borderRadius: 38, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  resultHeading: { fontSize: 22, fontWeight: '900', marginTop: 4 },
+  resultDetails: { color: 'rgba(255,255,255,0.72)', fontSize: 14, lineHeight: 20, textAlign: 'center', marginBottom: 6 },
+  // Success takeover
+  win: { flex: 1 },
+  winAccent: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
+  winFrame: { flexGrow: 1, padding: 20 },
+  winTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  winBadgeRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginTop: 18 },
+  winBadge: { flexShrink: 1, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1, backgroundColor: 'rgba(5,7,13,0.55)' },
+  winBadgeText: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  winBadgeSmall: { color: 'rgba(255,255,255,0.65)', fontSize: 11.5, marginTop: 2 },
+  winTag: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 14, alignItems: 'center' },
+  winTagPts: { color: '#fff', fontSize: 24, fontWeight: '900' },
+  winTagSup: { fontSize: 12, fontWeight: '800' },
+  winTagEarned: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
+  winScore: { color: 'rgba(255,255,255,0.7)', fontSize: 12.5 },
+  winCover: { width: 120, height: 120, borderRadius: 18, marginBottom: 16 },
+  winEyebrow: { fontSize: 12, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase' },
+  winHead: { color: '#fff', fontSize: 28, fontWeight: '900', letterSpacing: -0.6, lineHeight: 33, marginTop: 6 },
+  winBody: { color: 'rgba(255,255,255,0.78)', fontSize: 14, lineHeight: 20, marginTop: 10 },
+  winCta: { marginTop: 20, paddingVertical: 14, borderRadius: 999, alignItems: 'center' },
+  winCtaText: { color: '#fff', fontWeight: '800', fontSize: 16 },
+  winSub: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5, textAlign: 'center', marginTop: 10 },
 });
 
 export default VotingWizard;

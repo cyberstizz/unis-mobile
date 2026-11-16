@@ -6,9 +6,13 @@
 //   • Play button routes through requestPlay → PlayChoiceModal (never bypasses
 //     the queue-choice modal) and mirrors the player's true state for THIS song:
 //     shows Pause when this song is playing and toggles play/pause directly.
-//   • Play tracking is effect-based — a play is counted only when the player's
-//     current track actually CHANGES to this song (not on button press), so
-//     "Add to queue" never over-counts and queue-driven plays still count.
+//   • Play counting lives in the Player only (15s / 25% gate, source, playId).
+//     This screen used to POST /play itself, which beat the Player's gated call
+//     to the cooldown and credited skips — removed, as on web.
+//   • Removed songs show the "stays in the winners history" message.
+//   • Subgenre / mood chips open the browse shelves; language in Song Details.
+//   • Recommended row + ad space above comments; toasts instead of alerts;
+//     a first like shows the "+1 Like counted" points pill.
 //   • "Don't Play" persists to /v1/playlists/blocked-songs (was a stub alert).
 //   • Report opens the report form; Lyrics editing opens the real LyricsWizard
 //     (was a stub alert).
@@ -41,29 +45,25 @@ import { useAuth } from '../context/AuthContext';
 import { usePlayer } from '../context/PlayerContext';
 import axiosInstance from '../services/axiosInstance';
 import { buildUrl } from '../utils/buildUrl';
+import { getThemeHex } from '../theme/unisTheme';
 import VotingWizard from '../components/VotingWizard';
 import CommentSection from '../components/Commentsection';
 import LyricsWizard from '../components/LyricsWizard';
+import RecommendedSongs from '../components/RecommendedSongs';
+import AdSlot from '../components/AdSlot';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
+import { useReward } from '../context/RewardContext';
+import { useTaxonomy } from '../utils/taxonomy';
+import { webUrl } from '../config/links';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 768;
 const ARTWORK_SIZE = IS_MOBILE ? Math.min(SCREEN_WIDTH - 64, 260) : 220;
 
-// The public web origin — used for shareable/reportable song URLs.
-const WEB_ORIGIN = 'https://unis.app';
+// The app's standard "no artwork" image (same file the web song page uses).
+const FALLBACK_ARTWORK = require('../../assets/theQuiet.jpg');
 
-// ─── Theme — mirrors web `--unis-primary` / ThemePicker / EarningsScreen ──────
-const THEME_HEX: Record<string, string> = {
-  blue: '#163387',
-  orange: '#C44B0A',
-  red: '#B51C24',
-  green: '#0F7A3E',
-  purple: '#4A1A8C',
-  yellow: '#C49A0A',
-  dianna: '#C49A0A',
-};
-const getThemeHex = (theme?: string): string => THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
-
+// ─── Theme — the shared palette (src/theme/unisTheme.ts) ──────────────────────
 // color-mix(in srgb, primary N%, transparent) has no RN equivalent — approximate
 // the web page's translucent accent surfaces (accent-blue-dim ≈ 18%) with rgba.
 const hexToRgba = (hex: string, alpha: number): string => {
@@ -110,9 +110,12 @@ interface Song {
   credits: { producer: string; writer: string; mix: string };
   duration: number | null;
   createdAt: string;
+  subgenres: { subgenreId: string; name: string; slug: string }[];
+  moods: { moodId: string; name: string; slug: string }[];
+  language: string | null;
 }
 
-const FALLBACK_ARTWORK = 'https://picsum.photos/400';
+const artSrc = (a: any) => (typeof a === 'number' ? a : { uri: a });
 
 const SongScreen: React.FC = () => {
   const route = useRoute<any>();
@@ -124,7 +127,12 @@ const SongScreen: React.FC = () => {
 
   // Player sync: read isPlaying + currentMedia + togglePlayPause so the hero
   // button can mirror the player's true state for THIS exact song.
-  const { requestPlay, currentMedia, isPlaying, togglePlayPause } = usePlayer();
+  const { requestPlay, currentMedia, isPlaying, togglePlayPause, blockedSongIds, blockSong, unblockSong } = usePlayer();
+  const feedback = useFeedback();
+  const { showReward } = useReward();
+  const { taxonomy } = useTaxonomy();
+  // The app always has a session, so this only fires if one expired mid-visit.
+  const askToLogIn = (what: string) => feedback.info(`Log in to ${what}`);
 
   const accent = getThemeHex(theme);
   const accentDim = hexToRgba(accent, 0.15);
@@ -135,15 +143,12 @@ const SongScreen: React.FC = () => {
   const [isLiked, setIsLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [isFollowing, setIsFollowing] = useState(false);
-  const [isBlocked, setIsBlocked] = useState(false);
+  const isBlocked = !!song?.id && blockedSongIds.has(song.id);
   const [copySuccess, setCopySuccess] = useState(false);
   const [showVotingWizard, setShowVotingWizard] = useState(false);
   const [selectedNominee, setSelectedNominee] = useState<any>(null);
   const [showLyricsWizard, setShowLyricsWizard] = useState(false);
   const fadeAnim = useRef(new Animated.Value(0)).current;
-
-  const hasTrackedInitialRef = useRef(false);
-  const previousPlayingIdRef = useRef<string | null>(null);
 
   const formatDuration = (seconds: number | null) => {
     if (!seconds) return '--:--';
@@ -191,6 +196,15 @@ const SongScreen: React.FC = () => {
         if (!active) return;
 
         const d = songRes.data;
+
+        // A removed song keeps its place in award history, so links to it
+        // still arrive here. It can't be played, liked or commented on.
+        if (d.removed) {
+          setSong(null);
+          setError(`"${d.title}" was removed from Unis. It stays in the winners history, but it can't be played anymore.`);
+          return;
+        }
+
         const normalized: Song = {
           id: d.songId,
           title: d.title,
@@ -211,15 +225,18 @@ const SongScreen: React.FC = () => {
           credits: { producer: 'N/A', writer: 'N/A', mix: 'N/A' },
           duration: d.duration ? Math.round(d.duration / 1000) : null,
           createdAt: d.createdAt || '',
+          subgenres: [d.primarySubgenre, d.secondarySubgenre].filter(Boolean),
+          moods: [d.primaryMood, d.secondaryMood].filter(Boolean),
+          language: d.language || null,
         };
 
         setSong(normalized);
         setIsLiked(likedRes.data.isLiked || false);
         setLikeCount(likeCountRes.data.count || 0);
         Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to load song:', err);
-        if (active) setError('Failed to load song details');
+        if (active) setError(err?.response?.status === 404 ? 'Song not found' : 'Failed to load song details');
       } finally {
         if (active) setLoading(false);
       }
@@ -228,54 +245,8 @@ const SongScreen: React.FC = () => {
     return () => { active = false; };
   }, [songId, userId]);
 
-  // Reset play-tracking guards whenever the page's song changes.
-  useEffect(() => {
-    hasTrackedInitialRef.current = false;
-    previousPlayingIdRef.current = null;
-  }, [songId]);
-
-  // ── Play tracking — count a play only when the player's current track
-  //    actually CHANGES to this page's song (mirrors web). Skips the initial
-  //    "was already playing on arrival" observation and never double-counts. ──
-  useEffect(() => {
-    if (!song?.id || !userId || !currentMedia) return;
-
-    const playingId = currentMedia.id || currentMedia.songId;
-    const prevId = previousPlayingIdRef.current;
-    previousPlayingIdRef.current = playingId;
-
-    if (playingId !== song.id) return;
-
-    if (!hasTrackedInitialRef.current) {
-      hasTrackedInitialRef.current = true;
-      return;
-    }
-    if (prevId === playingId) return;
-
-    // Optimistic bump
-    setSong(prev => prev ? { ...prev, playCount: prev.playCount + 1, playsToday: prev.playsToday + 1 } : prev);
-
-    axiosInstance.post(`/v1/media/song/${song.id}/play?userId=${userId}`)
-      .catch(err => {
-        console.error('Failed to track song play:', err);
-        setSong(prev => prev ? {
-          ...prev,
-          playCount: Math.max(0, prev.playCount - 1),
-          playsToday: Math.max(0, prev.playsToday - 1),
-        } : prev);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMedia?.id, currentMedia?.songId, song?.id, userId]);
-
-  // ── Load whether this song is on the user's do-not-play list ──
-  useEffect(() => {
-    if (!song?.id || !userId) { setIsBlocked(false); return; }
-    let active = true;
-    axiosInstance.get('/v1/playlists/blocked-songs')
-      .then(res => { if (active) setIsBlocked((res.data || []).some((b: any) => b.songId === song.id)); })
-      .catch(err => console.error('Failed to load do-not-play status:', err));
-    return () => { active = false; };
-  }, [song?.id, userId]);
+  // Play counting lives in the Player only (15s / 25% gate, source, playId).
+  // The Don't Play state comes from the Player's blocked-songs list.
 
   // Refresh only lyrics/description after the wizard saves (matches web fetchSongData).
   const refreshSong = async () => {
@@ -293,16 +264,18 @@ const SongScreen: React.FC = () => {
   const isThisSongPlaying = isThisSongLoaded && isPlaying;
 
   const handlePlay = () => {
-    if (!song?.url) { Alert.alert('Unavailable', 'Song not available for playback'); return; }
+    if (!song?.url) { feedback.error('This song isn\u2019t available to play right now.'); return; }
     requestPlay({
       id: song.id,
       songId: song.id,
+      type: 'song',
       title: song.title,
       artist: song.artist,
+      artistId: song.artistId,
       url: song.url,
-      artwork: song.artwork,
+      artwork: typeof song.artwork === 'string' ? song.artwork : undefined,
       jurisdiction: song.jurisdiction,
-    });
+    } as any);
   };
 
   const handleHeroPlayClick = () => {
@@ -311,7 +284,6 @@ const SongScreen: React.FC = () => {
   };
 
   const handleVote = () => {
-    if (!userId) { Alert.alert('Login Required', 'Please log in to vote.'); return; }
     if (!song) return;
     setSelectedNominee({
       id: song.id,
@@ -319,68 +291,101 @@ const SongScreen: React.FC = () => {
       type: 'song',
       jurisdiction: song.jurisdiction,
       genreId: song.genreId, // ★ real UUID beats name-derived lookup in the wizard
-      artwork: song.artwork,
-      artworkUrl: song.artwork,
+      artwork: typeof song.artwork === 'string' ? song.artwork : undefined,
+      artworkUrl: typeof song.artwork === 'string' ? song.artwork : undefined,
     });
     setShowVotingWizard(true);
   };
 
   const handleLike = async () => {
-    if (!userId) { Alert.alert('Login Required', 'Please log in to like songs'); return; }
+    if (!userId) { askToLogIn('like songs'); return; }
     if (!song?.id) return;
+    const name = `\u201C${song.title}\u201D`;
     try {
       if (isLiked) {
         const res = await axiosInstance.delete(`/v1/media/song/${song.id}/like?userId=${userId}`);
-        if (res.data.success) { setIsLiked(false); setLikeCount(p => Math.max(0, p - 1)); }
+        if (res.data.success) {
+          setIsLiked(false); setLikeCount((p) => Math.max(0, p - 1));
+          feedback.info(`Removed ${name} from your likes`, { id: 'song-like' });
+        } else {
+          feedback.error("Couldn't remove your like. Try again.");
+        }
       } else {
         const res = await axiosInstance.post(`/v1/media/song/${song.id}/like?userId=${userId}`);
-        if (res.data.success) { setIsLiked(true); setLikeCount(p => p + 1); }
+        if (res.data.success) {
+          setIsLiked(true); setLikeCount((p) => p + 1);
+          // First like on a track pays a point — the points pill confirms it.
+          // A re-like pays nothing, so it gets a toast instead.
+          const earned = res.data.pointsAwarded;
+          if (earned === undefined || earned > 0) {
+            showReward({ points: earned || 1, label: 'Like counted', type: 'like', anchor: 'player' });
+          } else {
+            feedback.success(`Liked ${name}`, { id: 'song-like' });
+          }
+        } else {
+          feedback.error("Couldn't like this song. Try again.");
+        }
       }
-    } catch (err) { console.error('Failed to toggle like:', err); Alert.alert('Error', 'Failed to update like. Please try again.'); }
+    } catch (err) {
+      console.error('Failed to toggle like:', err);
+      feedback.error(errorMessage(err, isLiked ? "Couldn't remove your like. Try again." : "Couldn't like this song. Try again."));
+    }
   };
 
   const handleFollow = async () => {
+    if (!userId) { askToLogIn('follow artists'); return; }
     if (!song?.artistId) return;
     const newStatus = !isFollowing;
+    const who = song.artist || 'this artist';
     setIsFollowing(newStatus);
     try {
       if (newStatus) await axiosInstance.post(`/v1/users/${song.artistId}/follow`);
       else await axiosInstance.delete(`/v1/users/${song.artistId}/follow`);
-    } catch (err) { console.error('Failed to toggle follow:', err); setIsFollowing(!newStatus); }
+      feedback.success(newStatus ? `Following ${who}` : `Unfollowed ${who}`, { id: 'song-follow' });
+    } catch (err) {
+      console.error('Failed to toggle follow:', err);
+      setIsFollowing(!newStatus);
+      feedback.error(errorMessage(err, newStatus ? `Couldn't follow ${who}. Try again.` : `Couldn't unfollow ${who}. Try again.`));
+    }
   };
 
-  // ── "Don't Play" — persists to the blocked_songs backend (matches web). ──
+  // ── "Don't Play" — persists to the blocked_songs backend via the Player,
+  //    which skips blocked tracks during queue playback. ──
   const handleDontPlay = async () => {
-    if (!userId) { Alert.alert('Login Required', 'Please log in to manage your do-not-play list.'); return; }
+    if (!userId) { askToLogIn('manage your Don\u2019t Play list'); return; }
     if (!song?.id) return;
     try {
       if (isBlocked) {
-        await axiosInstance.delete(`/v1/playlists/blocked-songs/${song.id}`);
-        setIsBlocked(false);
+        await unblockSong(song.id);
+        feedback.success(`\u201C${song.title}\u201D can play again in your queue`);
       } else {
-        await axiosInstance.post('/v1/playlists/blocked-songs', { songId: song.id });
-        setIsBlocked(true);
+        await blockSong(song.id);
+        feedback.success(`Added \u201C${song.title}\u201D to Don\u2019t Play \u2014 your queue will skip it`);
       }
     } catch (err) {
       console.error('Failed to toggle do-not-play:', err);
-      Alert.alert('Error', 'Failed to update your do-not-play list. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't update your Don\u2019t Play list. Try again."));
     }
   };
 
   // ── Report — opens the infringement form with this song's URL pre-filled. ──
   const handleReport = () => {
     if (!song?.id) return;
-    const songUrl = `${WEB_ORIGIN}/song/${song.id}`;
-    Linking.openURL(`${WEB_ORIGIN}/report?url=${encodeURIComponent(songUrl)}`)
+    const songUrl = webUrl(`/song/${song.id}`);
+    Linking.openURL(webUrl(`/report?url=${encodeURIComponent(songUrl)}`))
       .catch(err => console.error('Failed to open report form:', err));
   };
 
   const handleCopyLink = async () => {
     try {
-      await ExpoClipboard.setStringAsync(`${WEB_ORIGIN}/song/${song?.id}`);
+      await ExpoClipboard.setStringAsync(webUrl(`/song/${song?.id}`));
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
-    } catch (err) { console.error('Failed to copy link:', err); }
+      feedback.success('Link copied', { id: 'copy-link' });
+    } catch (err) {
+      console.error('Failed to copy link:', err);
+      feedback.info(`Copy this link: ${webUrl(`/song/${song?.id}`)}`);
+    }
   };
 
   const handleArtistClick = () => { if (song?.artistId) navigation.navigate('Artist', { artistId: song.artistId }); };
@@ -410,7 +415,7 @@ const SongScreen: React.FC = () => {
 
   return (
     <View style={s.container}>
-      <ImageBackground source={{ uri: song.artwork }} style={StyleSheet.absoluteFillObject} blurRadius={30}>
+      <ImageBackground source={artSrc(song.artwork)} style={StyleSheet.absoluteFillObject} blurRadius={30}>
         <LinearGradient colors={['rgba(13,15,20,0.7)', C.bgPrimary]} style={StyleSheet.absoluteFillObject} />
       </ImageBackground>
 
@@ -419,7 +424,7 @@ const SongScreen: React.FC = () => {
 
           {/* ═══ HERO ═══ */}
           <View style={s.hero}>
-            <Image source={{ uri: song.artwork }} style={s.albumArt} />
+            <Image source={artSrc(song.artwork)} style={s.albumArt} />
             <View style={s.heroInfo}>
               <TouchableOpacity
                 onPress={handleJurisdictionClick}
@@ -453,6 +458,30 @@ const SongScreen: React.FC = () => {
                 <Text style={s.metaText}>{formatDate(song.createdAt)}</Text>
                 <View style={s.genrePill}><Text style={s.genreText}>{song.genre}</Text></View>
               </View>
+              {(song.subgenres.length > 0 || song.moods.length > 0) && (
+                <View style={s.tags} accessibilityLabel="Subgenres and moods">
+                  {song.subgenres.map((sg) => (
+                    <TouchableOpacity
+                      key={sg.subgenreId}
+                      style={[s.tag, { backgroundColor: accentDim, borderColor: hexToRgba(accent, 0.35) }]}
+                      onPress={() => navigation.navigate('BrowseTag', { kind: 'subgenre', slug: sg.slug })}
+                      accessibilityLabel={`More ${sg.name} songs`}
+                    >
+                      <Text style={s.tagText}>{sg.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                  {song.moods.map((m) => (
+                    <TouchableOpacity
+                      key={m.moodId}
+                      style={[s.tag, s.tagMood]}
+                      onPress={() => navigation.navigate('BrowseTag', { kind: 'mood', slug: m.slug })}
+                      accessibilityLabel={`More ${m.name} songs`}
+                    >
+                      <Text style={s.tagText}>{m.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
             </View>
           </View>
 
@@ -525,6 +554,16 @@ const SongScreen: React.FC = () => {
             </View>
           )}
 
+          {/* ═══ RECOMMENDED ═══ */}
+          <View style={{ marginHorizontal: -16 }}>
+            <RecommendedSongs songId={song.id} />
+          </View>
+
+          {/* ═══ AD SPACE (none for Unis Plus) ═══ */}
+          <View style={{ marginTop: 20 }}>
+            <AdSlot placement="song" />
+          </View>
+
           {/* ═══ COMMENTS ═══ */}
           <View style={s.section}>
             <CommentSection songId={song.id} userId={userId} songArtistId={song.artistId} />
@@ -539,6 +578,12 @@ const SongScreen: React.FC = () => {
                 <View style={s.detailCard}><Text style={s.detailLabel}>Uploaded</Text><Text style={s.detailValue}>{formatDate(song.createdAt)}</Text></View>
                 <View style={s.detailCard}><Text style={s.detailLabel}>Plays</Text><Text style={s.detailValue}>{formatNumber(song.playCount)}</Text></View>
                 <View style={s.detailCard}><Text style={s.detailLabel}>Likes</Text><Text style={s.detailValue}>{formatNumber(likeCount)}</Text></View>
+                {!!song.language && (
+                  <View style={s.detailCard}>
+                    <Text style={s.detailLabel}>Language</Text>
+                    <Text style={s.detailValue}>{taxonomy?.languages.find((l) => l.code === song.language)?.name || song.language}</Text>
+                  </View>
+                )}
               </View>
             </View>
 
@@ -649,6 +694,10 @@ const s = StyleSheet.create({
   meta: { flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 6, justifyContent: IS_MOBILE ? 'center' : 'flex-start' },
   metaText: { fontSize: 13, color: C.textSecondary },
   dot: { width: 3, height: 3, borderRadius: 1.5, backgroundColor: C.textTertiary },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8, justifyContent: IS_MOBILE ? 'center' : 'flex-start' },
+  tag: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, borderWidth: 1 },
+  tagMood: { backgroundColor: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.14)' },
+  tagText: { color: C.textPrimary, fontSize: 12, fontWeight: '600' },
   genrePill: { backgroundColor: C.bgSurface, borderWidth: 1, borderColor: C.borderDefault, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2 },
   genreText: { fontSize: 11, color: C.textTertiary },
 

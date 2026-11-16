@@ -1,51 +1,49 @@
 // src/screens/ArtistdashboardScreen.tsx
-// Ported from web `artistDashboard.jsx` (production version).
+// ─────────────────────────────────────────────────────────────
+// Mobile port of web src/artistDashboard.jsx — Oct 2026 redesign: one long
+// scroll of sections → six tabs plus Settings.
 //
-// Architecture (web parity):
-//   fetchCore   — Promise.all(profile-summary, songs/artist, default-song)
-//   fetchStats  — Promise.all(supporters, followers, total-plays, total-votes,
-//                 earnings summary, stripe status, payouts) — each individually
-//                 caught so one failure doesn't sink the batch
-//   fetchAwards / fetchSongAwards — trophy case with Artist | Songs toggle and
-//                 offset pagination (10 per page)
+//   Home      setup progress · this week · where you stand · featured song ·
+//             share balance · supporters                (ArtistHomeTab.tsx)
+//   Music     songs (stats, sales, edit, lyrics, delete) · videos
+//   Fans      fan funnel · supporters · demographics
+//   Races     score / votes / wins / level · territory rank · trophy case
+//   Earnings  phone check · revenue · refer & earn
+//   Profile   your page · links (one Save) · photos · agreement
+//   Settings  (gear) color theme · who you support · vote history · account
 //
-// ★ play-flow: play handlers no longer fire their own /play POST. The Player
-//   counts the play once the listener crosses the 15s/25% threshold; media is
-//   tagged with a `source` so analytics can attribute discovery.
-// ★ item 3: quick-nav — collapsibles register an opener + report their scroll
-//   position; the "Jump to" bar opens the section then scrolls to it.
-//
-// Intentionally NOT ported (dead code in the web file, verified unreachable):
-//   - the inline `editingLyricsSong` lyrics modal (LyricsWizard is the live path)
-//   - the orphan bottom VoteHistoryModal + its /v1/vote/history?limit=50 fetch
-//     (nothing sets showVoteHistory; VoteHistorySection owns its own modal)
-
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+// Open a tab directly: navigate('ArtistDashboard', { tab: 'earnings' }).
+// Same fixes web shipped: no every-visit "Thank You" pop-up, "Verify" opens
+// phone verification, followers shown, links save once with a toast.
+// Plays go through requestPlay → PlayChoiceModal; the Player counts them.
+// ─────────────────────────────────────────────────────────────
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
+  ActivityIndicator,
   Image,
   ImageBackground,
-  TouchableOpacity,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
   TextInput,
-  ActivityIndicator,
-  Modal,
-  Alert,
+  View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import * as Clipboard from 'expo-clipboard';
 import {
-  Upload, Play, FileText, Vote, Heart, Users, X, Music, Trash2, Edit3,
-  Trophy, MapPin, DollarSign, ArrowRight, ShieldCheck, Sparkles, Compass,
-  Gauge, BarChart3, Lock, Clock, Link2, Share2, Palette, LayoutGrid, ImagePlus,
+  BarChart3, Clock, DollarSign, Edit3, ExternalLink, FileText, Heart, Music, Play, ShieldCheck,
+  SlidersHorizontal, Trash2, Trophy, Upload, Video, Vote,
 } from 'lucide-react-native';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
+import { useFeedback } from '../context/FeedbackContext';
 import axiosInstance from '../services/axiosInstance';
-import buildUrl from '../utils/buildUrl';
+import { buildUrl } from '../utils/buildUrl';
+import buildSetupSteps from '../utils/artistSetupSteps';
+import { useUnisTheme, mix } from '../theme/unisTheme';
 
-// ── Wizards (existing mobile components) ─────────────────────────────────────
 import EditProfileWizard from '../components/Editprofilewizard';
 import UploadWizard from '../components/Uploadwizard';
 import ChangeDefaultSongWizard from '../components/Changedefaultsongwizard';
@@ -55,16 +53,11 @@ import DeleteAccountWizard from '../components/DeleteAccountWizard';
 import DeleteSongModal from '../components/Deletesongmodal';
 import ChangePasswordWizard from '../components/Changepasswordwizard';
 import DownloadContractButton from '../components/Downloadcontractbutton';
-
-// ── Ported with the Profile sweep ────────────────────────────────────────────
 import ReferralCodeCard from '../components/ReferralCodeCard';
 import ThemePicker from '../components/ThemePicker';
 import VoteHistorySection from '../components/VoteHistorySection';
 import SupportedArtistPicker from '../components/SupportedArtistPicker';
 import VerificationGate from '../components/VerificationGate';
-
-// ── Ported with this Dashboard sweep ─────────────────────────────────────────
-import ArtistCollapsibleSection from '../components/ArtistCollapsibleSection';
 import FanbaseFunnel from '../components/FanbaseFunnel';
 import SupporterSection from '../components/SupporterSection';
 import DemographicsSection from '../components/DemographicsSection';
@@ -73,182 +66,218 @@ import ArtistPhotosManager from '../components/ArtistPhotosManager';
 import SongStatsModal from '../components/SongStatsModal';
 import SongSalesModal from '../components/SongSalesModal';
 import RevenueSection from '../components/RevenueSection';
+import PhoneVerificationModal from '../components/PhoneVerificationModal';
+import ArtistHomeTab from '../components/ArtistHomeTab';
 
 const backimage = require('../../assets/randomrapper.jpeg');
 
-// ============================================================================
-// COLORS
-// ============================================================================
-const COLORS = {
-  bgBlack: '#000000',
-  cardBg: 'rgba(255, 255, 255, 0.03)',
-  borderSubtle: 'rgba(255, 255, 255, 0.08)',
-  textWhite: '#FFFFFF',
-  textSilver: '#CCCCCC',
-  textGray: '#AAAAAA',
-  textMuted: '#888888',
-  unisBlue: '#004aad',
-  unisBlueBright: '#4a9eff',
-  dangerRed: '#dc3545',
-  errorRed: '#f87171',
-};
+const TABS = [
+  { id: 'home', label: 'Home' },
+  { id: 'music', label: 'Music' },
+  { id: 'fans', label: 'Fans' },
+  { id: 'races', label: 'Races' },
+  { id: 'earnings', label: 'Earnings' },
+  { id: 'profile', label: 'Profile' },
+] as const;
+type TabId = (typeof TABS)[number]['id'] | 'settings';
+const PANEL_IDS = [...TABS.map((x) => x.id), 'settings'];
 
-// ============================================================================
-// Types (loose — mirror the web's duck-typed payloads)
-// ============================================================================
-interface Song {
-  songId: string;
-  id?: string;
-  title: string;
-  fileUrl?: string | null;
-  artworkUrl?: string | null;
-  playCount?: number;
-  plays?: number;
-  votes?: number;
-  voteCount?: number;
-  isrc?: string;
-  lyrics?: string;
-}
+const LINK_FIELDS = [
+  { key: 'instagramUrl', label: 'Instagram', placeholder: 'https://instagram.com/yourname', type: 'url' },
+  { key: 'tiktokUrl', label: 'TikTok', placeholder: 'https://tiktok.com/@yourname', type: 'url' },
+  { key: 'twitterUrl', label: 'X (Twitter)', placeholder: 'https://x.com/yourname', type: 'url' },
+  { key: 'youtubeUrl', label: 'YouTube', placeholder: 'https://youtube.com/@yourchannel', type: 'url' },
+  { key: 'contactEmail', label: 'Contact email', placeholder: 'you@example.com', type: 'email' },
+];
 
-interface Award {
-  interval?: { name?: string };
-  jurisdiction?: { name?: string };
-  genre?: { name?: string };
-  awardDate?: string;
-  song?: { title?: string; artworkUrl?: string | null };
-}
+const fmt = (n: any) => Math.round(Number(n || 0)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-// ============================================================================
-// Inline section helpers (web parity)
-// ============================================================================
 const SectionLoader: React.FC<{ label?: string }> = ({ label = 'Loading...' }) => (
-  <View style={styles.sectionState}>
-    <ActivityIndicator size="large" color={COLORS.unisBlueBright} />
-    <Text style={styles.sectionStateText}>{label}</Text>
+  <View style={styles.state}>
+    <ActivityIndicator color="#fff" />
+    <Text style={styles.stateText}>{label}</Text>
   </View>
 );
 
-const SectionError: React.FC<{ message?: string; onRetry?: () => void }> = ({
-  message = 'Failed to load.',
-  onRetry,
-}) => (
-  <View style={styles.sectionState}>
-    <Text style={styles.sectionErrorText}>{message}</Text>
+const SectionError: React.FC<{ message?: string; onRetry?: () => void }> = ({ message = 'Failed to load.', onRetry }) => (
+  <View style={styles.state}>
+    <Text style={styles.errorText}>{message}</Text>
     {onRetry && (
-      <TouchableOpacity style={styles.retryBtn} onPress={onRetry}>
-        <Text style={styles.retryBtnText}>Retry</Text>
-      </TouchableOpacity>
+      <Pressable style={styles.ghostSm} onPress={onRetry}><Text style={styles.ghostText}>Retry</Text></Pressable>
     )}
   </View>
 );
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
+const Panel: React.FC<{ title?: React.ReactNode; right?: React.ReactNode; children: React.ReactNode; style?: any }> = ({ title, right, children, style }) => (
+  <View style={[styles.panel, style]}>
+    {(title || right) && (
+      <View style={styles.panelHead}>
+        {typeof title === 'string' ? <Text style={styles.panelTitle}>{title}</Text> : title}
+        {right}
+      </View>
+    )}
+    {children}
+  </View>
+);
+
+const Em: React.FC<{ children: React.ReactNode }> = ({ children }) => <Text style={styles.em}>{children}</Text>;
+
+// ── Videos on the Music tab ──
+const ArtistVideos: React.FC<{ artistId: string; onUpload: () => void; refreshKey: number; onOpen: (id: string) => void }> = ({ artistId, onUpload, refreshKey, onOpen }) => {
+  const t = useUnisTheme();
+  const [videos, setVideos] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    axiosInstance
+      .get(`/v1/media/videos/artist/${artistId}`)
+      .then((res) => { if (!cancelled) setVideos(Array.isArray(res.data) ? res.data : []); })
+      .catch((err) => {
+        console.error('Artist videos fetch failed:', err);
+        if (!cancelled) setError('Could not load your videos.');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [artistId]);
+
+  useEffect(() => load(), [load, refreshKey]);
+
+  return (
+    <Panel title={<Text style={styles.panelTitle}>Videos {!loading && !error && <Text style={styles.count}>{videos.length}</Text>}</Text>}>
+      {loading ? (
+        <SectionLoader label="Loading your videos..." />
+      ) : error ? (
+        <SectionError message={error} onRetry={load} />
+      ) : videos.length === 0 ? (
+        <View style={styles.empty}>
+          <Video size={34} color="rgba(255,255,255,0.4)" />
+          <Text style={styles.emptyTitle}>No videos yet</Text>
+          <Text style={styles.emptyText}>Upload a performance, a cover or a music video. Fans can watch and comment on it from your page.</Text>
+          <Pressable style={[styles.primary, { backgroundColor: t.primary }]} onPress={onUpload}>
+            <Upload size={14} color="#fff" />
+            <Text style={styles.primaryText}>Upload a video</Text>
+          </Pressable>
+        </View>
+      ) : (
+        videos.map((v) => {
+          const id = v.videoId || v.id;
+          const art = buildUrl(v.artworkUrl);
+          return (
+            <Pressable key={id} style={styles.videoRow} onPress={() => onOpen(id)} accessibilityLabel={`Watch ${v.title}`}>
+              <View style={styles.videoThumb}>
+                {art ? <Image source={{ uri: art }} style={StyleSheet.absoluteFill} /> : null}
+                <View style={styles.videoPlay}><Play size={14} color="#fff" fill="#fff" /></View>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle} numberOfLines={1}>{v.title}</Text>
+                <Text style={styles.rowSub}>{fmt(v.playCount)} plays · {fmt(v.likes)} likes</Text>
+              </View>
+            </Pressable>
+          );
+        })
+      )}
+    </Panel>
+  );
+};
+
 const ArtistDashboardScreen: React.FC = () => {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, refreshUser } = useAuth();
   const { requestPlay } = usePlayer();
-
-  // ★ item 3: quick-nav — collapsibles register an opener; nav opens then scrolls
+  const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  const feedback = useFeedback();
+  const t = useUnisTheme();
   const scrollRef = useRef<ScrollView>(null);
-  const sectionOpeners = useRef<Record<string, () => void>>({});
-  const sectionPositions = useRef<Record<string, number>>({});
-  const registerSection = useCallback((sectionId: string, opener: () => void) => {
-    sectionOpeners.current[sectionId] = opener;
-  }, []);
-  const registerPosition = useCallback((sectionId: string, y: number) => {
-    sectionPositions.current[sectionId] = y;
-  }, []);
-  const goToSection = useCallback((sectionId: string) => {
-    sectionOpeners.current[sectionId]?.();
-    // Give the section a frame to expand before scrolling (RN equivalent of
-    // web's requestAnimationFrame + scrollIntoView).
-    requestAnimationFrame(() => {
-      const y = sectionPositions.current[sectionId];
-      if (y != null) scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
-    });
+
+  const [activeTab, setActiveTab] = useState<TabId>('home');
+  useEffect(() => {
+    const wanted = route.params?.tab;
+    if (wanted && PANEL_IDS.includes(wanted)) setActiveTab(wanted);
+  }, [route.params?.tab]);
+
+  const goToTab = useCallback((id: string) => {
+    setActiveTab((PANEL_IDS.includes(id) ? id : 'home') as TabId);
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
   }, []);
 
-  // ---- Core data ---------------------------------------------------------
+  const showToast = useCallback((message: string, tone: 'info' | 'error' | 'success' = 'info') => {
+    if (tone === 'error') feedback.error(message);
+    else if (tone === 'success') feedback.success(message);
+    else feedback.info(message);
+  }, [feedback]);
+
+  // ── Data ──
   const [userProfile, setUserProfile] = useState<any>(null);
-  const [songs, setSongs] = useState<Song[]>([]);
-  const [defaultSong, setDefaultSong] = useState<Song | null>(null);
+  const [songs, setSongs] = useState<any[]>([]);
+  const [defaultSong, setDefaultSong] = useState<any>(null);
   const [coreLoading, setCoreLoading] = useState(true);
   const [coreError, setCoreError] = useState<string | null>(null);
 
-  // ---- Secondary data ----------------------------------------------------
   const [supporters, setSupporters] = useState(0);
   const [followers, setFollowers] = useState(0);
   const [totalPlays, setTotalPlays] = useState(0);
   const [totalVotes, setTotalVotes] = useState(0);
   const [referralCode, setReferralCode] = useState<string | null>(null);
   const [supportedArtist, setSupportedArtist] = useState<any>(null);
-  const [pendingSupportedArtist, setPendingSupportedArtist] = useState<any>(null); // ★ H
+  const [pendingSupportedArtist, setPendingSupportedArtist] = useState<any>(null);
   const [earningsSummary, setEarningsSummary] = useState<any>(null);
   const [stripeStatus, setStripeStatus] = useState<any>(null);
   const [payoutHistory, setPayoutHistory] = useState<any[]>([]);
-  const [statsSong, setStatsSong] = useState<Song | null>(null);   // ★ D
-  const [salesSong, setSalesSong] = useState<Song | null>(null);   // ★ sales
+  const [statsSong, setStatsSong] = useState<any>(null);
+  const [salesSong, setSalesSong] = useState<any>(null);
 
-  const [awards, setAwards] = useState<Award[]>([]);
+  const [awards, setAwards] = useState<any[]>([]);
   const [awardsPage, setAwardsPage] = useState(0);
   const [hasMoreAwards, setHasMoreAwards] = useState(true);
   const [awardsLoading, setAwardsLoading] = useState(true);
   const [awardsError, setAwardsError] = useState<string | null>(null);
   const [loadingMoreAwards, setLoadingMoreAwards] = useState(false);
-
-  // ---- Song awards (trophy toggle) ----------------------------------------
   const [awardTab, setAwardTab] = useState<'artist' | 'song'>('artist');
-  const [songAwards, setSongAwards] = useState<Award[]>([]);
+  const [songAwards, setSongAwards] = useState<any[]>([]);
   const [songAwardsPage, setSongAwardsPage] = useState(0);
   const [hasMoreSongAwards, setHasMoreSongAwards] = useState(true);
   const [songAwardsLoading, setSongAwardsLoading] = useState(true);
   const [songAwardsError, setSongAwardsError] = useState<string | null>(null);
   const [loadingMoreSongAwards, setLoadingMoreSongAwards] = useState(false);
 
-  // ---- UI state ----------------------------------------------------------
-  const [showWelcomePopup, setShowWelcomePopup] = useState(true);
   const [showUploadWizard, setShowUploadWizard] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [showDefaultSongWizard, setShowDefaultSongWizard] = useState(false);
   const [showDeleteWizard, setShowDeleteWizard] = useState(false);
   const [deletingSongId, setDeletingSongId] = useState<string | null>(null);
-  const [editingSong, setEditingSong] = useState<Song | null>(null);
-  const [songToDelete, setSongToDelete] = useState<Song | null>(null);
-  const [showLyricsWizard, setShowLyricsWizard] = useState(false);
-  const [lyricsSong, setLyricsSong] = useState<Song | null>(null);
+  const [editingSong, setEditingSong] = useState<any>(null);
+  const [songToDelete, setSongToDelete] = useState<any>(null);
+  const [lyricsSong, setLyricsSong] = useState<any>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
-  const [showArtistPicker, setShowArtistPicker] = useState(false); // ★ H
-  const [cancellingPending, setCancellingPending] = useState(false); // ★ H
+  const [showArtistPicker, setShowArtistPicker] = useState(false);
+  const [cancellingPending, setCancellingPending] = useState(false);
+  const [showPhoneVerify, setShowPhoneVerify] = useState(false);
+  const [videosRefreshKey, setVideosRefreshKey] = useState(0);
+  const [links, setLinks] = useState<Record<string, string>>(() => Object.fromEntries(LINK_FIELDS.map((f) => [f.key, ''])));
+  const [savingLinks, setSavingLinks] = useState(false);
 
-  // -----------------------------------------------------------------------
-  // Fetch helpers
-  // -----------------------------------------------------------------------
   const fetchCore = useCallback(async (userId: string) => {
     setCoreLoading(true);
     setCoreError(null);
-
     try {
       const [summaryRes, songsRes, defaultSongRes] = await Promise.all([
         axiosInstance.get(`/v1/users/profile-summary/${userId}`),
         axiosInstance.get(`/v1/media/songs/artist/${userId}`),
         axiosInstance.get(`/v1/users/${userId}/default-song`).catch(() => ({ data: null })),
       ]);
-
       const summary = summaryRes.data;
       const profile = summary?.profile;
-
-      if (!profile) {
-        throw new Error('Profile summary did not include a profile payload.');
-      }
-
+      if (!profile) throw new Error('Profile summary did not include a profile payload.');
       setUserProfile(profile);
       setReferralCode(summary?.referralCode || null);
       setSupportedArtist(summary?.supportedArtist || null);
-      setPendingSupportedArtist(summary?.pendingSupportedArtist || null); // ★ H
+      setPendingSupportedArtist(summary?.pendingSupportedArtist || null);
       setSongs(songsRes.data || []);
       setDefaultSong(defaultSongRes.data);
-
       setTotalPlays(profile.totalPlays || 0);
       setTotalVotes(profile.totalVotes || summary?.voteHistory?.totalCount || 0);
     } catch (err) {
@@ -261,15 +290,7 @@ const ArtistDashboardScreen: React.FC = () => {
 
   const fetchStats = useCallback(async (userId: string) => {
     try {
-      const [
-        supportersRes,
-        followersRes,
-        totalPlaysRes,
-        totalVotesRes,
-        earningsRes,
-        stripeRes,
-        payoutsRes,
-      ] = await Promise.all([
+      const [supportersRes, followersRes, totalPlaysRes, totalVotesRes, earningsRes, stripeRes, payoutsRes] = await Promise.all([
         axiosInstance.get(`/v1/users/${userId}/supporters/count`).catch(() => ({ data: { count: 0 } })),
         axiosInstance.get(`/v1/users/${userId}/followers/count`).catch(() => ({ data: { count: 0 } })),
         axiosInstance.get(`/v1/users/${userId}/total-plays`).catch(() => ({ data: { totalPlays: 0 } })),
@@ -278,12 +299,10 @@ const ArtistDashboardScreen: React.FC = () => {
         axiosInstance.get('/v1/stripe/status').catch(() => ({ data: null })),
         axiosInstance.get('/v1/stripe/payouts').catch(() => ({ data: [] })),
       ]);
-
       setSupporters(supportersRes.data?.count || 0);
       setFollowers(followersRes.data?.count || 0);
       setTotalPlays(totalPlaysRes.data?.totalPlays || 0);
       setTotalVotes(totalVotesRes.data?.totalVotes || 0);
-
       if (earningsRes.data) setEarningsSummary(earningsRes.data);
       if (stripeRes.data) setStripeStatus(stripeRes.data);
       if (payoutsRes.data) setPayoutHistory(payoutsRes.data);
@@ -328,132 +347,216 @@ const ArtistDashboardScreen: React.FC = () => {
     }
   }, []);
 
-  const loadMoreAwards = async () => {
-    if (!user?.userId) return;
-    setLoadingMoreAwards(true);
-    try {
-      const nextPage = awardsPage + 1;
-      const res = await axiosInstance.get(
-        `/v1/awards/artist/${user.userId}?limit=10&offset=${nextPage * 10}`
-      );
-      const newAwards = res.data || [];
-      setAwards((prev) => [...prev, ...newAwards]);
-      setAwardsPage(nextPage);
-      setHasMoreAwards(newAwards.length === 10);
-    } catch (err) {
-      console.error('Failed to load more awards:', err);
-    } finally {
-      setLoadingMoreAwards(false);
-    }
-  };
-
-  const loadMoreSongAwards = async () => {
-    if (!user?.userId) return;
-    setLoadingMoreSongAwards(true);
-    try {
-      const nextPage = songAwardsPage + 1;
-      const res = await axiosInstance.get(
-        `/v1/awards/artist/${user.userId}/songs?limit=10&offset=${nextPage * 10}`
-      );
-      const newAwards = res.data || [];
-      setSongAwards((prev) => [...prev, ...newAwards]);
-      setSongAwardsPage(nextPage);
-      setHasMoreSongAwards(newAwards.length === 10);
-    } catch (err) {
-      console.error('Failed to load more song awards:', err);
-    } finally {
-      setLoadingMoreSongAwards(false);
-    }
-  };
-
   useEffect(() => {
     if (authLoading || !user?.userId) return;
-    const userId = user.userId;
-    fetchCore(userId);
-    fetchStats(userId);
-    fetchAwards(userId);
-    fetchSongAwards(userId);
+    fetchCore(user.userId);
+    fetchStats(user.userId);
+    fetchAwards(user.userId);
+    fetchSongAwards(user.userId);
   }, [user?.userId, authLoading, fetchCore, fetchStats, fetchAwards, fetchSongAwards]);
 
-  // -----------------------------------------------------------------------
-  // Handlers (declared before early returns; none are hooks)
-  // -----------------------------------------------------------------------
-  const refetchDefaultSong = () => {
-    axiosInstance.get(`/v1/users/${user!.userId}/default-song`)
-      .then((res) => setDefaultSong(res.data))
-      .catch(() => setDefaultSong(null));
+  useEffect(() => {
+    if (!userProfile) return;
+    setLinks(Object.fromEntries(LINK_FIELDS.map((f) => [f.key, userProfile[f.key] || ''])));
+  }, [userProfile]);
+
+  if (authLoading || !user) return <SectionLoader label="Loading..." />;
+  if (coreLoading) return <View style={styles.center}><SectionLoader label="Loading your dashboard..." /></View>;
+  if (coreError || !userProfile) return <View style={styles.center}><SectionError message={coreError || 'No data.'} onRetry={() => fetchCore(user.userId)} /></View>;
+
+  // ── Derived ──
+  const displayName = userProfile.username || 'Artist';
+  const photoUrl = buildUrl(userProfile.photoUrl);
+  const displayPhoto = photoUrl ? { uri: photoUrl } : backimage;
+  const hasOwnPhoto = Boolean(userProfile.photoUrl);
+  const displayBio = userProfile.bio || 'No bio yet. Add one from Edit profile.';
+  const artistInitial = displayName.charAt(0).toUpperCase();
+  const levelLabel = userProfile.level || 'Silver';
+  const isArtistRole = userProfile?.role === 'artist';
+  const placeLine = [userProfile.jurisdiction?.name || userProfile.jurisdictionName, userProfile.genre?.name || userProfile.genreName].filter(Boolean).join(' · ');
+  const featuredArtUrl = buildUrl(defaultSong?.artworkUrl) || photoUrl;
+  const featuredArtwork = featuredArtUrl ? { uri: featuredArtUrl } : backimage;
+  const recentAward = awards?.[0] || null;
+  const recentSongAward = songAwards?.[0] || null;
+  const isStripeReady = Boolean(stripeStatus?.onboardingComplete && stripeStatus?.payoutsEnabled);
+  const referralCount = Number(earningsSummary?.referralCount || 0);
+  const pendingEffective = pendingSupportedArtist?.effectiveDate
+    ? new Date(pendingSupportedArtist.effectiveDate).toLocaleDateString(undefined, { month: 'long', day: 'numeric' })
+    : null;
+
+  const formatAwardDate = (dateString?: string) => {
+    if (!dateString) return '';
+    const [year, month, day] = dateString.split('-').map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+  const getAwardTitle = (interval: any, type = 'artist') => {
+    const name = (interval?.name || '').toLowerCase();
+    const subject = type === 'song' ? 'Song' : 'Artist';
+    if (name === 'daily' || name.includes('day')) return `${subject} of the Day`;
+    if (name === 'weekly' || name.includes('week')) return `${subject} of the Week`;
+    if (name === 'monthly' || name.includes('month')) return `${subject} of the Month`;
+    if (name.includes('quarter')) return `${subject} of the Quarter`;
+    if (name.includes('midterm') || name.includes('semi')) return `${subject} of the Midterm`;
+    if (name.includes('year') || name.includes('annual')) return `${subject} of the Year`;
+    return interval?.name ? `${interval.name} ${subject} Award` : `${subject} Award`;
+  };
+  const intervalBadge = (interval: any) => {
+    const name = (interval?.name || '').toLowerCase();
+    if (name.includes('day')) return 'Day';
+    if (name.includes('week')) return 'Week';
+    if (name.includes('month')) return 'Month';
+    if (name.includes('quarter')) return 'Quarter';
+    if (name.includes('midterm') || name.includes('semi')) return 'Midterm';
+    if (name.includes('year') || name.includes('annual')) return 'Year';
+    return interval?.name || 'Award';
+  };
+  const formatIsrc = (isrc?: string) => {
+    if (!isrc || isrc.length !== 12) return isrc || '';
+    return `${isrc.slice(0, 2)}-${isrc.slice(2, 5)}-${isrc.slice(5, 7)}-${isrc.slice(7)}`;
+  };
+  const latestWin = recentAward
+    ? [getAwardTitle(recentAward.interval, 'artist'), recentAward.jurisdiction?.name].filter(Boolean).join(', ') +
+      (recentAward.awardDate ? ` · ${formatAwardDate(recentAward.awardDate)}` : '')
+    : null;
+  const setupSteps = buildSetupSteps({ userProfile, user, songs, defaultSong, isStripeReady, referralCount, isArtistRole });
+  const winsCount = awards.length + songAwards.length;
+  const winsMore = hasMoreAwards || hasMoreSongAwards;
+
+  // ── Handlers ──
+  const refetchDefaultSong = () =>
+    axiosInstance.get(`/v1/users/${user.userId}/default-song`).then((res) => setDefaultSong(res.data)).catch(() => setDefaultSong(null));
+  const refetchSongs = () => axiosInstance.get(`/v1/media/songs/artist/${user.userId}`).then((res) => setSongs(res.data || []));
+
+  const playSupportedArtistSong = () => {
+    if (!supportedArtist?.defaultSong) {
+      showToast('This artist has not set a featured song yet.');
+      return;
+    }
+    const song = supportedArtist.defaultSong;
+    const songId = song.songId || song.id;
+    const songUrl = buildUrl(song.fileUrl);
+    const artworkUrl = buildUrl(song.artworkUrl) || buildUrl(supportedArtist.photoUrl);
+    if (!songUrl) return;
+    requestPlay({
+      type: 'song', id: songId, songId, url: songUrl, fileUrl: songUrl, title: song.title,
+      artist: supportedArtist.username, artistName: supportedArtist.username, artistId: supportedArtist.userId,
+      artwork: artworkUrl, artworkUrl, source: 'dashboard-support',
+    });
   };
 
-  const refetchSongs = () => {
-    axiosInstance.get(`/v1/media/songs/artist/${user!.userId}`)
-      .then((res) => setSongs(res.data || []));
+  const playDefaultSong = () => {
+    if (!defaultSong) {
+      setShowDefaultSongWizard(true);
+      return;
+    }
+    const songId = defaultSong.songId || defaultSong.id;
+    const songUrl = buildUrl(defaultSong.fileUrl);
+    const artworkUrl = buildUrl(defaultSong.artworkUrl) || photoUrl;
+    if (!songUrl) {
+      showToast('This featured song is missing its audio file.', 'error');
+      return;
+    }
+    requestPlay({
+      type: 'song', id: songId, songId, url: songUrl, fileUrl: songUrl, title: defaultSong.title,
+      artist: displayName, artistName: displayName, artistId: user.userId, artwork: artworkUrl, artworkUrl, source: 'dashboard',
+    });
   };
 
-  const handleUploadSuccess = () => {
+  const handleUploadSuccess = (result?: any) => {
     setShowUploadWizard(false);
     refetchSongs();
+    setVideosRefreshKey((k) => k + 1);
+    const title = result?.title;
+    showToast(title ? `“${title}” is live on Unis` : 'Upload complete — it’s live on Unis', 'success');
   };
 
   const handleProfileUpdate = () => {
-    axiosInstance.get(`/v1/users/profile-summary/${user!.userId}`)
+    axiosInstance
+      .get(`/v1/users/profile-summary/${user.userId}`)
       .then((res) => {
         const summary = res.data;
         setUserProfile(summary.profile);
         setReferralCode(summary.referralCode || null);
         setSupportedArtist(summary.supportedArtist || null);
-        setPendingSupportedArtist(summary.pendingSupportedArtist || null); // ★ H
+        setPendingSupportedArtist(summary.pendingSupportedArtist || null);
       })
       .catch((err) => console.error('Failed to refresh profile summary:', err));
   };
 
-  // ★ H: cancel a queued supported-artist change (mirrors Profile).
   const cancelPendingArtist = async () => {
-    if (!user?.userId) return;
     setCancellingPending(true);
     try {
       await axiosInstance.delete(`/v1/users/${user.userId}/supported-artist/pending`);
       handleProfileUpdate();
     } catch (err) {
       console.error('Failed to cancel pending supported-artist change:', err);
-      Alert.alert('Error', 'Failed to cancel the pending change. Please try again.');
+      showToast('Could not cancel the pending change. Please try again.', 'error');
     } finally {
       setCancellingPending(false);
     }
   };
 
-  const SOCIAL_FIELDS: Record<string, string> = {
-    instagram: 'instagramUrl',
-    twitter: 'twitterUrl',
-    tiktok: 'tiktokUrl',
-    youtube: 'youtubeUrl',
-    contactEmail: 'contactEmail',
+  const normalizeLink = (field: (typeof LINK_FIELDS)[number], raw: string) => {
+    const value = (raw || '').trim();
+    if (!value || field.type !== 'url' || /^https?:\/\//i.test(value)) return value;
+    return `https://${value}`;
   };
+  const linksDirty = LINK_FIELDS.some((f) => (links[f.key] || '') !== (userProfile[f.key] || ''));
 
-  const handleSocialMediaUpdate = async (platform: string, value: string) => {
+  const handleSaveLinks = async () => {
+    if (savingLinks) return;
+    setSavingLinks(true);
     try {
-      const field = SOCIAL_FIELDS[platform] || `${platform}Url`;
-      await axiosInstance.put(`/v1/users/profile/${user!.userId}`, { [field]: value });
+      await axiosInstance.put(`/v1/users/profile/${user.userId}`, Object.fromEntries(LINK_FIELDS.map((f) => [f.key, normalizeLink(f, links[f.key])])));
       handleProfileUpdate();
-      Alert.alert('Saved', `${platform} link updated successfully!`);
-    } catch (err) {
-      console.error('Failed to update social media:', err);
-      Alert.alert('Error', 'Failed to update link');
+      showToast('Links saved.', 'success');
+    } catch (err: any) {
+      console.error('Failed to save links:', err);
+      showToast(err?.response?.data?.error || 'Could not save your links. Please try again.', 'error');
+    } finally {
+      setSavingLinks(false);
     }
   };
 
-  const handleDeleteSongClick = (song: Song) => {
+  const copyReferralCode = async () => {
+    if (!referralCode) {
+      showToast('Your code is not ready yet.');
+      return;
+    }
+    try {
+      await Clipboard.setStringAsync(referralCode);
+      showToast('Code copied. Share it with your people.', 'success');
+    } catch {
+      showToast(`Your code: ${referralCode}`);
+    }
+  };
+
+  const handleSetupAction = (key: string) => {
+    switch (key) {
+      case 'profile': setShowEditProfile(true); break;
+      case 'featured': setShowDefaultSongWizard(true); break;
+      case 'second-song': setShowUploadWizard(true); break;
+      case 'links': goToTab('profile'); break;
+      case 'phone': setShowPhoneVerify(true); break;
+      case 'payouts': goToTab('earnings'); break;
+      case 'share': copyReferralCode(); break;
+      default: break;
+    }
+  };
+
+  const handlePhoneVerified = async () => {
+    setShowPhoneVerify(false);
+    try { await refreshUser?.(); } catch { /* next load reflects it */ }
+    showToast('Phone verified.', 'success');
+  };
+
+  const handleDeleteSongClick = (song: any) => {
     if (songs.length <= 1) {
-      Alert.alert(
-        'Keep at least one song',
-        'You must have at least one song. Upload another song before deleting this one.'
-      );
+      showToast('You need at least one song. Upload another before deleting this one.');
       return;
     }
     if (defaultSong?.songId === song.songId) {
-      Alert.alert(
-        'Featured song',
-        'This is your featured song. Please change your featured song before deleting it.'
-      );
+      showToast('This is your featured song. Choose a different featured song first.');
       setShowDefaultSongWizard(true);
       return;
     }
@@ -465,1071 +568,498 @@ const ArtistDashboardScreen: React.FC = () => {
     setDeletingSongId(songToDelete.songId);
     try {
       await axiosInstance.delete(`/v1/media/song/${songToDelete.songId}`);
-      const res = await axiosInstance.get(`/v1/media/songs/artist/${user!.userId}`);
-      setSongs(res.data || []);
+      await refetchSongs();
       setSongToDelete(null);
+      showToast('Song deleted.', 'success');
     } catch (err) {
       console.error('Failed to delete song:', err);
-      Alert.alert('Error', 'Failed to delete song. Please try again.');
+      showToast('Could not delete the song. Please try again.', 'error');
     } finally {
       setDeletingSongId(null);
     }
   };
 
-  // ★ play-flow: no /play POST — the Player counts the play at the 15s/25%
-  // threshold. We only tag the media with a source for discovery attribution.
-  const playSupportedArtistSong = async () => {
-    if (!supportedArtist?.defaultSong) {
-      Alert.alert('No Song', 'This artist has not set a featured song yet.');
-      return;
+  const loadMoreAwards = async () => {
+    setLoadingMoreAwards(true);
+    try {
+      const nextPage = awardsPage + 1;
+      const res = await axiosInstance.get(`/v1/awards/artist/${user.userId}?limit=10&offset=${nextPage * 10}`);
+      const more = res.data || [];
+      setAwards((prev) => [...prev, ...more]);
+      setAwardsPage(nextPage);
+      setHasMoreAwards(more.length === 10);
+    } catch (err) {
+      console.error('Failed to load more awards:', err);
+    } finally {
+      setLoadingMoreAwards(false);
     }
-    const song = supportedArtist.defaultSong;
-    const songId = song.songId || song.id;
-    const songUrl = buildUrl(song.fileUrl);
-    const artworkUrl = buildUrl(song.artworkUrl) || buildUrl(supportedArtist.photoUrl);
-    if (!songUrl) return;
-
-    requestPlay({
-      type: 'song',
-      id: songId,
-      songId,
-      url: songUrl,
-      fileUrl: songUrl,
-      title: song.title,
-      artist: supportedArtist.username,
-      artistName: supportedArtist.username,
-      artistId: supportedArtist.userId,
-      artwork: artworkUrl,
-      artworkUrl,
-      source: 'dashboard-support', // ★ play-flow: discovery source tag
-    } as any);
   };
 
-  const playDefaultSong = async () => {
-    if (!defaultSong) {
-      setShowDefaultSongWizard(true);
-      return;
+  const loadMoreSongAwards = async () => {
+    setLoadingMoreSongAwards(true);
+    try {
+      const nextPage = songAwardsPage + 1;
+      const res = await axiosInstance.get(`/v1/awards/artist/${user.userId}/songs?limit=10&offset=${nextPage * 10}`);
+      const more = res.data || [];
+      setSongAwards((prev) => [...prev, ...more]);
+      setSongAwardsPage(nextPage);
+      setHasMoreSongAwards(more.length === 10);
+    } catch (err) {
+      console.error('Failed to load more song awards:', err);
+    } finally {
+      setLoadingMoreSongAwards(false);
     }
-    const songId = defaultSong.songId || defaultSong.id;
-    const songUrl = buildUrl(defaultSong.fileUrl);
-    const artworkUrl = buildUrl(defaultSong.artworkUrl) || displayPhoto;
-    if (!songUrl) {
-      Alert.alert('Unavailable', 'This featured song is missing its audio file.');
-      return;
-    }
-
-    requestPlay({
-      type: 'song',
-      id: songId,
-      songId,
-      url: songUrl,
-      fileUrl: songUrl,
-      title: defaultSong.title,
-      artist: displayName,
-      artistName: displayName,
-      artistId: user!.userId,
-      artwork: artworkUrl,
-      artworkUrl,
-      source: 'dashboard', // ★ play-flow: discovery source tag
-    } as any);
   };
 
-  // ---- Award formatting helpers (web parity) ------------------------------
-  const formatAwardDate = (dateString?: string): string => {
-    if (!dateString) return '';
-    const [year, month, day] = dateString.split('-');
-    const date = new Date(Number(year), Number(month) - 1, Number(day));
-    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-  };
+  const openArtistPage = () => navigation.navigate('Home', { screen: 'Artist', params: { artistId: user.userId } });
 
-  const getAwardTitle = (interval?: { name?: string }, type: 'artist' | 'song' = 'artist'): string => {
-    const name = (interval?.name || '').toLowerCase();
-    const subject = type === 'song' ? 'Song' : 'Artist';
-    if (name === 'daily' || name.includes('day')) return `${subject} of the Day`;
-    if (name === 'weekly' || name.includes('week')) return `${subject} of the Week`;
-    if (name === 'monthly' || name.includes('month')) return `${subject} of the Month`;
-    if (name.includes('year') || name.includes('annual')) return `${subject} of the Year`;
-    return interval?.name ? `${interval.name} ${subject} Award` : `${subject} Award`;
-  };
-
-  const intervalBadge = (interval?: { name?: string }): string => {
-    const name = (interval?.name || '').toLowerCase();
-    if (name.includes('day')) return 'Day';
-    if (name.includes('week')) return 'Week';
-    if (name.includes('month')) return 'Month';
-    if (name.includes('quarter')) return 'Quarter';
-    if (name.includes('midterm') || name.includes('semi')) return 'Midterm';
-    if (name.includes('year') || name.includes('annual')) return 'Year';
-    return interval?.name || 'Award';
-  };
-
-  const formatIsrc = (isrc?: string): string => {
-    if (!isrc || isrc.length !== 12) return isrc || '';
-    return `${isrc.slice(0, 2)}-${isrc.slice(2, 5)}-${isrc.slice(5, 7)}-${isrc.slice(7)}`;
-  };
-
-  // -----------------------------------------------------------------------
-  // Early returns
-  // -----------------------------------------------------------------------
-  if (authLoading) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <ActivityIndicator size="large" color={COLORS.unisBlueBright} />
-      </View>
-    );
-  }
-  if (!user) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <Text style={styles.fullscreenMsg}>Please log in to view dashboard.</Text>
-      </View>
-    );
-  }
-  if (coreLoading) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <SectionLoader label="Loading your dashboard..." />
-      </View>
-    );
-  }
-  if (coreError || !userProfile) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <SectionError message={coreError || 'No data.'} onRetry={() => fetchCore(user.userId)} />
-      </View>
-    );
-  }
-
-  // -----------------------------------------------------------------------
-  // Derived display values
-  // -----------------------------------------------------------------------
-  const displayName: string = userProfile.username || 'Artist';
-  const displayPhoto: string | null = buildUrl(userProfile.photoUrl);
-  const displayBio: string = userProfile.bio || 'No bio yet. Click Edit to add one.';
-  const artistInitial = displayName.charAt(0).toUpperCase();
-  const levelLabel = userProfile.level || 'Silver';
-
-  const featuredArtwork =
-    buildUrl(defaultSong?.artworkUrl) || displayPhoto || null;
-
-  const recentAward = awards?.[0] || null;
-  const recentSongAward = songAwards?.[0] || null;
-
-  const isStripeReady = Boolean(
-    stripeStatus?.onboardingComplete && stripeStatus?.payoutsEnabled
-  );
-
-  // ★ H: pending-change effective date (mirrors Profile)
-  const pendingEffective = pendingSupportedArtist?.effectiveDate
-    ? new Date(pendingSupportedArtist.effectiveDate).toLocaleDateString(undefined, {
-        month: 'long',
-        day: 'numeric',
-      })
-    : null;
-
-  const nextMoves = [
-    user && !user.phoneVerified && {
-      title: 'Verify your phone number',
-      text: 'Unlocks voting, commenting, and referral earnings — and keeps Unis spam-free.',
-      action: 'Verify phone',
-      onPress: () => goToSection('nav-referral'),
-    },
-    !userProfile.bio && {
-      title: 'Add your artist story',
-      text: 'A short bio helps listeners understand why they should support you.',
-      action: 'Edit profile',
-      onPress: () => setShowEditProfile(true),
-    },
-    !defaultSong && {
-      title: 'Set your featured song',
-      text: 'Your featured song is the first track people see when they visit your artist presence.',
-      action: 'Set featured',
-      onPress: () => setShowDefaultSongWizard(true),
-    },
-    songs.length < 2 && {
-      title: 'Build your catalog',
-      text: 'A second track gives listeners more to explore and gives you more chances to win.',
-      action: 'Upload song',
-      onPress: () => setShowUploadWizard(true),
-    },
-    !userProfile.instagramUrl && !userProfile.tiktokUrl && !userProfile.twitterUrl && {
-      title: 'Connect your socials',
-      text: 'Let supporters continue following you beyond Unis.',
-      action: 'Add links',
-      onPress: () => goToSection('nav-social'),
-    },
-    userProfile?.role === 'artist' && !isStripeReady && {
-      title: 'Prepare your payouts',
-      text: 'Connect payout access before your revenue is ready to cash out.',
-      action: 'Review revenue',
-      onPress: () => goToSection('nav-revenue'),
-    },
-  ].filter(Boolean) as { title: string; text: string; action: string; onPress: () => void }[];
-
-  // ★ item 3: quick-nav targets (revenue only shows for artists)
-  const navItems = [
-    { id: 'nav-momentum', label: 'Fanbase', Icon: Gauge },
-    { id: 'nav-fanbase', label: 'Audience', Icon: BarChart3 },
-    { id: 'nav-supporters', label: 'Supporters', Icon: Users },
-    { id: 'nav-demographics', label: 'Demographics', Icon: Compass },
-    { id: 'nav-territory', label: 'Territory', Icon: MapPin },
-    { id: 'nav-catalog', label: 'Catalog', Icon: Music },
-    { id: 'nav-trophy', label: 'Trophies', Icon: Trophy },
-    { id: 'nav-photos', label: 'Photos', Icon: ImagePlus },
-    ...(userProfile?.role === 'artist'
-      ? [{ id: 'nav-revenue', label: 'Revenue', Icon: DollarSign }]
-      : []),
-    { id: 'nav-growth', label: 'Growth', Icon: Sparkles },
-    { id: 'nav-social', label: 'Socials', Icon: Link2 },
-    { id: 'nav-support', label: 'You Support', Icon: Heart },
-    { id: 'nav-referral', label: 'Refer', Icon: Share2 },
-    { id: 'nav-theme', label: 'Theme', Icon: Palette },
-  ];
-
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
-  return (
-    <View style={styles.screen}>
-      {/* Welcome popup */}
-      <Modal
-        visible={showWelcomePopup}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowWelcomePopup(false)}
+  // ── Panels ──
+  const renderMusic = () => (
+    <>
+      <Panel
+        title={<Text style={styles.panelTitle}>Songs <Text style={styles.count}>{songs.length}</Text></Text>}
+        right={
+          <Pressable style={[styles.primarySm, { backgroundColor: t.primary }]} onPress={() => setShowUploadWizard(true)}>
+            <Upload size={13} color="#fff" />
+            <Text style={styles.primarySmText}>Upload</Text>
+          </Pressable>
+        }
       >
-        <View style={styles.welcomeOverlay}>
-          <View style={styles.welcomePopup}>
-            <TouchableOpacity
-              style={styles.welcomeClose}
-              onPress={() => setShowWelcomePopup(false)}
-            >
-              <X size={24} color={COLORS.textWhite} />
-            </TouchableOpacity>
-            <View style={styles.welcomeIcon}>
-              <Heart size={40} color={COLORS.textWhite} fill={COLORS.textWhite} />
-            </View>
-            <Text style={styles.welcomeTitle}>Thank You!</Text>
-            <Text style={styles.welcomeBody}>
-              Your contribution to the UNIS community makes us stronger. Keep creating!
-            </Text>
-            <TouchableOpacity
-              style={styles.welcomeBtn}
-              onPress={() => setShowWelcomePopup(false)}
-            >
-              <Text style={styles.welcomeBtnText}>You're Welcome</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <ScrollView
-        ref={scrollRef}
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* ============== HERO ============== */}
-        <View
-          style={styles.hero}
-          onLayout={(e) => registerPosition('nav-momentum', e.nativeEvent.layout.y)}
-        >
-          <Text style={styles.heroEyebrow}>Artist · {levelLabel} Tier</Text>
-
-          <View style={styles.heroIdentity}>
-            {displayPhoto ? (
-              <Image source={{ uri: displayPhoto }} style={styles.heroAvatar} />
-            ) : (
-              <View style={[styles.heroAvatar, styles.heroAvatarPh]}>
-                <Text style={styles.heroAvatarInitial}>{artistInitial}</Text>
-              </View>
-            )}
-            <View style={styles.heroCopy}>
-              <Text style={styles.heroName}>{displayName}</Text>
-              <Text style={styles.heroBio}>{displayBio}</Text>
-            </View>
-          </View>
-
-          <View style={styles.heroStats}>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>Score</Text>
-              <Text style={styles.heroStatValue}>{(userProfile.score || 0).toLocaleString()}</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>Supporters</Text>
-              <Text style={styles.heroStatValue}>{supporters.toLocaleString()}</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>Plays</Text>
-              <Text style={styles.heroStatValue}>{totalPlays.toLocaleString()}</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatLabel}>Votes</Text>
-              <Text style={styles.heroStatValue}>{totalVotes.toLocaleString()}</Text>
-            </View>
-          </View>
-
-          <View style={styles.heroActions}>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnPrimary]}
-              onPress={() => setShowUploadWizard(true)}
-            >
-              <Upload size={15} color={COLORS.textWhite} />
-              <Text style={styles.btnText}>Upload Song</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnGhost]}
-              onPress={() => setShowEditProfile(true)}
-            >
-              <Edit3 size={15} color={COLORS.textWhite} />
-              <Text style={styles.btnText}>Edit Profile</Text>
-            </TouchableOpacity>
-            {/* ★ item 2a: launch-ready ownership & revenue-share agreement
-                (expo-print HTML→PDF; same text as the web jsPDF build) */}
-            <DownloadContractButton artistName={displayName} />
-          </View>
-        </View>
-
-        {/* ============== FEATURED SONG ============== */}
-        {featuredArtwork ? (
-          <ImageBackground
-            source={{ uri: featuredArtwork }}
-            style={styles.featured}
-            imageStyle={styles.featuredImage}
-          >
-            <LinearGradient
-              colors={['rgba(0,0,0,0.25)', 'rgba(0,0,0,0.85)']}
-              style={StyleSheet.absoluteFill}
-            />
-            <View style={styles.featuredContent}>
-              <Text style={styles.featuredTag}>Featured song</Text>
-              <Text style={styles.featuredTitle}>
-                {defaultSong?.title || 'No featured song set'}
-              </Text>
-              <Text style={styles.featuredSub}>
-                {defaultSong
-                  ? `${defaultSong.playCount || 0} plays · Lead with your strongest record.`
-                  : 'Choose the track that should represent you first.'}
-              </Text>
-              <View style={styles.featuredActions}>
-                <TouchableOpacity style={styles.featuredPlay} onPress={playDefaultSong}>
-                  <Play size={13} color={COLORS.bgBlack} fill={COLORS.bgBlack} />
-                  <Text style={styles.featuredPlayText}>{defaultSong ? 'Play' : 'Choose'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.featuredChange}
-                  onPress={() => setShowDefaultSongWizard(true)}
-                >
-                  <Text style={styles.featuredChangeText}>Change</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ImageBackground>
-        ) : (
-          <View style={[styles.featured, styles.featuredEmpty]}>
-            <View style={styles.featuredContent}>
-              <Text style={styles.featuredTag}>Featured song</Text>
-              <Text style={styles.featuredTitle}>No featured song set</Text>
-              <Text style={styles.featuredSub}>
-                Choose the track that should represent you first.
-              </Text>
-              <TouchableOpacity
-                style={styles.featuredPlay}
-                onPress={() => setShowDefaultSongWizard(true)}
-              >
-                <Text style={styles.featuredPlayText}>Choose</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* ★ item 3: quick-nav shortcut bar */}
-        <View style={styles.quicknav}>
-          <View style={styles.quicknavLabel}>
-            <LayoutGrid size={13} color={COLORS.textMuted} />
-            <Text style={styles.quicknavLabelText}>Jump to</Text>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {navItems.map(({ id, label, Icon }) => (
-              <TouchableOpacity
-                key={id}
-                style={styles.quicknavBtn}
-                onPress={() => goToSection(id)}
-              >
-                <Icon size={16} color={COLORS.unisBlueBright} />
-                <Text style={styles.quicknavText}>{label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-
-        {/* ★ analytics: real fanbase funnel (self-fetching) */}
-        <View onLayout={(e) => registerPosition('nav-fanbase', e.nativeEvent.layout.y)}>
-          <FanbaseFunnel
-            artistId={user?.userId}
-            artistPhoto={displayPhoto}
-            artistName={displayName}
-            ambientImage={featuredArtwork}
-          />
-        </View>
-
-        {/* ★ Supporters section */}
-        <View onLayout={(e) => registerPosition('nav-supporters', e.nativeEvent.layout.y)}>
-          <SupporterSection artistId={user?.userId} />
-        </View>
-
-        {/* ★ item 6: demographics */}
-        <View onLayout={(e) => registerPosition('nav-demographics', e.nativeEvent.layout.y)}>
-          <DemographicsSection artistId={user?.userId} />
-        </View>
-
-        {/* ★ collapsible: Territory signal (collapsed by default) */}
-        <ArtistCollapsibleSection
-          id="nav-territory"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Local advantage"
-          title="Territory signal"
-          defaultOpen={false}
-          ambientImage={displayPhoto}
-        >
-          <TerritoryRankSection artistId={user?.userId} />
-        </ArtistCollapsibleSection>
-
-        {/* ★ collapsible: Catalog (collapsed by default) */}
-        <ArtistCollapsibleSection
-          id="nav-catalog"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Catalog command"
-          title="Songs"
-          defaultOpen={false}
-          ambientImage={displayPhoto}
-        >
-          <View style={styles.catalogActions}>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnPrimary, styles.btnSmall]}
-              onPress={() => setShowUploadWizard(true)}
-            >
-              <Upload size={14} color={COLORS.textWhite} />
-              <Text style={styles.btnText}>Upload</Text>
-            </TouchableOpacity>
-          </View>
-
-          {songs.length > 0 ? (
-            songs.map((song, index) => {
-              const songArtwork = buildUrl(song.artworkUrl) || displayPhoto;
-              const isFeatured = defaultSong?.songId === song.songId;
-
-              return (
-                <View
-                  key={song.songId || song.id || index}
-                  style={[styles.songCard, isFeatured && styles.songCardFeatured]}
-                >
-                  {songArtwork ? (
-                    <Image source={{ uri: songArtwork }} style={styles.songArt} />
-                  ) : (
-                    <View style={[styles.songArt, styles.songArtPh]}>
-                      <Music size={18} color={COLORS.textGray} />
+        {songs.length > 0 ? (
+          songs.map((song, index) => {
+            const art = buildUrl(song.artworkUrl) || photoUrl;
+            const isFeatured = defaultSong?.songId === song.songId;
+            return (
+              <View key={song.songId || song.id || index} style={[styles.songCard, isFeatured && { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                  {art ? <Image source={{ uri: art }} style={styles.songArt} /> : <Image source={backimage} style={styles.songArt} />}
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>{song.title}</Text>
+                      {isFeatured && <Text style={[styles.badge, { backgroundColor: t.primary }]}>Featured</Text>}
                     </View>
-                  )}
-
-                  <View style={styles.songBody}>
-                    <View style={styles.songTitleRow}>
-                      <View style={styles.songTitleText}>
-                        <Text style={styles.songTitle} numberOfLines={1}>{song.title}</Text>
-                        <Text style={styles.songType}>
-                          {isFeatured ? 'Featured track' : 'Catalog track'}
-                        </Text>
-                      </View>
-                      {isFeatured && (
-                        <View style={styles.songBadge}>
-                          <Text style={styles.songBadgeText}>Featured</Text>
-                        </View>
-                      )}
-                    </View>
-
                     <View style={styles.songStats}>
-                      <View style={styles.songStat}>
-                        <Play size={12} color={COLORS.textMuted} />
-                        <Text style={styles.songStatText}>
-                          {song.playCount || song.plays || 0} plays
-                        </Text>
-                      </View>
-                      <View style={styles.songStat}>
-                        <Vote size={12} color={COLORS.textMuted} />
-                        <Text style={styles.songStatText}>
-                          {song.votes || song.voteCount || 0} votes
-                        </Text>
-                      </View>
-                      {song.isrc ? (
-                        <View style={styles.songStat}>
-                          <ShieldCheck size={12} color={COLORS.textMuted} />
-                          <Text style={styles.songStatText}>ISRC {formatIsrc(song.isrc)}</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.songWarn}>No ISRC</Text>
-                      )}
-                    </View>
-
-                    <View style={styles.songActions}>
-                      {/* ★ D: per-song stats */}
-                      <TouchableOpacity
-                        style={styles.songActionBtn}
-                        onPress={() => setStatsSong(song)}
-                        accessibilityLabel={`View stats for ${song.title}`}
-                      >
-                        <BarChart3 size={16} color={COLORS.textSilver} />
-                      </TouchableOpacity>
-                      {/* ★ sales: per-song revenue */}
-                      <TouchableOpacity
-                        style={styles.songActionBtn}
-                        onPress={() => setSalesSong(song)}
-                        accessibilityLabel={`View sales for ${song.title}`}
-                      >
-                        <DollarSign size={16} color={COLORS.textSilver} />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.songActionBtn}
-                        onPress={() => setEditingSong(song)}
-                        accessibilityLabel={`Edit ${song.title}`}
-                      >
-                        <Edit3 size={16} color={COLORS.textSilver} />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.songActionBtn}
-                        onPress={() => { setLyricsSong(song); setShowLyricsWizard(true); }}
-                        accessibilityLabel={`Edit lyrics for ${song.title}`}
-                      >
-                        <FileText size={16} color={COLORS.textSilver} />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.songActionBtn}
-                        onPress={() => handleDeleteSongClick(song)}
-                        disabled={deletingSongId === song.songId}
-                        accessibilityLabel={`Delete ${song.title}`}
-                      >
-                        {deletingSongId === song.songId ? (
-                          <ActivityIndicator size="small" color={COLORS.textSilver} />
-                        ) : (
-                          <Trash2 size={16} color={COLORS.textSilver} />
-                        )}
-                      </TouchableOpacity>
+                      <View style={styles.statInline}><Play size={11} color="rgba(255,255,255,0.5)" /><Text style={styles.rowSub}>{fmt(song.playCount || song.plays)} plays</Text></View>
+                      <View style={styles.statInline}><Vote size={11} color="rgba(255,255,255,0.5)" /><Text style={styles.rowSub}>{fmt(song.votes || song.voteCount)} votes</Text></View>
+                      {!!song.isrc && <View style={styles.statInline}><ShieldCheck size={11} color="rgba(255,255,255,0.5)" /><Text style={styles.rowSub}>ISRC {formatIsrc(song.isrc)}</Text></View>}
                     </View>
                   </View>
                 </View>
-              );
-            })
-          ) : (
-            <View style={styles.emptyState}>
-              <Music size={34} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>No songs yet</Text>
-              <Text style={styles.emptyBody}>
-                Upload your first track and start building your local signal.
-              </Text>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary]}
-                onPress={() => setShowUploadWizard(true)}
-              >
-                <Upload size={14} color={COLORS.textWhite} />
-                <Text style={styles.btnText}>Upload first song</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </ArtistCollapsibleSection>
-
-        {/* ★ Gallery */}
-        <ArtistCollapsibleSection
-          id="nav-photos"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Gallery"
-          title="Artist photos"
-          defaultOpen={false}
-          ambientImage={displayPhoto}
-        >
-          <ArtistPhotosManager artistId={user?.userId} />
-        </ArtistCollapsibleSection>
-
-        {/* ★ F: trophy case — collapsible + height-capped with Artist | Songs toggle */}
-        <ArtistCollapsibleSection
-          id="nav-trophy"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Recognition"
-          title="Trophy case"
-          defaultOpen={false}
-        >
-          {/* ★ Artist | Songs toggle */}
-          <View style={styles.awardsToggle}>
-            <TouchableOpacity
-              style={[styles.awardsToggleBtn, awardTab === 'artist' && styles.awardsToggleBtnActive]}
-              onPress={() => setAwardTab('artist')}
-            >
-              <Text style={[styles.awardsToggleText, awardTab === 'artist' && styles.awardsToggleTextActive]}>
-                Artist
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.awardsToggleBtn, awardTab === 'song' && styles.awardsToggleBtnActive]}
-              onPress={() => setAwardTab('song')}
-            >
-              <Text style={[styles.awardsToggleText, awardTab === 'song' && styles.awardsToggleTextActive]}>
-                Songs
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* ====================== ARTIST AWARDS ====================== */}
-          {awardTab === 'artist' && (
-            awardsLoading ? (
-              <SectionLoader label="Loading awards..." />
-            ) : awardsError ? (
-              <SectionError message={awardsError} onRetry={() => fetchAwards(user.userId)} />
-            ) : awards.length > 0 ? (
-              <>
-                <View style={styles.awardFeatured}>
-                  {displayPhoto ? (
-                    <ImageBackground
-                      source={{ uri: displayPhoto }}
-                      style={styles.awardAmbient}
-                      imageStyle={styles.awardAmbientImg}
-                      blurRadius={25}
-                    >
-                      <View style={styles.awardFeaturedInner}>
-                        <View style={styles.awardArtworkWrap}>
-                          <Image source={{ uri: displayPhoto }} style={styles.awardArtwork} />
-                          <View style={styles.awardBadge}>
-                            <Text style={styles.awardBadgeText}>
-                              {intervalBadge(recentAward?.interval)}
-                            </Text>
-                          </View>
-                        </View>
-                        <View style={styles.awardInfo}>
-                          <Text style={styles.awardInfoTag}>Latest win</Text>
-                          <Text style={styles.awardInfoTitle}>
-                            {getAwardTitle(recentAward?.interval, 'artist')}
-                          </Text>
-                          <Text style={styles.awardInfoMeta}>
-                            {recentAward?.jurisdiction?.name || 'Location'}
-                            {recentAward?.genre?.name ? ` · ${recentAward.genre.name}` : ''}
-                            {recentAward?.awardDate ? ` · ${formatAwardDate(recentAward.awardDate)}` : ''}
-                          </Text>
-                        </View>
-                      </View>
-                    </ImageBackground>
-                  ) : (
-                    <View style={styles.awardFeaturedInner}>
-                      <View style={styles.awardInfo}>
-                        <Text style={styles.awardInfoTag}>Latest win</Text>
-                        <Text style={styles.awardInfoTitle}>
-                          {getAwardTitle(recentAward?.interval, 'artist')}
-                        </Text>
-                      </View>
-                    </View>
-                  )}
+                <View style={styles.songActions}>
+                  <Pressable onPress={() => setStatsSong(song)} style={styles.iconBtn} accessibilityLabel={`View stats for ${song.title}`}><BarChart3 size={16} color="#fff" /></Pressable>
+                  <Pressable onPress={() => setSalesSong(song)} style={styles.iconBtn} accessibilityLabel={`View sales for ${song.title}`}><DollarSign size={16} color="#fff" /></Pressable>
+                  <Pressable onPress={() => setEditingSong(song)} style={styles.iconBtn} accessibilityLabel={`Edit ${song.title}`}><Edit3 size={16} color="#fff" /></Pressable>
+                  <Pressable onPress={() => setLyricsSong(song)} style={styles.iconBtn} accessibilityLabel={`Edit lyrics for ${song.title}`}><FileText size={16} color="#fff" /></Pressable>
+                  <Pressable onPress={() => handleDeleteSongClick(song)} disabled={deletingSongId === song.songId} style={styles.iconBtn} accessibilityLabel={`Delete ${song.title}`}>
+                    {deletingSongId === song.songId ? <ActivityIndicator size="small" color="#fff" /> : <Trash2 size={16} color="#ff8a8a" />}
+                  </Pressable>
                 </View>
-
-                <View style={styles.awardsSummary}>
-                  <Trophy size={14} color="#C49A0A" />
-                  <Text style={styles.awardsSummaryText}>
-                    {awards.length}{hasMoreAwards ? '+' : ''} {awards.length === 1 ? 'win' : 'wins'} earned
-                  </Text>
-                </View>
-
-                {/* height-capped scroll (web's .artist-awards-scroll) */}
-                <View style={styles.awardsScroll}>
-                  <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                    {awards.map((award, index) => (
-                      <View key={index} style={styles.awardRow}>
-                        {displayPhoto ? (
-                          <Image source={{ uri: displayPhoto }} style={styles.awardRowImg} />
-                        ) : (
-                          <View style={[styles.awardRowImg, styles.songArtPh]}>
-                            <Trophy size={16} color={COLORS.textGray} />
-                          </View>
-                        )}
-                        <View style={styles.awardRowInfo}>
-                          <Text style={styles.awardRowTitle}>
-                            {getAwardTitle(award.interval, 'artist')}
-                          </Text>
-                          <Text style={styles.awardRowMeta}>
-                            {award.jurisdiction?.name || 'Location'}
-                            {award.genre?.name ? ` · ${award.genre.name}` : ''}
-                          </Text>
-                        </View>
-                        <Text style={styles.awardRowDate}>{formatAwardDate(award.awardDate)}</Text>
-                      </View>
-                    ))}
-                    {hasMoreAwards && (
-                      <TouchableOpacity
-                        style={[styles.btn, styles.btnGhost, styles.btnSmall, styles.awardsMore]}
-                        onPress={loadMoreAwards}
-                        disabled={loadingMoreAwards}
-                      >
-                        <Text style={styles.btnText}>
-                          {loadingMoreAwards ? 'Loading...' : 'Load more awards'}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </ScrollView>
-                </View>
-              </>
-            ) : (
-              <View style={styles.emptyState}>
-                <Trophy size={34} color={COLORS.textMuted} />
-                <Text style={styles.emptyTitle}>No artist awards yet</Text>
-                <Text style={styles.emptyBody}>
-                  Keep collecting votes, plays, likes, and score to earn your first local win.
-                </Text>
               </View>
-            )
-          )}
-
-          {/* ====================== SONG AWARDS ====================== */}
-          {awardTab === 'song' && (
-            songAwardsLoading ? (
-              <SectionLoader label="Loading song awards..." />
-            ) : songAwardsError ? (
-              <SectionError message={songAwardsError} onRetry={() => fetchSongAwards(user.userId)} />
-            ) : songAwards.length > 0 ? (
-              <>
-                {(() => {
-                  const recentSong = recentSongAward;
-                  const artSrc =
-                    buildUrl(recentSong?.song?.artworkUrl) || featuredArtwork || displayPhoto;
-                  return (
-                    <View style={styles.awardFeatured}>
-                      {artSrc ? (
-                        <ImageBackground
-                          source={{ uri: artSrc }}
-                          style={styles.awardAmbient}
-                          imageStyle={styles.awardAmbientImg}
-                          blurRadius={25}
-                        >
-                          <View style={styles.awardFeaturedInner}>
-                            <View style={styles.awardArtworkWrap}>
-                              <Image source={{ uri: artSrc }} style={styles.awardArtwork} />
-                              <View style={styles.awardBadge}>
-                                <Text style={styles.awardBadgeText}>
-                                  {intervalBadge(recentSong?.interval)}
-                                </Text>
-                              </View>
-                            </View>
-                            <View style={styles.awardInfo}>
-                              <Text style={styles.awardInfoTag}>Latest song win</Text>
-                              <Text style={styles.awardInfoTitle}>
-                                {getAwardTitle(recentSong?.interval, 'song')}
-                              </Text>
-                              <Text style={styles.awardInfoMeta}>
-                                {recentSong?.song?.title ? `"${recentSong.song.title}"` : ''}
-                                {recentSong?.jurisdiction?.name ? ` · ${recentSong.jurisdiction.name}` : ''}
-                                {recentSong?.awardDate ? ` · ${formatAwardDate(recentSong.awardDate)}` : ''}
-                              </Text>
-                            </View>
-                          </View>
-                        </ImageBackground>
-                      ) : null}
-                    </View>
-                  );
-                })()}
-
-                <View style={styles.awardsSummary}>
-                  <Trophy size={14} color="#C49A0A" />
-                  <Text style={styles.awardsSummaryText}>
-                    {songAwards.length}{hasMoreSongAwards ? '+' : ''} song{' '}
-                    {songAwards.length === 1 ? 'win' : 'wins'} earned
-                  </Text>
-                </View>
-
-                <View style={styles.awardsScroll}>
-                  <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                    {songAwards.map((award, index) => {
-                      const artSrc =
-                        buildUrl(award.song?.artworkUrl) || featuredArtwork || displayPhoto;
-                      return (
-                        <View key={index} style={styles.awardRow}>
-                          {artSrc ? (
-                            <Image source={{ uri: artSrc }} style={styles.awardRowImg} />
-                          ) : (
-                            <View style={[styles.awardRowImg, styles.songArtPh]}>
-                              <Music size={16} color={COLORS.textGray} />
-                            </View>
-                          )}
-                          <View style={styles.awardRowInfo}>
-                            <Text style={styles.awardRowTitle}>
-                              {getAwardTitle(award.interval, 'song')}
-                            </Text>
-                            <Text style={styles.awardRowMeta}>
-                              {award.song?.title ? `"${award.song.title}"` : ''}
-                              {award.jurisdiction?.name ? ` · ${award.jurisdiction.name}` : ''}
-                              {award.genre?.name ? ` · ${award.genre.name}` : ''}
-                            </Text>
-                          </View>
-                          <Text style={styles.awardRowDate}>{formatAwardDate(award.awardDate)}</Text>
-                        </View>
-                      );
-                    })}
-                    {hasMoreSongAwards && (
-                      <TouchableOpacity
-                        style={[styles.btn, styles.btnGhost, styles.btnSmall, styles.awardsMore]}
-                        onPress={loadMoreSongAwards}
-                        disabled={loadingMoreSongAwards}
-                      >
-                        <Text style={styles.btnText}>
-                          {loadingMoreSongAwards ? 'Loading...' : 'Load more'}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </ScrollView>
-                </View>
-              </>
-            ) : (
-              <View style={styles.emptyState}>
-                <Music size={34} color={COLORS.textMuted} />
-                <Text style={styles.emptyTitle}>No song awards yet</Text>
-                <Text style={styles.emptyBody}>
-                  When one of your tracks wins Song of the Day, Week, or Month it'll appear here.
-                </Text>
-              </View>
-            )
-          )}
-        </ArtistCollapsibleSection>
-
-        {/* Vote history */}
-        <ArtistCollapsibleSection
-          id="nav-votes"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Your activity"
-          title="Vote history"
-          ambientImage={displayPhoto}
-          defaultOpen={false}
-        >
-          <VoteHistorySection userId={user?.userId} />
-        </ArtistCollapsibleSection>
-
-        {/* Revenue (artists only) */}
-        {userProfile?.role === 'artist' && (
-          <View onLayout={(e) => registerPosition('nav-revenue', e.nativeEvent.layout.y)}>
-            <RevenueSection
-              artistId={user?.userId}
-              artistPhoto={displayPhoto}
-              earningsSummary={earningsSummary}
-              stripeStatus={stripeStatus}
-              payoutHistory={payoutHistory}
-              isStripeReady={isStripeReady}
-              onPayoutSuccess={() => fetchStats(user.userId)}
-            />
+            );
+          })
+        ) : (
+          <View style={styles.empty}>
+            <Music size={34} color="rgba(255,255,255,0.4)" />
+            <Text style={styles.emptyTitle}>No songs yet</Text>
+            <Text style={styles.emptyText}>Upload your first song and start building your local signal.</Text>
+            <Pressable style={[styles.primary, { backgroundColor: t.primary }]} onPress={() => setShowUploadWizard(true)}>
+              <Upload size={14} color="#fff" />
+              <Text style={styles.primaryText}>Upload first song</Text>
+            </Pressable>
           </View>
         )}
+      </Panel>
+      <ArtistVideos
+        artistId={user.userId}
+        onUpload={() => setShowUploadWizard(true)}
+        refreshKey={videosRefreshKey}
+        onOpen={(id) => navigation.navigate('Home', { screen: 'Video', params: { videoId: id } })}
+      />
+    </>
+  );
 
-        {/* ★ collapsible: Growth checklist (collapsed by default) */}
-        <ArtistCollapsibleSection
-          id="nav-growth"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Next move"
-          title="Growth checklist"
-          defaultOpen={false}
-        >
-          {nextMoves.length > 0 ? (
-            nextMoves.map((move, index) => (
-              <TouchableOpacity key={index} style={styles.nextCard} onPress={move.onPress}>
-                <View style={styles.nextCardText}>
-                  <Text style={styles.nextCardTitle}>{move.title}</Text>
-                  <Text style={styles.nextCardBody}>{move.text}</Text>
-                </View>
-                <View style={styles.nextCardAction}>
-                  <Text style={styles.nextCardActionText}>{move.action}</Text>
-                  <ArrowRight size={13} color={COLORS.unisBlueBright} />
-                </View>
-              </TouchableOpacity>
-            ))
-          ) : (
-            <View style={[styles.nextCard, styles.nextCardComplete]}>
-              <View style={styles.nextCardText}>
-                <Text style={styles.nextCardTitle}>Your launch basics are complete</Text>
-                <Text style={styles.nextCardBody}>
-                  Keep driving listeners to vote, support, and share your music.
-                </Text>
-              </View>
-              <View style={styles.nextCardAction}>
-                <Text style={styles.nextCardActionText}>Keep building</Text>
-                <ArrowRight size={13} color={COLORS.unisBlueBright} />
-              </View>
-            </View>
-          )}
-        </ArtistCollapsibleSection>
+  const renderFans = () => (
+    <>
+      <FanbaseFunnel artistId={user.userId} artistPhoto={photoUrl || undefined} artistName={displayName} ambientImage={featuredArtUrl || undefined} />
+      <SupporterSection artistId={user.userId} />
+      <DemographicsSection artistId={user.userId} />
+    </>
+  );
 
-        {/* ★ collapsible: Social links (collapsed by default) — onBlur save,
-            per-field PUT, incl. YouTube + contact email (web parity) */}
-        <ArtistCollapsibleSection
-          id="nav-social"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Artist presence"
-          title="Social links"
-          defaultOpen={false}
-        >
-          <SocialInput
-            label="Instagram"
-            placeholder="https://instagram.com/yourprofile"
-            defaultValue={userProfile.instagramUrl || ''}
-            onSave={(v) => handleSocialMediaUpdate('instagram', v)}
-          />
-          <SocialInput
-            label="Twitter / X"
-            placeholder="https://twitter.com/yourprofile"
-            defaultValue={userProfile.twitterUrl || ''}
-            onSave={(v) => handleSocialMediaUpdate('twitter', v)}
-          />
-          <SocialInput
-            label="TikTok"
-            placeholder="https://tiktok.com/@yourprofile"
-            defaultValue={userProfile.tiktokUrl || ''}
-            onSave={(v) => handleSocialMediaUpdate('tiktok', v)}
-          />
-          <SocialInput
-            label="YouTube"
-            placeholder="https://youtube.com/@yourchannel"
-            defaultValue={userProfile.youtubeUrl || ''}
-            onSave={(v) => handleSocialMediaUpdate('youtube', v)}
-          />
-          <SocialInput
-            label="Contact email"
-            placeholder="you@example.com"
-            defaultValue={userProfile.contactEmail || ''}
-            keyboardType="email-address"
-            onSave={(v) => handleSocialMediaUpdate('contactEmail', v)}
-          />
-        </ArtistCollapsibleSection>
+  const renderAwardsList = (type: 'artist' | 'song') => {
+    const isSong = type === 'song';
+    const list = isSong ? songAwards : awards;
+    const loading = isSong ? songAwardsLoading : awardsLoading;
+    const error = isSong ? songAwardsError : awardsError;
+    const hasMore = isSong ? hasMoreSongAwards : hasMoreAwards;
+    const loadingMore = isSong ? loadingMoreSongAwards : loadingMoreAwards;
+    const recent = isSong ? recentSongAward : recentAward;
+    const onRetry = () => (isSong ? fetchSongAwards(user.userId) : fetchAwards(user.userId));
+    const onMore = isSong ? loadMoreSongAwards : loadMoreAwards;
 
-        {/* ★ H: full supported-artist section (ported from Profile). Always
-            rendered — legacy artists with a null supported artist get a
-            graceful "choose an artist" state. */}
-        <ArtistCollapsibleSection
-          id="nav-support"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Community"
-          title="You support"
-          defaultOpen={false}
-        >
-          {supportedArtist ? (
-            <View style={styles.supportFeature}>
-              {(buildUrl(supportedArtist.photoUrl) ||
-                buildUrl(supportedArtist.defaultSong?.artworkUrl)) ? (
-                <ImageBackground
-                  source={{
-                    uri:
-                      buildUrl(supportedArtist.photoUrl) ||
-                      buildUrl(supportedArtist.defaultSong?.artworkUrl) ||
-                      undefined,
-                  }}
-                  style={styles.supportMedia}
-                  imageStyle={styles.supportMediaImg}
-                >
-                  <LinearGradient
-                    colors={['rgba(0,0,0,0.2)', 'rgba(0,0,0,0.85)']}
-                    style={StyleSheet.absoluteFill}
-                  />
-                  <SupportContent
-                    supportedArtist={supportedArtist}
-                    pendingSupportedArtist={pendingSupportedArtist}
-                    pendingEffective={pendingEffective}
-                    cancellingPending={cancellingPending}
-                    onListen={playSupportedArtistSong}
-                    onChange={() => setShowArtistPicker(true)}
-                    onCancelPending={cancelPendingArtist}
-                  />
-                </ImageBackground>
-              ) : (
-                <SupportContent
-                  supportedArtist={supportedArtist}
-                  pendingSupportedArtist={pendingSupportedArtist}
-                  pendingEffective={pendingEffective}
-                  cancellingPending={cancellingPending}
-                  onListen={playSupportedArtistSong}
-                  onChange={() => setShowArtistPicker(true)}
-                  onCancelPending={cancelPendingArtist}
-                />
-              )}
-            </View>
-          ) : (
-            <View style={styles.emptyState}>
-              <Heart size={34} color={COLORS.textMuted} />
-              <Text style={styles.emptyTitle}>No supported artist yet</Text>
-              <Text style={styles.emptyBody}>
-                Every Unis member backs one artist. Choose the artist whose voice
-                you want to amplify — you can change it later.
-              </Text>
-              <TouchableOpacity
-                style={[styles.btn, styles.btnPrimary]}
-                onPress={() => setShowArtistPicker(true)}
-              >
-                <Heart size={14} color={COLORS.textWhite} />
-                <Text style={styles.btnText}>Choose an artist</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </ArtistCollapsibleSection>
-
-        {/* ★ collapsible: Referral (collapsed by default) */}
-        <ArtistCollapsibleSection
-          id="nav-referral"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Network"
-          title="Refer & earn"
-          defaultOpen={false}
-        >
-          <VerificationGate title="Verify your phone to refer & earn">
-            <ReferralCodeCard
-              referralCode={referralCode || ''}
-              username={displayName}
-              isArtist={true}
-            />
-          </VerificationGate>
-        </ArtistCollapsibleSection>
-
-        {/* ★ collapsible: Theme (collapsed by default) */}
-        <ArtistCollapsibleSection
-          id="nav-theme"
-          onRegister={registerSection}
-          onLayoutY={registerPosition}
-          eyebrow="Personalization"
-          title="Color theme"
-          defaultOpen={false}
-        >
-          <ThemePicker userId={user?.userId} />
-        </ArtistCollapsibleSection>
-
-        {/* ============== DANGER ZONE ============== */}
-        <View style={styles.danger}>
-          <Text style={styles.dangerHeading}>Danger zone</Text>
-          <Text style={styles.dangerText}>
-            Change your password or permanently delete your account. Deletion cannot be undone.
+    if (loading) return <SectionLoader label={isSong ? 'Loading song awards...' : 'Loading awards...'} />;
+    if (error) return <SectionError message={error} onRetry={onRetry} />;
+    if (list.length === 0) {
+      return (
+        <View style={styles.empty}>
+          {isSong ? <Music size={34} color="rgba(255,255,255,0.4)" /> : <Trophy size={34} color="rgba(255,255,255,0.4)" />}
+          <Text style={styles.emptyTitle}>{isSong ? 'No song awards yet' : 'No artist awards yet'}</Text>
+          <Text style={styles.emptyText}>
+            {isSong
+              ? 'When one of your songs wins Song of the Day, Week or Month, it shows up here.'
+              : 'Keep collecting plays, likes and votes to earn your first local win.'}
           </Text>
-          <View style={styles.dangerActions}>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnGhost]}
-              onPress={() => setShowChangePassword(true)}
-            >
-              <Text style={styles.btnText}>Change Password</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnDanger]}
-              onPress={() => setShowDeleteWizard(true)}
-            >
-              <Trash2 size={14} color={COLORS.textWhite} />
-              <Text style={styles.btnText}>Delete Account</Text>
-            </TouchableOpacity>
+        </View>
+      );
+    }
+    const artFor = (award: any) => {
+      const u = isSong ? buildUrl(award?.song?.artworkUrl) || featuredArtUrl || photoUrl : photoUrl;
+      return u ? { uri: u } : backimage;
+    };
+    return (
+      <>
+        <ImageBackground source={artFor(recent)} style={styles.trophyHero} imageStyle={{ borderRadius: 18 }} blurRadius={14}>
+          <LinearGradient colors={['rgba(7,9,15,0.4)', 'rgba(7,9,15,0.9)']} style={[StyleSheet.absoluteFill, { borderRadius: 18 }]} />
+          <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center', padding: 14 }}>
+            <View>
+              <Image source={artFor(recent)} style={styles.trophyArt} />
+              <Text style={[styles.intervalBadge, { backgroundColor: t.primary }]}>{intervalBadge(recent?.interval)}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.kicker, { color: t.textAccent }]}>{isSong ? 'Latest song win' : 'Latest win'}</Text>
+              <Text style={styles.trophyTitle}>{getAwardTitle(recent?.interval, type)}</Text>
+              <Text style={styles.rowSub}>
+                {isSong && recent?.song?.title ? `"${recent.song.title}" · ` : ''}
+                {recent?.jurisdiction?.name || 'Location'}
+                {!isSong && recent?.genre?.name ? ` · ${recent.genre.name}` : ''}
+                {recent?.awardDate ? ` · ${formatAwardDate(recent.awardDate)}` : ''}
+              </Text>
+            </View>
+          </View>
+        </ImageBackground>
+        <View style={styles.winsSummary}>
+          <Trophy size={14} color="#C49A0A" />
+          <Text style={styles.rowSub}>
+            {list.length}{hasMore ? '+' : ''} {isSong ? 'song ' : ''}{list.length === 1 ? 'win' : 'wins'} earned
+          </Text>
+        </View>
+        {list.map((award: any, index: number) => (
+          <View key={award.awardId || index} style={styles.awardRow}>
+            <Image source={artFor(award)} style={styles.awardImg} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>{getAwardTitle(award.interval, type)}</Text>
+              <Text style={styles.rowSub} numberOfLines={1}>
+                {isSong && award.song?.title ? `"${award.song.title}" · ` : ''}
+                {award.jurisdiction?.name || 'Location'}
+                {award.genre?.name ? ` · ${award.genre.name}` : ''}
+              </Text>
+            </View>
+            <Text style={styles.small}>{formatAwardDate(award.awardDate)}</Text>
+          </View>
+        ))}
+        {hasMore && (
+          <Pressable style={[styles.ghostSm, { alignSelf: 'center', marginTop: 8 }]} onPress={onMore} disabled={loadingMore}>
+            <Text style={styles.ghostText}>{loadingMore ? 'Loading...' : 'Load more'}</Text>
+          </Pressable>
+        )}
+      </>
+    );
+  };
+
+  const renderRaces = () => (
+    <>
+      <View style={styles.tiles}>
+        {[
+          ['Score', fmt(userProfile.score)],
+          ['Votes received', fmt(totalVotes)],
+          ['Wins', awardsLoading || songAwardsLoading ? '—' : `${winsCount}${winsMore ? '+' : ''}`],
+          ['Level', levelLabel],
+        ].map(([label, value]) => (
+          <View key={label} style={styles.tile}>
+            <Text style={styles.tileLabel}>{label}</Text>
+            <Text style={styles.tileValue}>{value}</Text>
+          </View>
+        ))}
+      </View>
+      <Panel title={<Text style={styles.panelTitle}>Your rank in every <Em>place</Em></Text>}>
+        <TerritoryRankSection artistId={user.userId} />
+      </Panel>
+      <Panel
+        title={<Text style={styles.panelTitle}>Trophy <Em>case</Em></Text>}
+        right={
+          <View style={styles.toggle}>
+            {(['artist', 'song'] as const).map((k) => (
+              <Pressable key={k} onPress={() => setAwardTab(k)} style={[styles.toggleBtn, awardTab === k && { backgroundColor: t.primary }]} accessibilityState={{ selected: awardTab === k }}>
+                <Text style={styles.toggleText}>{k === 'artist' ? 'Artist' : 'Songs'}</Text>
+              </Pressable>
+            ))}
+          </View>
+        }
+      >
+        {renderAwardsList(awardTab)}
+      </Panel>
+    </>
+  );
+
+  const renderEarnings = () => (
+    <>
+      {!user.phoneVerified && (
+        <View style={styles.warn}>
+          <Text style={styles.warnText}>Your phone isn&apos;t verified, so your monthly share can&apos;t reach you yet.</Text>
+          <Pressable onPress={() => setShowPhoneVerify(true)} style={styles.warnBtn}><Text style={styles.warnBtnText}>Verify now</Text></Pressable>
+        </View>
+      )}
+      {isArtistRole && (
+        <RevenueSection
+          artistId={user.userId}
+          artistPhoto={photoUrl || undefined}
+          earningsSummary={earningsSummary}
+          stripeStatus={stripeStatus}
+          payoutHistory={payoutHistory}
+          isStripeReady={isStripeReady}
+          onPayoutSuccess={() => fetchStats(user.userId)}
+        />
+      )}
+      <Panel title={<Text style={styles.panelTitle}>Bring your <Em>people</Em></Text>}>
+        <VerificationGate title="Verify your phone to refer & earn">
+          <ReferralCodeCard referralCode={referralCode || ''} username={displayName} isArtist />
+        </VerificationGate>
+      </Panel>
+    </>
+  );
+
+  const renderProfile = () => (
+    <>
+      <Panel title={<Text style={styles.panelTitle}>Your <Em>page</Em></Text>}>
+        <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+          {hasOwnPhoto ? (
+            <Image source={displayPhoto} style={styles.pageAvatar} />
+          ) : (
+            <View style={[styles.pageAvatar, { backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }]}><Text style={styles.avatarInitial}>{artistInitial}</Text></View>
+          )}
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowTitle}>{displayName}</Text>
+            <Text style={styles.rowSub} numberOfLines={4}>{displayBio}</Text>
           </View>
         </View>
+        <View style={styles.row}>
+          <Pressable style={[styles.primary, { backgroundColor: t.primary }]} onPress={() => setShowEditProfile(true)}>
+            <Edit3 size={14} color="#fff" />
+            <Text style={styles.primaryText}>Edit profile</Text>
+          </Pressable>
+          <Pressable style={styles.ghost} onPress={openArtistPage}>
+            <ExternalLink size={14} color="#fff" />
+            <Text style={styles.ghostText}>View my page</Text>
+          </Pressable>
+        </View>
+        <View style={styles.featuredLine}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.small}>Featured song</Text>
+            <Text style={styles.rowTitle}>{defaultSong?.title || 'Not set'}</Text>
+          </View>
+          <Pressable style={styles.ghostSm} onPress={() => setShowDefaultSongWizard(true)}>
+            <Text style={styles.ghostText}>{defaultSong ? 'Change' : 'Choose'}</Text>
+          </Pressable>
+        </View>
+      </Panel>
+
+      <Panel title={<Text style={styles.panelTitle}>Your <Em>links</Em></Text>}>
+        {LINK_FIELDS.map((field) => (
+          <View key={field.key} style={{ marginBottom: 10 }}>
+            <Text style={styles.label}>{field.label}</Text>
+            <TextInput
+              value={links[field.key] || ''}
+              onChangeText={(v) => setLinks((prev) => ({ ...prev, [field.key]: v }))}
+              placeholder={field.placeholder}
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              keyboardType={field.type === 'email' ? 'email-address' : 'url'}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+            />
+          </View>
+        ))}
+        <Pressable
+          style={[styles.primary, { backgroundColor: t.primary, alignSelf: 'flex-start' }, (savingLinks || !linksDirty) && { opacity: 0.5 }]}
+          disabled={savingLinks || !linksDirty}
+          onPress={handleSaveLinks}
+        >
+          <Text style={styles.primaryText}>{savingLinks ? 'Saving...' : 'Save links'}</Text>
+        </Pressable>
+      </Panel>
+
+      <Panel title={<Text style={styles.panelTitle}>Artist <Em>photos</Em></Text>}>
+        <ArtistPhotosManager artistId={user.userId} />
+      </Panel>
+
+      <Panel title={<Text style={styles.panelTitle}>Your <Em>agreement</Em></Text>}>
+        <Text style={styles.rowSub}>You own your music. Download your ownership and revenue share agreement, in your name, any time.</Text>
+        <DownloadContractButton artistName={displayName} label="Download agreement" style={{ alignSelf: 'flex-start', marginTop: 10 }} />
+      </Panel>
+    </>
+  );
+
+  const renderSettings = () => {
+    const supportImg = buildUrl(supportedArtist?.photoUrl) || buildUrl(supportedArtist?.defaultSong?.artworkUrl);
+    return (
+      <>
+        <Text style={styles.settingsTitle}>Settings</Text>
+        <Panel title={<Text style={styles.panelTitle}>Color <Em>theme</Em></Text>}>
+          <ThemePicker userId={user.userId} />
+        </Panel>
+        <Panel title={<Text style={styles.panelTitle}>You <Em>support</Em></Text>}>
+          {supportedArtist ? (
+            <ImageBackground source={supportImg ? { uri: supportImg } : backimage} style={styles.supportCard} imageStyle={{ borderRadius: 18 }}>
+              <LinearGradient colors={['rgba(7,9,15,0.25)', 'rgba(7,9,15,0.92)']} style={[StyleSheet.absoluteFill, { borderRadius: 18 }]} />
+              <View style={{ padding: 16 }}>
+                <Text style={[styles.kicker, { color: t.textAccent }]}>You support</Text>
+                <Text style={styles.trophyTitle}>{supportedArtist.username}</Text>
+                <Text style={styles.rowSub}>{supportedArtist.defaultSong ? `Featured song: ${supportedArtist.defaultSong.title}` : 'No featured song yet'}</Text>
+                <View style={[styles.row, { marginTop: 12 }]}>
+                  {supportedArtist.defaultSong && (
+                    <Pressable style={styles.whiteBtn} onPress={playSupportedArtistSong}>
+                      <Play size={13} color="#000" fill="#000" />
+                      <Text style={styles.whiteText}>Listen</Text>
+                    </Pressable>
+                  )}
+                  <Pressable style={styles.ghost} onPress={() => setShowArtistPicker(true)}><Text style={styles.ghostText}>Change</Text></Pressable>
+                </View>
+                {pendingSupportedArtist && (
+                  <View style={styles.pending}>
+                    <Clock size={12} color="#fff" />
+                    <Text style={[styles.rowSub, { flex: 1 }]}>
+                      Switching to <Text style={{ fontWeight: '800', color: '#fff' }}>{pendingSupportedArtist.username}</Text>
+                      {pendingEffective ? ` on ${pendingEffective}` : ''}
+                    </Text>
+                    <Pressable onPress={cancelPendingArtist} disabled={cancellingPending}>
+                      <Text style={[styles.ghostText, { color: t.textAccent }]}>{cancellingPending ? 'Cancelling…' : 'Cancel'}</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            </ImageBackground>
+          ) : (
+            <View style={styles.empty}>
+              <Heart size={34} color="rgba(255,255,255,0.4)" />
+              <Text style={styles.emptyTitle}>No supported artist yet</Text>
+              <Text style={styles.emptyText}>Every Unis member backs one artist. Choose the artist whose voice you want to amplify. You can change it later.</Text>
+              <Pressable style={[styles.primary, { backgroundColor: t.primary }]} onPress={() => setShowArtistPicker(true)}>
+                <Heart size={14} color="#fff" />
+                <Text style={styles.primaryText}>Choose an artist</Text>
+              </Pressable>
+            </View>
+          )}
+        </Panel>
+        <Panel title={<Text style={styles.panelTitle}>Your <Em>votes</Em></Text>}>
+          <VoteHistorySection userId={user.userId} />
+        </Panel>
+        <View style={styles.danger}>
+          <Text style={styles.rowTitle}>Account</Text>
+          <Text style={styles.rowSub}>Change your password or permanently delete your account. Deletion cannot be undone.</Text>
+          <View style={[styles.row, { marginTop: 10 }]}>
+            <Pressable style={styles.ghost} onPress={() => setShowChangePassword(true)}><Text style={styles.ghostText}>Change Password</Text></Pressable>
+            <Pressable style={styles.dangerBtn} onPress={() => setShowDeleteWizard(true)}>
+              <Trash2 size={14} color="#fff" />
+              <Text style={styles.primaryText}>Delete Account</Text>
+            </Pressable>
+          </View>
+        </View>
+      </>
+    );
+  };
+
+  const renderPanel = () => {
+    switch (activeTab) {
+      case 'music': return renderMusic();
+      case 'fans': return renderFans();
+      case 'races': return renderRaces();
+      case 'earnings': return renderEarnings();
+      case 'profile': return renderProfile();
+      case 'settings': return renderSettings();
+      default:
+        return (
+          <ArtistHomeTab
+            artistId={user.userId}
+            setupSteps={setupSteps}
+            onSetupAction={handleSetupAction}
+            totals={{ plays: totalPlays, followers, supporters }}
+            defaultSong={defaultSong}
+            featuredArtwork={featuredArtwork}
+            onPlayFeatured={playDefaultSong}
+            onChooseFeatured={() => setShowDefaultSongWizard(true)}
+            latestWin={latestWin}
+            earningsSummary={earningsSummary}
+            phoneVerified={Boolean(user.phoneVerified)}
+            onVerifyPhone={() => setShowPhoneVerify(true)}
+            supportersCount={supporters}
+            onGoTab={goToTab}
+            onViewPage={openArtistPage}
+          />
+        );
+    }
+  };
+
+  return (
+    <View style={styles.root}>
+      <View style={[styles.glow, { backgroundColor: t.glow1 }]} pointerEvents="none" />
+      <ScrollView ref={scrollRef} contentContainerStyle={{ padding: 16, paddingBottom: 140 }} stickyHeaderIndices={[1]} keyboardShouldPersistTaps="handled">
+        {/* Header */}
+        <View style={styles.head}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            {hasOwnPhoto ? (
+              <Image source={displayPhoto} style={styles.headAvatar} />
+            ) : (
+              <View style={[styles.headAvatar, { backgroundColor: t.soft, alignItems: 'center', justifyContent: 'center' }]}><Text style={styles.avatarInitial}>{artistInitial}</Text></View>
+            )}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                <Text style={[styles.chip, { borderColor: t.border }]}>{levelLabel} tier</Text>
+                {!!placeLine && <Text style={styles.chip}>{placeLine}</Text>}
+              </View>
+              <Text style={styles.name} numberOfLines={1} accessibilityRole="header">{displayName}</Text>
+            </View>
+          </View>
+          <View style={[styles.row, { marginTop: 14 }]}>
+            <Pressable style={[styles.primary, { backgroundColor: t.primary }]} onPress={() => setShowUploadWizard(true)}>
+              <Upload size={15} color="#fff" />
+              <Text style={styles.primaryText}>Upload</Text>
+            </Pressable>
+            <Pressable style={styles.ghost} onPress={openArtistPage}><Text style={styles.ghostText}>View my page</Text></Pressable>
+            <Pressable
+              style={[styles.gear, activeTab === 'settings' && { backgroundColor: t.soft, borderColor: t.border }]}
+              onPress={() => goToTab(activeTab === 'settings' ? 'home' : 'settings')}
+              accessibilityLabel="Settings"
+              accessibilityState={{ selected: activeTab === 'settings' }}
+            >
+              <SlidersHorizontal size={18} color="#fff" />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Tabs (sticky) */}
+        <View style={[styles.tabsWrap, { backgroundColor: mix(t.primary, '#07090f', 0.94) }]}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs} accessibilityRole="tablist">
+            {TABS.map((tab) => {
+              const selected = tab.id === activeTab;
+              return (
+                <Pressable
+                  key={tab.id}
+                  onPress={() => goToTab(tab.id)}
+                  style={[styles.tab, selected && { backgroundColor: t.soft, borderColor: t.border }]}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                >
+                  <Text style={[styles.tabText, selected && styles.tabTextOn]}>{tab.label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+
+        <View key={activeTab} style={{ gap: 14, marginTop: 14 }}>{renderPanel()}</View>
       </ScrollView>
 
-      {/* ============== WIZARDS / MODALS ============== */}
+      {/* Wizards and modals */}
       {showUploadWizard && (
         <UploadWizard
           visible={showUploadWizard}
@@ -1538,27 +1068,18 @@ const ArtistDashboardScreen: React.FC = () => {
           userId={user.userId}
           defaultGenreId={userProfile.genre?.genreId || userProfile.genreId}
           defaultJurisdictionId={userProfile.jurisdiction?.jurisdictionId}
+          userProfile={userProfile}
         />
       )}
-
       {showEditProfile && (
         <EditProfileWizard
           visible={showEditProfile}
           onClose={() => setShowEditProfile(false)}
-          onSuccess={() => {
-            setShowEditProfile(false);
-            handleProfileUpdate();
-          }}
-          user={{
-            userId: userProfile.userId || user.userId,
-            username: userProfile.username,
-            bio: userProfile.bio,
-            photoUrl: userProfile.photoUrl || null,
-          }}
-          isArtist={userProfile.role === 'artist'}
+          onSuccess={() => { setShowEditProfile(false); handleProfileUpdate(); }}
+          user={{ userId: userProfile.userId || user.userId, username: userProfile.username, bio: userProfile.bio, photoUrl: userProfile.photoUrl || null }}
+          isArtist={isArtistRole}
         />
       )}
-
       {showDefaultSongWizard && (
         <ChangeDefaultSongWizard
           visible={showDefaultSongWizard}
@@ -1569,35 +1090,13 @@ const ArtistDashboardScreen: React.FC = () => {
           currentDefaultSongId={defaultSong?.songId}
         />
       )}
-
-      {showDeleteWizard && (
-        <DeleteAccountWizard
-          visible={showDeleteWizard}
-          onClose={() => setShowDeleteWizard(false)}
-        />
-      )}
-
+      {showDeleteWizard && <DeleteAccountWizard visible={showDeleteWizard} onClose={() => setShowDeleteWizard(false)} />}
       {editingSong && (
-        <EditSongWizard
-          visible={!!editingSong}
-          onClose={() => setEditingSong(null)}
-          song={editingSong as any}
-          onSuccess={refetchSongs}
-        />
+        <EditSongWizard visible={!!editingSong} onClose={() => setEditingSong(null)} song={editingSong} onSuccess={refetchSongs} fallbackGenreId={userProfile.genre?.genreId || userProfile.genreId} />
       )}
-
-      {showLyricsWizard && (
-        <LyricsWizard
-          visible={showLyricsWizard}
-          onClose={() => {
-            setShowLyricsWizard(false);
-            setLyricsSong(null);
-          }}
-          song={lyricsSong as any}
-          onSuccess={refetchSongs}
-        />
+      {lyricsSong && (
+        <LyricsWizard visible={!!lyricsSong} onClose={() => setLyricsSong(null)} song={lyricsSong} onSuccess={refetchSongs} />
       )}
-
       <DeleteSongModal
         visible={!!songToDelete}
         songTitle={songToDelete?.title}
@@ -1605,8 +1104,6 @@ const ArtistDashboardScreen: React.FC = () => {
         onCancel={() => setSongToDelete(null)}
         isDeleting={!!deletingSongId}
       />
-
-      {/* ★ H: supported-artist picker (same component Profile uses). */}
       <SupportedArtistPicker
         show={showArtistPicker}
         onClose={() => setShowArtistPicker(false)}
@@ -1614,397 +1111,93 @@ const ArtistDashboardScreen: React.FC = () => {
         currentArtistId={supportedArtist?.userId || null}
         userJurisdictionId={userProfile?.jurisdiction?.jurisdictionId}
         userJurisdictionName={userProfile?.jurisdiction?.name}
-        onSuccess={() => {
-          setShowArtistPicker(false);
-          handleProfileUpdate();
-        }}
+        onSuccess={() => { setShowArtistPicker(false); handleProfileUpdate(); }}
       />
-
-      <SongStatsModal
-        show={!!statsSong}
-        onClose={() => setStatsSong(null)}
-        artistId={user.userId}
-        song={statsSong}
-      />
-
-      {/* ★ sales: per-song revenue modal */}
-      <SongSalesModal
-        show={!!salesSong}
-        onClose={() => setSalesSong(null)}
-        artistId={user.userId}
-        song={salesSong}
-      />
-
-      <ChangePasswordWizard
-        visible={showChangePassword}
-        onClose={() => setShowChangePassword(false)}
-      />
+      <SongStatsModal show={!!statsSong} onClose={() => setStatsSong(null)} artistId={user.userId} song={statsSong} />
+      <SongSalesModal show={!!salesSong} onClose={() => setSalesSong(null)} artistId={user.userId} song={salesSong} />
+      <ChangePasswordWizard visible={showChangePassword} onClose={() => setShowChangePassword(false)} />
+      <PhoneVerificationModal show={showPhoneVerify} onClose={() => setShowPhoneVerify(false)} onVerified={handlePhoneVerified} />
     </View>
   );
 };
 
-// ── Supported-artist feature content (shared between ambient/plain shells) ──
-const SupportContent: React.FC<{
-  supportedArtist: any;
-  pendingSupportedArtist: any;
-  pendingEffective: string | null;
-  cancellingPending: boolean;
-  onListen: () => void;
-  onChange: () => void;
-  onCancelPending: () => void;
-}> = ({
-  supportedArtist,
-  pendingSupportedArtist,
-  pendingEffective,
-  cancellingPending,
-  onListen,
-  onChange,
-  onCancelPending,
-}) => (
-  <View style={styles.supportContent}>
-    <Text style={styles.featuredTag}>You support</Text>
-    <Text style={styles.featuredTitle}>{supportedArtist.username}</Text>
-    <Text style={styles.featuredSub}>
-      {supportedArtist.defaultSong
-        ? `Featured track: ${supportedArtist.defaultSong.title}`
-        : 'No featured track yet'}
-    </Text>
-
-    <View style={styles.featuredActions}>
-      {supportedArtist.defaultSong && (
-        <TouchableOpacity style={styles.featuredPlay} onPress={onListen}>
-          <Play size={13} color={COLORS.bgBlack} fill={COLORS.bgBlack} />
-          <Text style={styles.featuredPlayText}>Listen</Text>
-        </TouchableOpacity>
-      )}
-      <TouchableOpacity style={styles.featuredChange} onPress={onChange}>
-        <Text style={styles.featuredChangeText}>Change</Text>
-      </TouchableOpacity>
-    </View>
-
-    {pendingSupportedArtist && (
-      <View style={styles.pending}>
-        <Clock size={12} color={COLORS.textSilver} />
-        <Text style={styles.pendingText}>
-          Switching to{' '}
-          <Text style={styles.pendingStrong}>{pendingSupportedArtist.username}</Text>
-          {pendingEffective ? ` on ${pendingEffective}` : ''}
-        </Text>
-        <TouchableOpacity onPress={onCancelPending} disabled={cancellingPending}>
-          <Text style={styles.pendingCancel}>
-            {cancellingPending ? 'Cancelling…' : 'Cancel'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    )}
-  </View>
-);
-
-// ── Social input row (web's onBlur-save inputs) ─────────────────────────────
-const SocialInput: React.FC<{
-  label: string;
-  placeholder: string;
-  defaultValue: string;
-  keyboardType?: 'default' | 'email-address';
-  onSave: (value: string) => void;
-}> = ({ label, placeholder, defaultValue, keyboardType = 'default', onSave }) => {
-  const [value, setValue] = useState(defaultValue);
-  return (
-    <View style={styles.socialItem}>
-      <Text style={styles.socialLabel}>{label}</Text>
-      <TextInput
-        style={styles.socialInput}
-        placeholder={placeholder}
-        placeholderTextColor="#666666"
-        value={value}
-        onChangeText={setValue}
-        onEndEditing={() => {
-          if (value !== defaultValue) onSave(value);
-        }}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType={keyboardType}
-      />
-    </View>
-  );
-};
-
-// ============================================================================
-// STYLES
-// ============================================================================
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: COLORS.bgBlack },
-  center: { alignItems: 'center', justifyContent: 'center', padding: 24 },
-  fullscreenMsg: { color: COLORS.textGray, fontSize: 15 },
-  scroll: { flex: 1 },
-  scrollContent: { padding: 16, paddingBottom: 120 },
-
-  sectionState: { alignItems: 'center' },
-  sectionStateText: { color: COLORS.textGray, fontSize: 14, marginTop: 12 },
-  sectionErrorText: { color: COLORS.errorRed, fontSize: 14, textAlign: 'center' },
-  retryBtn: {
-    marginTop: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
-    borderRadius: 20, paddingVertical: 9, paddingHorizontal: 20,
-  },
-  retryBtnText: { color: COLORS.textWhite, fontSize: 13, fontWeight: '600' },
-
-  // Welcome popup
-  welcomeOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.8)',
-    alignItems: 'center', justifyContent: 'center', padding: 28,
-  },
-  welcomePopup: {
-    backgroundColor: '#101010', borderColor: 'rgba(255,255,255,0.1)',
-    borderWidth: 1, borderRadius: 20, padding: 26, alignItems: 'center', width: '100%',
-  },
-  welcomeClose: { position: 'absolute', top: 12, right: 12, padding: 6 },
-  welcomeIcon: {
-    width: 74, height: 74, borderRadius: 37, backgroundColor: COLORS.unisBlue,
-    alignItems: 'center', justifyContent: 'center', marginBottom: 16,
-  },
-  welcomeTitle: { color: COLORS.textWhite, fontSize: 24, fontWeight: '800' },
-  welcomeBody: {
-    color: COLORS.textGray, fontSize: 14, lineHeight: 20,
-    textAlign: 'center', marginTop: 8, marginBottom: 20,
-  },
-  welcomeBtn: {
-    backgroundColor: COLORS.unisBlue, borderRadius: 24,
-    paddingVertical: 12, paddingHorizontal: 28,
-  },
-  welcomeBtnText: { color: COLORS.textWhite, fontSize: 14, fontWeight: '700' },
-
-  // Hero
-  hero: {
-    backgroundColor: COLORS.cardBg, borderColor: COLORS.borderSubtle,
-    borderWidth: 1, borderRadius: 18, padding: 20, marginBottom: 16,
-  },
-  heroEyebrow: {
-    color: COLORS.unisBlueBright, fontSize: 11, fontWeight: '700',
-    letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 14,
-  },
-  heroIdentity: { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
-  heroAvatar: {
-    width: 72, height: 72, borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 2, borderColor: 'rgba(255,255,255,0.15)',
-  },
-  heroAvatarPh: { alignItems: 'center', justifyContent: 'center' },
-  heroAvatarInitial: { color: COLORS.textWhite, fontSize: 28, fontWeight: '800' },
-  heroCopy: { flex: 1, marginLeft: 16 },
-  heroName: { color: COLORS.textWhite, fontSize: 26, fontWeight: '800' },
-  heroBio: { color: COLORS.textGray, fontSize: 13, lineHeight: 18, marginTop: 4 },
-  heroStats: {
-    flexDirection: 'row', borderTopColor: COLORS.borderSubtle,
-    borderTopWidth: 1, paddingTop: 14, marginBottom: 16,
-  },
-  heroStat: { flex: 1 },
-  heroStatLabel: {
-    color: COLORS.textMuted, fontSize: 10, fontWeight: '600',
-    letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4,
-  },
-  heroStatValue: { color: COLORS.textWhite, fontSize: 17, fontWeight: '800' },
-  heroActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-
-  // Buttons
-  btn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    borderRadius: 22, paddingVertical: 11, paddingHorizontal: 18,
-  },
-  btnSmall: { paddingVertical: 8, paddingHorizontal: 14 },
-  btnPrimary: { backgroundColor: COLORS.unisBlue },
-  btnGhost: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  btnDanger: { backgroundColor: COLORS.dangerRed },
-  btnText: { color: COLORS.textWhite, fontSize: 13, fontWeight: '700', marginLeft: 6 },
-
-  // Featured song
-  featured: {
-    borderRadius: 18, overflow: 'hidden', minHeight: 200,
-    marginBottom: 16, justifyContent: 'flex-end',
-  },
-  featuredImage: { borderRadius: 18 },
-  featuredEmpty: {
-    backgroundColor: COLORS.cardBg, borderColor: COLORS.borderSubtle, borderWidth: 1,
-  },
-  featuredContent: { padding: 20 },
-  featuredTag: {
-    color: COLORS.textSilver, fontSize: 11, fontWeight: '700',
-    letterSpacing: 1.5, textTransform: 'uppercase', marginBottom: 6,
-  },
-  featuredTitle: { color: COLORS.textWhite, fontSize: 23, fontWeight: '800' },
-  featuredSub: { color: COLORS.textSilver, fontSize: 13, marginTop: 4, marginBottom: 14 },
-  featuredActions: { flexDirection: 'row', alignItems: 'center' },
-  featuredPlay: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.textWhite,
-    borderRadius: 20, paddingVertical: 9, paddingHorizontal: 16, marginRight: 10,
-  },
-  featuredPlayText: { color: COLORS.bgBlack, fontSize: 13, fontWeight: '800', marginLeft: 6 },
-  featuredChange: {
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)',
-    borderRadius: 20, paddingVertical: 9, paddingHorizontal: 16,
-  },
-  featuredChangeText: { color: COLORS.textWhite, fontSize: 13, fontWeight: '700' },
-
-  // Quick nav
-  quicknav: {
-    backgroundColor: COLORS.cardBg, borderColor: COLORS.borderSubtle,
-    borderWidth: 1, borderRadius: 16, padding: 12, marginBottom: 16,
-  },
-  quicknavLabel: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  quicknavLabelText: {
-    color: COLORS.textMuted, fontSize: 11, fontWeight: '700',
-    letterSpacing: 1, textTransform: 'uppercase', marginLeft: 5,
-  },
-  quicknavBtn: {
-    alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12,
-    marginRight: 8, minWidth: 74,
-  },
-  quicknavText: { color: COLORS.textSilver, fontSize: 10, fontWeight: '600', marginTop: 5 },
-
-  // Catalog
-  catalogActions: { flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 12 },
-  songCard: {
-    flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.35)',
-    borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1,
-    borderRadius: 14, padding: 12, marginBottom: 10,
-  },
-  songCardFeatured: { borderColor: 'rgba(74,158,255,0.45)' },
-  songArt: {
-    width: 58, height: 58, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  songArtPh: { alignItems: 'center', justifyContent: 'center' },
-  songBody: { flex: 1, marginLeft: 12 },
-  songTitleRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  songTitleText: { flex: 1, paddingRight: 8 },
-  songTitle: { color: COLORS.textWhite, fontSize: 15, fontWeight: '700' },
-  songType: { color: COLORS.textMuted, fontSize: 11, marginTop: 1 },
-  songBadge: {
-    backgroundColor: 'rgba(74,158,255,0.15)', borderRadius: 8,
-    paddingVertical: 3, paddingHorizontal: 7,
-  },
-  songBadgeText: { color: COLORS.unisBlueBright, fontSize: 10, fontWeight: '800' },
-  songStats: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 6 },
-  songStat: { flexDirection: 'row', alignItems: 'center', marginRight: 12, marginBottom: 2 },
-  songStatText: { color: COLORS.textMuted, fontSize: 11, marginLeft: 4 },
-  songWarn: { color: '#ffb13c', fontSize: 11 },
-  songActions: {
-    flexDirection: 'row', marginTop: 8,
-    borderTopColor: 'rgba(255,255,255,0.06)', borderTopWidth: 1, paddingTop: 8,
-  },
-  songActionBtn: {
-    width: 34, height: 34, borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    alignItems: 'center', justifyContent: 'center', marginRight: 8,
-  },
-
-  // Empty state
-  emptyState: { alignItems: 'center', paddingVertical: 24 },
-  emptyTitle: { color: COLORS.textWhite, fontSize: 16, fontWeight: '700', marginTop: 10 },
-  emptyBody: {
-    color: COLORS.textGray, fontSize: 13, lineHeight: 19,
-    textAlign: 'center', marginTop: 6, marginBottom: 14, paddingHorizontal: 10,
-  },
-
-  // Awards
-  awardsToggle: {
-    flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 20, padding: 3, marginBottom: 14, alignSelf: 'flex-start',
-  },
-  awardsToggleBtn: { borderRadius: 17, paddingVertical: 7, paddingHorizontal: 18 },
-  awardsToggleBtnActive: { backgroundColor: COLORS.unisBlue },
-  awardsToggleText: { color: COLORS.textGray, fontSize: 13, fontWeight: '600' },
-  awardsToggleTextActive: { color: COLORS.textWhite },
-  awardFeatured: { borderRadius: 14, overflow: 'hidden', marginBottom: 12 },
-  awardAmbient: { width: '100%' },
-  awardAmbientImg: { opacity: 0.4 },
-  awardFeaturedInner: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)', padding: 14,
-  },
-  awardArtworkWrap: { position: 'relative' },
-  awardArtwork: {
-    width: 64, height: 64, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  awardBadge: {
-    position: 'absolute', bottom: -6, right: -6,
-    backgroundColor: '#C49A0A', borderRadius: 8, paddingVertical: 2, paddingHorizontal: 6,
-  },
-  awardBadgeText: { color: '#1a1408', fontSize: 9, fontWeight: '900' },
-  awardInfo: { flex: 1, marginLeft: 14 },
-  awardInfoTag: {
-    color: '#C49A0A', fontSize: 10, fontWeight: '700',
-    letterSpacing: 1, textTransform: 'uppercase',
-  },
-  awardInfoTitle: { color: COLORS.textWhite, fontSize: 16, fontWeight: '800', marginTop: 2 },
-  awardInfoMeta: { color: COLORS.textSilver, fontSize: 12, marginTop: 3 },
-  awardsSummary: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-  awardsSummaryText: { color: COLORS.textSilver, fontSize: 13, fontWeight: '600', marginLeft: 6 },
-  awardsScroll: { maxHeight: 320 },
-  awardRow: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12,
-    padding: 10, marginBottom: 8,
-  },
-  awardRowImg: {
-    width: 42, height: 42, borderRadius: 9, backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  awardRowInfo: { flex: 1, marginLeft: 10, paddingRight: 8 },
-  awardRowTitle: { color: COLORS.textWhite, fontSize: 13, fontWeight: '700' },
-  awardRowMeta: { color: COLORS.textMuted, fontSize: 11, marginTop: 2 },
-  awardRowDate: { color: COLORS.textMuted, fontSize: 11 },
-  awardsMore: { alignSelf: 'center', marginTop: 6, marginBottom: 4 },
-
-  // Growth checklist
-  nextCard: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 14, padding: 14, marginBottom: 10,
-  },
-  nextCardComplete: { borderWidth: 1, borderColor: 'rgba(34,197,94,0.35)' },
-  nextCardText: { flex: 1, paddingRight: 10 },
-  nextCardTitle: { color: COLORS.textWhite, fontSize: 14, fontWeight: '700' },
-  nextCardBody: { color: COLORS.textGray, fontSize: 12, lineHeight: 17, marginTop: 3 },
-  nextCardAction: { flexDirection: 'row', alignItems: 'center' },
-  nextCardActionText: {
-    color: COLORS.unisBlueBright, fontSize: 12, fontWeight: '700', marginRight: 3,
-  },
-
-  // Social links
-  socialItem: { marginBottom: 12 },
-  socialLabel: { color: COLORS.textSilver, fontSize: 12, fontWeight: '600', marginBottom: 6 },
-  socialInput: {
-    color: COLORS.textWhite, fontSize: 14,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1,
-    borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12,
-  },
-
-  // Supported artist
-  supportFeature: { borderRadius: 14, overflow: 'hidden' },
-  supportMedia: { width: '100%', minHeight: 190, justifyContent: 'flex-end' },
-  supportMediaImg: { borderRadius: 14 },
-  supportContent: { padding: 16 },
-  pending: {
-    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderColor: 'rgba(255,255,255,0.15)', borderWidth: 1,
-    borderRadius: 12, paddingVertical: 8, paddingHorizontal: 12, marginTop: 12,
-  },
-  pendingText: { color: COLORS.textSilver, fontSize: 12, flex: 1, marginLeft: 6 },
-  pendingStrong: { color: COLORS.textWhite, fontWeight: '700' },
-  pendingCancel: {
-    color: COLORS.unisBlueBright, fontSize: 12, fontWeight: '700',
-    textDecorationLine: 'underline', marginLeft: 8,
-  },
-
-  // Danger zone
-  danger: {
-    borderColor: 'rgba(220,53,69,0.35)', borderWidth: 1,
-    borderRadius: 16, padding: 18, marginBottom: 24,
-  },
-  dangerHeading: { color: COLORS.textWhite, fontSize: 15, fontWeight: '800', marginBottom: 4 },
-  dangerText: { color: COLORS.textGray, fontSize: 13, lineHeight: 18, marginBottom: 14 },
-  dangerActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  root: { flex: 1, backgroundColor: '#07090f' },
+  glow: { position: 'absolute', top: -140, right: -100, width: 360, height: 360, borderRadius: 180 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#07090f' },
+  state: { alignItems: 'center', gap: 10, paddingVertical: 24 },
+  stateText: { color: 'rgba(255,255,255,0.6)', fontSize: 13.5 },
+  errorText: { color: '#f87171', fontSize: 14, textAlign: 'center' },
+  head: { marginBottom: 6 },
+  headAvatar: { width: 64, height: 64, borderRadius: 32 },
+  avatarInitial: { color: '#fff', fontSize: 24, fontWeight: '800' },
+  chip: { color: 'rgba(255,255,255,0.8)', fontSize: 11.5, fontWeight: '700', paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', overflow: 'hidden' },
+  name: { color: '#fff', fontSize: 28, fontWeight: '800', letterSpacing: -0.6, marginTop: 4 },
+  row: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, alignItems: 'center' },
+  primary: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999 },
+  primaryText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  primarySm: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999 },
+  primarySmText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  ghost: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)' },
+  ghostSm: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)' },
+  ghostText: { color: '#fff', fontWeight: '600', fontSize: 13.5 },
+  gear: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', marginLeft: 'auto' },
+  tabsWrap: { marginHorizontal: -16, paddingVertical: 8, paddingHorizontal: 16 },
+  tabs: { gap: 6 },
+  tab: { paddingHorizontal: 15, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: 'transparent' },
+  tabText: { color: 'rgba(255,255,255,0.6)', fontWeight: '700', fontSize: 14 },
+  tabTextOn: { color: '#fff' },
+  panel: { padding: 16, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.035)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)' },
+  panelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
+  panelTitle: { color: '#fff', fontSize: 19, fontWeight: '800', letterSpacing: -0.3, flexShrink: 1 },
+  em: { fontStyle: 'italic', fontWeight: '400' },
+  count: { color: 'rgba(255,255,255,0.45)', fontSize: 15, fontWeight: '600' },
+  empty: { alignItems: 'center', gap: 8, paddingVertical: 16 },
+  emptyTitle: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  emptyText: { color: 'rgba(255,255,255,0.55)', fontSize: 13.5, textAlign: 'center', lineHeight: 19, marginBottom: 6 },
+  songCard: { padding: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', backgroundColor: 'rgba(255,255,255,0.02)', marginBottom: 10 },
+  songArt: { width: 56, height: 56, borderRadius: 10 },
+  badge: { color: '#fff', fontSize: 10.5, fontWeight: '800', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
+  songStats: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  statInline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  songActions: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.08)' },
+  iconBtn: { width: 44, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.05)' },
+  rowTitle: { color: '#fff', fontSize: 15, fontWeight: '700', flexShrink: 1 },
+  rowSub: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5, lineHeight: 18 },
+  small: { color: 'rgba(255,255,255,0.45)', fontSize: 11.5 },
+  videoRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 },
+  videoThumb: { width: 96, height: 56, borderRadius: 10, overflow: 'hidden', backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center' },
+  videoPlay: { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
+  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  tile: { flexBasis: '47%', flexGrow: 1, padding: 14, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.035)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)' },
+  tileLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 11.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6 },
+  tileValue: { color: '#fff', fontSize: 22, fontWeight: '800', marginTop: 4 },
+  toggle: { flexDirection: 'row', padding: 3, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.06)' },
+  toggleBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  toggleText: { color: '#fff', fontWeight: '700', fontSize: 12.5 },
+  trophyHero: { borderRadius: 18, overflow: 'hidden', marginBottom: 10 },
+  trophyArt: { width: 74, height: 74, borderRadius: 12 },
+  intervalBadge: { position: 'absolute', bottom: -6, alignSelf: 'center', color: '#fff', fontSize: 10.5, fontWeight: '800', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, overflow: 'hidden' },
+  kicker: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase' },
+  trophyTitle: { color: '#fff', fontSize: 19, fontWeight: '800', marginTop: 2 },
+  winsSummary: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  awardRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.07)' },
+  awardImg: { width: 42, height: 42, borderRadius: 8 },
+  warn: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 14, backgroundColor: 'rgba(245,158,11,0.12)' },
+  warnText: { color: '#fbbf24', fontSize: 13.5, flex: 1, lineHeight: 19 },
+  warnBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: 'rgba(245,158,11,0.25)' },
+  warnBtnText: { color: '#fff', fontWeight: '700', fontSize: 12.5 },
+  pageAvatar: { width: 64, height: 64, borderRadius: 32 },
+  featuredLine: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14, padding: 12, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.04)' },
+  label: { color: 'rgba(255,255,255,0.6)', fontSize: 12.5, fontWeight: '600', marginBottom: 5 },
+  input: { color: '#fff', fontSize: 14.5, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  settingsTitle: { color: '#fff', fontSize: 24, fontWeight: '800' },
+  supportCard: { minHeight: 180, borderRadius: 18, overflow: 'hidden', justifyContent: 'flex-end' },
+  whiteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, backgroundColor: '#fff' },
+  whiteText: { color: '#000', fontWeight: '800', fontSize: 14 },
+  pending: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, padding: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.08)' },
+  danger: { padding: 16, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)', backgroundColor: 'rgba(239,68,68,0.06)' },
+  dangerBtn: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999, backgroundColor: '#dc2626' },
 });
 
 export default ArtistDashboardScreen;

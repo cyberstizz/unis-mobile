@@ -4,6 +4,7 @@
 // Height: 20vh on mobile (from SCSS)
 
 import React from 'react';
+import { webUrl } from '../config/links';
 import {
   View,
   Text,
@@ -34,10 +35,12 @@ const Footer: React.FC = () => {
   const navigation = useNavigation();
 
   const links: FooterLink[] = [
-    { label: 'Privacy Policy', route: 'Privacy' },
-    { label: 'Terms of Use', route: 'Terms' },
-    { label: 'Cookie Policy', route: 'Cookie' },
-    { label: 'Report Infringement', route: 'ReportInfringement' },
+    // Legal pages open on unismusic.com — one copy of each, always current.
+    { label: 'Help', route: 'Help' },
+    { label: 'Privacy Policy', url: webUrl('/privacy') },
+    { label: 'Terms of Use', url: webUrl('/terms') },
+    { label: 'Cookie Policy', url: webUrl('/cookie') },
+    { label: 'Report Infringement', url: webUrl('/report') },
   ];
 
   const handleLinkPress = (link: FooterLink) => {

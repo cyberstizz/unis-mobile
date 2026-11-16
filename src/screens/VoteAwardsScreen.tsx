@@ -26,6 +26,16 @@ import { usePlayer } from '../context/PlayerContext';
 import axiosInstance, { getMediaUrl } from '../services/axiosInstance';
 import { GENRE_IDS, JURISDICTION_IDS, INTERVAL_IDS } from '../utils/IdMappings';
 import VotingWizard from '../components/VotingWizard';
+import RankMove from '../components/RankMove';
+import { useFeedback } from '../context/FeedbackContext';
+import { fetchStandings, describeBoard, playEntry, formatCount, periodByKey, Board, BoardEntry } from '../utils/standings';
+
+// Nominees come from /v1/awards/standings (utils/standings), ranked by the
+// same formula that decides the award, for the period this vote counts
+// toward. Before anyone scores in a new period they're ordered by how the
+// last one finished — the status line above the grid says which.
+const NOMINEE_PAGE = 48;
+const FALLBACK_ART = require('../../assets/randomrapper.jpeg');
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_MOBILE = SCREEN_WIDTH < 480;
@@ -85,15 +95,19 @@ interface Nominee {
   name: string;
   type: 'artist' | 'song';
   genreKey: string;
-  imageUrl?: string;
+  imageUrl?: string | null;
+  artwork?: string | null;
   jurisdiction: string;
-  genre: string;
+  jurisdictionId?: string | null;
   votes: number;
-  totalLifetimeVotes?: number;
   artist?: string;
-  artistId?: string;
-  mediaUrl?: string;
+  artistId?: string | null;
+  mediaUrl?: string | null;
   plays?: number;
+  rank: number;
+  points: number;
+  movement?: number | null;
+  isNew?: boolean;
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -101,7 +115,10 @@ interface Nominee {
 // ═════════════════════════════════════════════════════════════
 const VoteAwardsScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
-  const { playMedia } = usePlayer();
+  const { requestPlay } = usePlayer();
+  const feedback = useFeedback();
+  const [board, setBoard] = useState<Board | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const navigation = useNavigation<any>();
 
   const [selectedGenre, setSelectedGenre] = useState('rap');
@@ -191,10 +208,6 @@ const VoteAwardsScreen: React.FC = () => {
     return () => clearInterval(timer);
   }, [selectedInterval]);
 
-  // ── Track ad view ──
-  useEffect(() => {
-    axiosInstance.post('/v1/earnings/track-view').catch(() => {});
-  }, []);
 
   // ── Get userId ──
   useEffect(() => {
@@ -215,29 +228,71 @@ const VoteAwardsScreen: React.FC = () => {
     fetchNominees();
   }, [selectedGenre, selectedType, selectedInterval, selectedJurisdiction]);
 
+  const toNominee = (e: BoardEntry): Nominee => ({
+    id: e.id,
+    name: e.name,
+    type: e.type as 'artist' | 'song',
+    genreKey: selectedGenre,
+    artist: e.type === 'song' ? (e.artistName || 'Unknown Artist') : undefined,
+    artistId: e.artistId,
+    imageUrl: e.artwork,
+    artwork: e.artwork,
+    mediaUrl: e.fileUrl,
+    rank: e.rank,
+    points: e.points,
+    votes: e.votes,
+    plays: e.plays,
+    movement: e.movement,
+    isNew: e.isNew,
+    jurisdiction: (e as any).homeJurisdictionName || '',
+    jurisdictionId: (e as any).homeJurisdictionId || null,
+  });
+
   const fetchNominees = async () => {
     setLoading(true);
     setError('');
     try {
-      const genreId = GENRE_IDS[selectedGenre];
-      const jurisdictionId = JURISDICTION_IDS[selectedJurisdiction];
-      const intervalId = INTERVAL_IDS[selectedInterval];
-      if (!genreId || !jurisdictionId || !intervalId) { setError('Invalid filter.'); setNominees([]); return; }
-
-      const res = await axiosInstance.get(
-        `/v1/vote/nominees?targetType=${selectedType}&genreId=${genreId}&jurisdictionId=${jurisdictionId}&intervalId=${intervalId}&limit=20`
-      );
-      const data = res.data || [];
-      const normalized: Nominee[] = data.map((n: any) => {
-        if (selectedType === 'artist') {
-          return { id: n.userId, name: n.username, type: 'artist' as const, genreKey: selectedGenre, imageUrl: getMediaUrl(n.photoUrl), votes: n.voteCount || 0, totalLifetimeVotes: n.totalVotes || 0, jurisdiction: n.jurisdiction?.name || 'Unknown', genre: n.genre?.name || 'Unknown' };
-        } else {
-          return { id: n.songId, name: n.title, type: 'song' as const, genreKey: selectedGenre, artist: n.artist?.username || 'Unknown', artistId: n.artist?.userId, imageUrl: getMediaUrl(n.artworkUrl), mediaUrl: getMediaUrl(n.fileUrl), votes: n.voteCount || 0, plays: n.playCount || n.totalPlays || 0, jurisdiction: n.jurisdiction?.name || 'Unknown', genre: n.genre?.name || 'Unknown' };
-        }
+      const b = await fetchStandings({
+        type: selectedType as any,
+        jurisdictionId: JURISDICTION_IDS[selectedJurisdiction],
+        genre: selectedGenre,
+        period: selectedInterval,
+        limit: NOMINEE_PAGE,
+        offset: 0,
       });
-      setNominees(normalized);
-    } catch { setError('Failed to load nominees.'); setNominees([]); }
-    finally { setLoading(false); }
+      setBoard(b);
+      setNominees(b.entries.map(toNominee));
+    } catch (err) {
+      console.error('Failed to fetch nominees:', err);
+      setError('Failed to load nominees. Please try again.');
+      setNominees([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMoreNominees = async () => {
+    if (!board || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const b = await fetchStandings({
+        type: selectedType as any,
+        jurisdictionId: JURISDICTION_IDS[selectedJurisdiction],
+        genre: selectedGenre,
+        period: selectedInterval,
+        limit: NOMINEE_PAGE,
+        offset: nominees.length,
+      });
+      setNominees((prev) => {
+        const seen = new Set(prev.map((n) => n.id));
+        return [...prev, ...b.entries.filter((e) => !seen.has(e.id)).map(toNominee)];
+      });
+      setBoard((prev) => (prev ? { ...prev, total: b.total } : prev));
+    } catch (err) {
+      console.error('Failed to load more nominees:', err);
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const filteredNominees = nominees.filter(n => searchQuery.length === 0 || n.name.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -351,27 +406,32 @@ const VoteAwardsScreen: React.FC = () => {
 
   // ── Handlers (identical to web) ──
   const handleVoteClick = (nominee: Nominee) => {
-    if (!userId) { Alert.alert('Login Required', 'Please log in to vote.'); return; }
-    setSelectedNominee({ id: nominee.id, name: nominee.name, type: nominee.type, genreKey: nominee.genreKey, jurisdiction: nominee.jurisdiction });
+    if (!userId) { feedback.info('Sign up or log in to vote'); return; }
+    setSelectedNominee({
+      id: nominee.id,
+      name: nominee.name,
+      type: nominee.type,
+      genreKey: nominee.genreKey,
+      jurisdiction: nominee.jurisdiction,
+      jurisdictionId: nominee.jurisdictionId,
+      imageUrl: nominee.artwork || undefined,
+      artwork: nominee.artwork || undefined,
+    } as any);
     setShowVoteWizard(true);
   };
 
   const handleVoteSuccess = () => { setShowVoteWizard(false); setSelectedNominee(null); fetchNominees(); };
 
+  // Plays are counted by the Player after real listening — never here.
   const handlePlay = async (nominee: Nominee) => {
-    if (nominee.type === 'song' && nominee.mediaUrl) {
-      playMedia({ id: nominee.id, songId: nominee.id, title: nominee.name, artist: nominee.artist || 'Unknown', url: nominee.mediaUrl, artwork: nominee.imageUrl } as any, []);
-      if (userId) axiosInstance.post(`/v1/media/song/${nominee.id}/play?userId=${userId}`).catch(() => {});
-    } else if (nominee.type === 'artist') {
-      try {
-        const res = await axiosInstance.get(`/v1/users/${nominee.id}/default-song`);
-        const ds = res.data;
-        if (ds?.fileUrl) {
-          playMedia({ id: ds.songId || nominee.id, songId: ds.songId, title: ds.title, artist: nominee.name, url: getMediaUrl(ds.fileUrl)!, artwork: getMediaUrl(ds.artworkUrl) || nominee.imageUrl } as any, []);
-          if (userId && ds.songId) axiosInstance.post(`/v1/media/song/${ds.songId}/play?userId=${userId}`).catch(() => {});
-        } else { Alert.alert('No Song', `${nominee.name} has no default song yet.`); }
-      } catch { Alert.alert('Error', "Could not load artist's song."); }
-    }
+    const played = await playEntry(
+      nominee.type === 'song'
+        ? { type: 'song', id: nominee.id, name: nominee.name, artistName: nominee.artist, artistId: nominee.artistId, fileUrl: nominee.mediaUrl, artwork: nominee.artwork } as any
+        : { type: 'artist', id: nominee.id, name: nominee.name, artwork: nominee.artwork } as any,
+      requestPlay as any,
+      'voteawards',
+    );
+    if (!played && nominee.type === 'artist') feedback.info(`${nominee.name} hasn\u2019t picked a song to feature yet`);
   };
 
   const handleNomineeClick = (nominee: Nominee) => {
@@ -384,6 +444,10 @@ const VoteAwardsScreen: React.FC = () => {
   const typeLabel = TYPES.find(t => t.value === selectedType)?.label || selectedType;
   const intervalLabel = INTERVALS.find(i => i.value === selectedInterval)?.label || selectedInterval;
   const jurisdictionLabel = JURISDICTIONS.find(j => j.value === selectedJurisdiction)?.label || selectedJurisdiction;
+  const boardStatus = board ? describeBoard(board) : null;
+  const pointsLabel = board?.state === 'LIVE'
+    ? `Points ${periodByKey(selectedInterval).current}`
+    : `Points ${periodByKey(selectedInterval).previous.toLowerCase()}`;
 
   // Distinguish "no eligible content here" from "no winner computed yet" —
   // when the grid is empty, telling users to "vote to crown the first winner"
@@ -519,11 +583,24 @@ const VoteAwardsScreen: React.FC = () => {
           <Text style={s.errorText}>{error}</Text>
         ) : (
           <View style={s.grid}>
+            {boardStatus && (
+              <Text style={s.boardStatus} accessibilityRole="text">
+                <Text style={{ color: boardStatus.tone === 'live' ? '#4ade80' : boardStatus.tone === 'closing' ? '#fbbf24' : 'rgba(255,255,255,0.5)' }}>● </Text>
+                <Text style={{ color: '#fff', fontWeight: '800' }}>{boardStatus.title}.</Text> {boardStatus.detail}
+                {board?.state !== 'LIVE' ? ' Nominees are in that order until then.' : ''}
+              </Text>
+            )}
             {filteredNominees.length > 0 ? filteredNominees.map((nominee) => (
               <View key={nominee.id} style={s.card}>
                 {/* Image */}
                 <TouchableOpacity onPress={() => handleNomineeClick(nominee)} activeOpacity={0.9}>
-                  <ImageBackground source={{ uri: nominee.imageUrl || 'https://picsum.photos/300' }} style={s.cardImage} resizeMode="cover">
+                  <ImageBackground source={nominee.imageUrl ? { uri: nominee.imageUrl } : FALLBACK_ART} style={s.cardImage} resizeMode="cover">
+                    {nominee.points > 0 && (
+                      <View style={s.rankTag} accessibilityLabel={`Ranked ${nominee.rank}`}>
+                        <Text style={s.rankTagText}>#{nominee.rank}</Text>
+                        <RankMove movement={nominee.movement} isNew={nominee.isNew} />
+                      </View>
+                    )}
                     <LinearGradient colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.92)']} locations={[0, 0.5, 1]} style={s.cardOverlay}>
                       <Text style={s.cardName} numberOfLines={1}>{nominee.name}</Text>
                       {nominee.type === 'song' && <Text style={s.cardArtist} numberOfLines={1}>by {nominee.artist}</Text>}
@@ -538,10 +615,10 @@ const VoteAwardsScreen: React.FC = () => {
                 {/* Footer with stats + buttons */}
                 <View style={s.cardFooter}>
                   <View style={s.statWrap}>
-                    <Text style={s.statLabel}>{nominee.type === 'artist' ? 'Total Votes' : 'Plays'}</Text>
+                    <Text style={s.statLabel}>{pointsLabel}</Text>
                     <View style={s.statRow}>
-                      <Text style={s.statValue}>{(nominee.type === 'artist' ? nominee.totalLifetimeVotes || 0 : nominee.plays || 0).toLocaleString()}</Text>
-                      {nominee.votes > 0 && <View style={s.badge}><Text style={s.badgeText}>+{nominee.votes}</Text></View>}
+                      <Text style={s.statValue}>{formatCount(nominee.points)}</Text>
+                      {nominee.votes > 0 && <View style={s.badge}><Text style={s.badgeText}>{formatCount(nominee.votes)} vote{nominee.votes === 1 ? '' : 's'}</Text></View>}
                     </View>
                   </View>
                   <View style={s.btnRow}>
@@ -558,6 +635,12 @@ const VoteAwardsScreen: React.FC = () => {
               <Text style={s.emptyText}>{searchQuery ? 'No nominees match your search.' : `No ${genreLabel} ${selectedType}s in ${jurisdictionLabel} yet.`}</Text>
             )}
           </View>
+        )}
+
+        {!loading && !error && board && nominees.length < board.total && (
+          <TouchableOpacity style={s.moreBtn} onPress={loadMoreNominees} disabled={loadingMore}>
+            <Text style={s.moreText}>{loadingMore ? 'Loading…' : `Show more nominees (${formatCount(board.total - nominees.length)} more)`}</Text>
+          </TouchableOpacity>
         )}
 
         <View style={{ height: 120 }} />
@@ -662,6 +745,11 @@ const s = StyleSheet.create({
   // Card footer
   cardFooter: { padding: 10, gap: 8 },
   statWrap: { alignItems: 'center' },
+  boardStatus: { width: '100%', color: 'rgba(255,255,255,0.7)', fontSize: 13, lineHeight: 18, marginBottom: 10 },
+  rankTag: { position: 'absolute', top: 8, left: 8, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 2 },
+  rankTagText: { color: '#fff', fontWeight: '900', fontSize: 12 },
+  moreBtn: { alignSelf: 'center', marginTop: 16, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 999, backgroundColor: 'rgba(255,255,255,0.08)' },
+  moreText: { color: '#fff', fontWeight: '700', fontSize: 13.5 },
   statLabel: { fontSize: 8, textTransform: 'uppercase', letterSpacing: 1.5, color: C.textMuted },
   statRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 1 },
   statValue: { fontSize: 16, fontWeight: '700', color: C.unisBlue },

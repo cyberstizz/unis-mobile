@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import {
   Modal,
   View,
@@ -45,6 +46,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
   user,
   isArtist,
 }) => {
+  const feedback = useFeedback();
   const [activeTab, setActiveTab] = useState<ActiveTab>('photo');
   const [bio, setBio] = useState(user?.bio || '');
   const [photoUri, setPhotoUri] = useState<string | null>(null); // local file URI after picking
@@ -142,6 +144,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
         timeout: 30000,
       });
 
+      feedback.success('Profile photo updated');
       onSuccess();
       onClose();
     } catch (err: any) {
@@ -155,7 +158,7 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
           code: err.code,
         });
       }
-      Alert.alert('Error', 'Failed to update photo. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't update your photo. Try again."));
     } finally {
       setLoading(false);
     }
@@ -175,11 +178,12 @@ const EditProfileWizard: React.FC<EditProfileWizardProps> = ({
         bio: bio.trim(),
       });
 
+      feedback.success('Bio saved');
       onSuccess();
       onClose();
     } catch (err) {
       console.error('Save bio error:', err);
-      Alert.alert('Error', 'Failed to update bio. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't save your bio. Try again."));
     } finally {
       setLoading(false);
     }

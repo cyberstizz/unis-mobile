@@ -9,11 +9,8 @@
 // Resolves the jurisdiction UUID once (when the caller didn't pass it) so
 // switching intervals never re-runs the byName lookup.
 //
-// AD SLOT — on web this is a sticky right rail; on mobile it becomes a banner
-// beneath the timeline, carrying the same ambient theme wash used by the
-// Milestones winner plate so an unsold slot reads as part of the page rather
-// than a hole in it. This is the reference implementation for ad slots
-// elsewhere in the app — extract to a shared <AdSlot /> before replicating.
+// AD SLOT — on web a sticky right rail; on mobile the shared <AdSlot /> as a
+// banner beneath the timeline.
 // ============================================================================
 
 import React, { useState, useEffect } from 'react';
@@ -27,6 +24,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import Svg, { Path } from 'react-native-svg';
+import AdSlot from '../components/AdSlot';
 
 import { useAuth } from '../context/AuthContext';
 import axiosInstance from '../services/axiosInstance';
@@ -39,7 +37,7 @@ const THEME_HEX: Record<string, string> = {
   green: '#0F7A3E',
   purple: '#4A1A8C',
   yellow: '#C49A0A',
-  dianna: '#C49A0A',
+  dianna: '#5d4703',
 };
 const getThemeHex = (theme?: string): string =>
   THEME_HEX[theme || 'blue'] || THEME_HEX.blue;
@@ -141,27 +139,8 @@ const WinnersScreen: React.FC = () => {
           pageSize={5}
         />
 
-        {/* Ad slot — ambient wash, same treatment as the Milestones plate.
-            Replace the inner contents with the ad unit when the partner
-            lands; the refresh hook is in WinnersTimeline.handleLoadMore. */}
-        <View
-          style={styles.adSlot}
-          accessibilityRole="none"
-          accessibilityLabel="Sponsored"
-        >
-          <LinearGradient
-            colors={[hexToRgba(accent, 0.28), 'transparent']}
-            start={{ x: 0.5, y: 0 }}
-            end={{ x: 0.5, y: 1 }}
-            style={StyleSheet.absoluteFill}
-          />
-          <View style={styles.adInner}>
-            <Text style={styles.adLabel}>AD SPACE</Text>
-            <Text style={styles.adNote}>
-              Partnership pending — refreshes every 5 winners loaded
-            </Text>
-          </View>
-        </View>
+        {/* The ad space: a local sponsor or a Unis card (none for Unis Plus). */}
+        <AdSlot placement="winners" />
       </ScrollView>
     </View>
   );

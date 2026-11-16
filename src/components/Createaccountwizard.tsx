@@ -51,6 +51,17 @@ import {
   Heart,
 } from 'lucide-react-native';
 import { JURISDICTION_IDS, GENRE_IDS } from '../utils/IdMappings';
+import SoundDiscoveryFields from './SoundDiscoveryFields';
+import RightsConfirm from './RightsConfirm';
+import {
+  EMPTY_DISCOVERY,
+  isDiscoveryComplete,
+  discoveryProblem,
+  toDiscoveryPayload,
+  describeDiscovery,
+  useTaxonomy,
+  DiscoveryValue,
+} from '../utils/taxonomy';
 
 
 
@@ -305,6 +316,12 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
   const [partialSuccess, setPartialSuccess] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
   const [submitPhase, setSubmitPhase] = useState<string | null>(null);
+  // Debut song's subgenre / mood / language (required by the backend) and the
+  // rights box (Terms 3.6) — the server refuses the upload without either.
+  const [songDiscovery, setSongDiscovery] = useState<DiscoveryValue>(EMPTY_DISCOVERY);
+  const [songRightsConfirmed, setSongRightsConfirmed] = useState(false);
+  const [showSongRightsAlert, setShowSongRightsAlert] = useState(false);
+  const { taxonomy } = useTaxonomy();
 
   // Scroll ref
   const scrollViewRef = useRef<ScrollView>(null);
@@ -811,7 +828,8 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
       case 'artistProfile':
         return !!formData.artistPhotoUri && !!formData.genreId;
       case 'songUpload':
-        return !!formData.songTitle.trim() && !!formData.songFileUri && !!formData.songArtworkUri;
+        return !!formData.songTitle.trim() && !!formData.songFileUri && !!formData.songArtworkUri
+          && isDiscoveryComplete(songDiscovery);
       case 'listenerProfile':
         return !!formData.listenerPhotoUri;
       case 'listenerBio':
@@ -831,6 +849,12 @@ const CreateAccountWizard: React.FC<CreateAccountWizardProps> = ({
   // NAVIGATION
   // ============================================================================
   const goNext = () => {
+    // Continue stays tappable on the debut-song step so pressing it unticked
+    // explains why the song can't go up, instead of a dead button.
+    if (currentStepData?.id === 'songUpload' && !songRightsConfirmed) {
+      setShowSongRightsAlert(true);
+      return;
+    }
     if (currentStep < totalSteps) {
       setCurrentStep((prev) => prev + 1);
       setError('');
@@ -959,6 +983,8 @@ const handleSubmit = async () => {
             genreId: formData.genreId,
             jurisdictionId: formData.jurisdictionId,
             isrc: formData.songIsrc || null,
+            ...toDiscoveryPayload(songDiscovery),
+            rightsConfirmed: songRightsConfirmed === true,
           };
           const songFormData = new FormData();
           songFormData.append('song', JSON.stringify(songData));
@@ -1049,6 +1075,9 @@ const handleSubmit = async () => {
       themePreference: 'blue',
       songIsrc: '',
     });
+    setSongDiscovery(EMPTY_DISCOVERY);
+    setSongRightsConfirmed(false);
+    setShowSongRightsAlert(false);
     setValidation({
       referralCode: { checking: false, valid: null, message: '' },
       username: { checking: false, valid: null, message: '' },
@@ -1673,17 +1702,23 @@ const handleSubmit = async () => {
               <View style={styles.inputWrapper}>
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g. US-ABC-24-00001"
+                  placeholder="e.g., USRC17607839"
                   placeholderTextColor={COLORS.textGray}
                   value={formData.songIsrc}
-                  onChangeText={(text) => updateForm('songIsrc', text.toUpperCase())}
+                  onChangeText={(text) => updateForm('songIsrc', text.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  maxLength={15}
                   autoCapitalize="characters"
                 />
               </View>
               <Text style={styles.helperText}>
-                Your International Standard Recording Code, if you have one.
+                You can add this later from your dashboard.
               </Text>
             </View>
+
+            <SoundDiscoveryFields genreId={formData.genreId} value={songDiscovery} onChange={setSongDiscovery} />
+            {!!formData.songTitle.trim() && !isDiscoveryComplete(songDiscovery) && (
+              <Text style={[styles.helperText, { marginBottom: 12 }]}>{discoveryProblem(songDiscovery)}</Text>
+            )}
 
             {/* Audio File Upload */}
             <View style={styles.formGroup}>
@@ -1752,6 +1787,12 @@ const handleSubmit = async () => {
                 )}
               </TouchableOpacity>
             </View>
+
+            <RightsConfirm
+              checked={songRightsConfirmed}
+              onChange={(value) => { setSongRightsConfirmed(value); if (value) setShowSongRightsAlert(false); }}
+              showAlert={showSongRightsAlert}
+            />
           </View>
         );
 
@@ -2085,6 +2126,25 @@ const handleSubmit = async () => {
                     {Object.entries(GENRE_IDS).find(([k, v]) => v === formData.genreId)?.[0] || ''}
                   </Text>
                 </View>
+                {(() => {
+                  const d = describeDiscovery(songDiscovery, taxonomy);
+                  return (
+                    <>
+                      <View style={styles.reviewItem}>
+                        <Text style={styles.reviewItemLabel}>Subgenre</Text>
+                        <Text style={styles.reviewItemValue}>{d.subgenres}</Text>
+                      </View>
+                      <View style={styles.reviewItem}>
+                        <Text style={styles.reviewItemLabel}>Mood</Text>
+                        <Text style={styles.reviewItemValue}>{d.moods}</Text>
+                      </View>
+                      <View style={styles.reviewItem}>
+                        <Text style={styles.reviewItemLabel}>Language</Text>
+                        <Text style={styles.reviewItemValue}>{d.language}</Text>
+                      </View>
+                    </>
+                  );
+                })()}
               </View>
             )}
 

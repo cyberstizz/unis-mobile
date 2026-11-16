@@ -21,6 +21,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { ImagePlus, Trash2, AlertCircle } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import buildUrl from '../utils/buildUrl';
 
 const DEFAULT_MAX = 15; // mirrors ArtistPhotoService.MAX_PHOTOS; server is the source of truth
@@ -35,6 +36,7 @@ interface ArtistPhotosManagerProps {
 }
 
 const ArtistPhotosManager: React.FC<ArtistPhotosManagerProps> = ({ artistId }) => {
+  const feedback = useFeedback();
   const [photos, setPhotos] = useState<ArtistPhoto[]>([]);
   const [max, setMax] = useState(DEFAULT_MAX);
   const [loading, setLoading] = useState(true);
@@ -90,16 +92,23 @@ const ArtistPhotosManager: React.FC<ArtistPhotosManagerProps> = ({ artistId }) =
         await axiosInstance.post(`/v1/users/${artistId}/photos`, form);
         added += 1;
       } catch (err: any) {
-        setError(err.response?.data?.error || 'One or more photos failed to upload.');
+        const text = err.response?.data?.error || 'One or more photos failed to upload.';
+        setError(text);
+        feedback.error(errorMessage(err, text));
         break;
       }
     }
 
     if (result.assets.length > remaining) {
-      setError(`Only ${remaining} more photo${remaining === 1 ? '' : 's'} allowed — some weren't added.`);
+      const text = `Only ${remaining} more photo${remaining === 1 ? '' : 's'} allowed — some weren't added.`;
+      setError(text);
+      feedback.error(text);
     }
     setUploading(false);
-    if (added > 0) load();
+    if (added > 0) {
+      feedback.success(added === 1 ? 'Photo added to your gallery' : `${added} photos added to your gallery`);
+      load();
+    }
   };
 
   const handleDelete = async (photoId: string) => {
@@ -108,8 +117,11 @@ const ArtistPhotosManager: React.FC<ArtistPhotosManagerProps> = ({ artistId }) =
     try {
       await axiosInstance.delete(`/v1/users/${artistId}/photos/${photoId}`);
       setPhotos((prev) => prev.filter((p) => p.photoId !== photoId));
+      feedback.success('Photo removed from your gallery');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not remove that photo.');
+      const text = err.response?.data?.error || 'Could not remove that photo.';
+      setError(text);
+      feedback.error(errorMessage(err, text));
     } finally {
       setDeletingId(null);
     }

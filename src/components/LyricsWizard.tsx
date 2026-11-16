@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import {
   Modal,
   View,
@@ -44,6 +45,7 @@ const LyricsWizard: React.FC<LyricsWizardProps> = ({
   onSuccess,
   song,
 }) => {
+  const feedback = useFeedback();
   const [lyrics, setLyrics] = useState(song?.lyrics || '');
   const [saving, setSaving] = useState(false);
 
@@ -85,11 +87,13 @@ const LyricsWizard: React.FC<LyricsWizardProps> = ({
         throw new Error(`Failed to save lyrics: ${response.status}`);
       }
 
+      // The wizard closes on save — the toast is what's left to see.
+      feedback.success(lyrics.trim() ? `Lyrics saved for \u201C${song.title}\u201D` : `Lyrics cleared for \u201C${song.title}\u201D`);
       onSuccess();
       handleClose();
     } catch (err) {
       console.error('Failed to save lyrics:', err);
-      Alert.alert('Error', 'Failed to save lyrics. Please try again.');
+      feedback.error(errorMessage(err, "Couldn't save the lyrics. Try again."));
     } finally {
       setSaving(false);
     }

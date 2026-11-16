@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import * as SecureStore from 'expo-secure-store';
 import {
   View,
   Text,
@@ -82,10 +83,16 @@ const ChangePasswordWizard: React.FC<ChangePasswordWizardProps> = ({ visible, on
     setLoading(true);
 
     try {
-      await axiosInstance.put(`/v1/users/profile/${user!.userId}/password`, {
+      const res = await axiosInstance.put(`/v1/users/profile/${user!.userId}/password`, {
         oldPassword: currentPassword,
         newPassword: newPassword,
       });
+      // Changing the password signs out every device, this one included. The
+      // server hands back a fresh session for this device; keep it so the
+      // person stays signed in here.
+      if (res?.data?.token) {
+        await SecureStore.setItemAsync('token', res.data.token);
+      }
       setStep(2);
     } catch (err: any) {
       const msg = err.response?.data;
@@ -202,7 +209,7 @@ const ChangePasswordWizard: React.FC<ChangePasswordWizardProps> = ({ visible, on
               <CheckCircle size={48} color={COLORS.green500} />
               <Text style={styles.successTitle}>Password Changed</Text>
               <Text style={styles.successText}>
-                Your password has been updated successfully.
+                Your password has been updated successfully. You've been signed out on your other devices.
               </Text>
               <TouchableOpacity style={styles.doneButton} onPress={handleClose}>
                 <Text style={styles.doneButtonText}>Done</Text>

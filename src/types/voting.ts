@@ -14,8 +14,14 @@ export interface Nominee {
   name: string;
   type: 'artist' | 'song';
   genreKey?: string;
+  genreId?: string | null; // Real genre UUID — beats the name-derived lookup
+  jurisdictionId?: string | null;
   jurisdiction?: Jurisdiction | string; // Backend sometimes returns full object, sometimes just a string
   imageUrl?: string; // For displaying nominee artwork in the wizard
+  artworkUrl?: string;
+  artwork?: string;
+  photoUrl?: string;
+  [key: string]: any;
 }
 
 export interface VoteFilters {
@@ -29,6 +35,9 @@ export interface VoteResult {
   status: 'idle' | 'success' | 'duplicate' | 'ineligible' | 'network' | 'error';
   message: string;
   details?: string;
+  points?: number;
+  scoreBefore?: number | null;
+  scoreAfter?: number | null;
 }
 
 export interface VoteData {
@@ -38,7 +47,6 @@ export interface VoteData {
   genreId: string;
   jurisdictionId: string;
   intervalId: string;
-  voteDate: string;
 }
 
 export interface VotingWizardProps {

@@ -21,6 +21,9 @@ import Svg, { Circle, Line, Path } from 'react-native-svg';
 import { useAuth } from '../context/AuthContext';
 import { getMediaUrl } from '../services/axiosInstance';
 import UnisLogo from '../../assets/unisLogoThree.svg';
+import { FindIcon, VoteIcon, AwardsIcon, EarningsIcon, MenuIcon, SearchIcon as GlowSearchIcon } from '../icons/UnisIcons';
+import SearchOverlay from './SearchOverlay';
+import { openDrawer } from '../navigation/navigationRef';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IS_SMALL = SCREEN_WIDTH < 400;
@@ -41,59 +44,33 @@ const C = {
 
 // ─── Nav items ───────────────────────────────────────────────
 const NAV_ITEMS = [
-  { label: 'Vote', route: 'VoteAwards', icon: 'vote' },
+  { label: 'Vote', route: 'Vote', icon: 'vote' },
   { label: 'Awards', route: 'Milestones', icon: 'awards' },
   { label: 'Find', route: 'Find', icon: 'find' },
   { label: 'Earnings', route: 'Earnings', icon: 'earnings' },
 ];
 
-// ─── SVG Icons (matching web renderIcon) ─────────────────────
-const NavIcon: React.FC<{ type: string; color: string }> = ({ type, color }) => {
+// ─── Unis Glow icons — outline when idle, gradient-filled when active ───
+const NavIcon: React.FC<{ type: string; active: boolean }> = ({ type, active }) => {
+  const props = { size: 16, active };
   switch (type) {
-    case 'vote':
-      return (
-        <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
-          <Path d="M7 1.2L8.6 4.9L12.6 5.3L9.5 8L10.4 12L7 10L3.6 12L4.5 8L1.4 5.3L5.4 4.9L7 1.2Z" fill={color} />
-        </Svg>
-      );
-    case 'awards':
-      return (
-        <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
-          <Circle cx={7} cy={5.5} r={4} stroke={color} strokeWidth={1.2} />
-          <Path d="M5 10L4 13.5L7 12L10 13.5L9 10" stroke={color} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-        </Svg>
-      );
-    case 'find':
-      return (
-        <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
-          <Circle cx={6.5} cy={6.5} r={4.5} stroke={color} strokeWidth={1.2} />
-          <Line x1={10} y1={10} x2={13} y2={13} stroke={color} strokeWidth={1.2} strokeLinecap="round" />
-        </Svg>
-      );
-    case 'earnings':
-      return (
-        <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
-          <Path
-            d="M7 1V13M4 3.5H8.5C9.9 3.5 11 4.4 11 5.5C11 6.6 9.9 7.5 8.5 7.5H4M4 7.5H9C10.4 7.5 11.5 8.4 11.5 9.5C11.5 10.6 10.4 11.5 9 11.5H4"
-            stroke={color}
-            strokeWidth={1.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </Svg>
-      );
-    default:
-      return null;
+    case 'vote': return <VoteIcon {...props} />;
+    case 'awards': return <AwardsIcon {...props} />;
+    case 'find': return <FindIcon {...props} />;
+    case 'earnings': return <EarningsIcon {...props} />;
+    default: return null;
   }
 };
 
-// ─── Search Icon ─────────────────────────────────────────────
-const SearchIcon: React.FC = () => (
-  <Svg width={16} height={16} viewBox="0 0 16 16" fill="none">
-    <Circle cx={7} cy={7} r={5.5} stroke={C.textDim} strokeWidth={1.3} />
-    <Line x1={11.2} y1={11.2} x2={14.5} y2={14.5} stroke={C.textDim} strokeWidth={1.3} strokeLinecap="round" />
-  </Svg>
-);
+// Theme wordmarks — same files the web header switches between.
+const LOGO_MAP: Record<string, any> = {
+  orange: require('../../assets/brand/logo-orange.png'),
+  red: require('../../assets/brand/logo-red.png'),
+  green: require('../../assets/brand/logo-green.png'),
+  purple: require('../../assets/brand/logo-purple.png'),
+  yellow: require('../../assets/brand/logo-gold.png'),
+  dianna: require('../../assets/brand/logo-dianna.png'),
+};
 
 // ═════════════════════════════════════════════════════════════
 // COMPONENT
@@ -101,13 +78,21 @@ const SearchIcon: React.FC = () => (
 const Header: React.FC = () => {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { user, logout } = useAuth();
+  const { user, logout, theme } = useAuth() as any;
+  const [searchOpen, setSearchOpen] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
 
   const handleHome = () => navigation.navigate('Home', { screen: 'Feed' });
   const handleLogout = async () => { setMenuVisible(false); await logout(); };
-  const handleProfile = () => { setMenuVisible(false); navigation.navigate('Profile'); };
+  const handleProfile = () => { setMenuVisible(false); navigation.navigate('Settings'); };
+  const handleHelp = () => { setMenuVisible(false); navigation.navigate('Help'); };
+  const goSearchResult = (screen: string, params: any) => {
+    if (screen === 'Discover') navigation.navigate('Discover', params);
+    else navigation.navigate('Home', { screen, params });
+  };
+  const logoSize = IS_MOBILE ? 68 : 92;
+  const themedLogo = LOGO_MAP[theme];
 
   const getInitial = () => user?.username?.charAt(0).toUpperCase() || 'U';
   const avatarUrl = getMediaUrl(user?.photoUrl);
@@ -129,26 +114,29 @@ const Header: React.FC = () => {
       />
 
       <View style={styles.inner}>
-        {/* Logo */}
-        <TouchableOpacity onPress={handleHome} style={styles.logoWrap} activeOpacity={0.8}>
-          <UnisLogo width={IS_MOBILE ? 68 : 92} height={IS_MOBILE ? 68 : 92} />
+        {/* Hamburger — opens the sidebar */}
+        <TouchableOpacity onPress={() => openDrawer()} style={styles.hamburger} accessibilityLabel="Toggle navigation menu" hitSlop={6}>
+          <MenuIcon size={20} />
         </TouchableOpacity>
 
-        {/* Search — hidden on very small screens */}
-        {!IS_SMALL && (
-          <View style={styles.searchWrap}>
-            <View style={[styles.searchBar, searchFocused && styles.searchBarFocused]}>
-              <SearchIcon />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search artists, songs..."
-                placeholderTextColor={C.textDim}
-                onFocus={() => setSearchFocused(true)}
-                onBlur={() => setSearchFocused(false)}
-              />
+        {/* Logo (follows the theme) */}
+        <TouchableOpacity onPress={handleHome} style={styles.logoWrap} activeOpacity={0.8} accessibilityLabel="Unis home">
+          {themedLogo
+            ? <Image source={themedLogo} style={{ width: logoSize, height: logoSize }} resizeMode="contain" />
+            : <UnisLogo width={logoSize} height={logoSize} />}
+        </TouchableOpacity>
+
+        {/* Search — opens the full-screen search */}
+        <TouchableOpacity style={styles.searchWrap} onPress={() => setSearchOpen(true)} activeOpacity={0.8} accessibilityRole="search" accessibilityLabel="Search">
+          {!IS_SMALL ? (
+            <View style={styles.searchBar}>
+              <GlowSearchIcon size={16} />
+              <Text style={[styles.searchInput, { color: C.textDim }]} numberOfLines={1}>Search artists, songs...</Text>
             </View>
-          </View>
-        )}
+          ) : (
+            <View style={{ alignSelf: 'flex-end' }}><GlowSearchIcon size={19} /></View>
+          )}
+        </TouchableOpacity>
 
         {/* Nav items */}
         <View style={styles.navRow}>
@@ -161,10 +149,7 @@ const Header: React.FC = () => {
                 onPress={() => navigation.navigate(item.route)}
                 activeOpacity={0.7}
               >
-                <NavIcon
-                  type={item.icon}
-                  color={isActive ? '#5b8fd8' : C.textMuted}
-                />
+                <NavIcon type={item.icon} active={isActive} />
                 {!IS_MOBILE && (
                   <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>
                     {item.label}
@@ -207,7 +192,10 @@ const Header: React.FC = () => {
               </View>
             )}
             <TouchableOpacity style={styles.menuItem} onPress={handleProfile}>
-              <Text style={styles.menuItemText}>Profile</Text>
+              <Text style={styles.menuItemText}>Profile & settings</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.menuItem} onPress={handleHelp}>
+              <Text style={styles.menuItemText}>Help</Text>
             </TouchableOpacity>
             <View style={styles.menuDivider} />
             <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
@@ -216,6 +204,8 @@ const Header: React.FC = () => {
           </View>
         </Pressable>
       </Modal>
+
+      <SearchOverlay visible={searchOpen} onClose={() => setSearchOpen(false)} onNavigate={goSearchResult} />
     </LinearGradient>
   );
 };
@@ -245,6 +235,7 @@ const styles = StyleSheet.create({
     gap: IS_MOBILE ? 8 : 24,
   },
 
+  hamburger: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
   // Logo
   logoWrap: {
     flexShrink: 0,

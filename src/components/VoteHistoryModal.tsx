@@ -17,6 +17,7 @@
 //   3. Removed the dangling "You voted for" subtitle fragment.
 
 import React from 'react';
+import { useUnisTheme } from '../theme/unisTheme';
 import {
   View,
   Text,
@@ -26,6 +27,7 @@ import {
   FlatList,
   Image,
   StatusBar,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { X, History, Music, User } from 'lucide-react-native';
@@ -73,6 +75,7 @@ const getIntervalLabel = (interval?: string): string => {
 };
 
 const VoteHistoryModal: React.FC<VoteHistoryModalProps> = ({ show, onClose, votes = [] }) => {
+  const t = useUnisTheme();
   const count = votes.length;
   const countLabel = count === 1 ? 'vote cast' : 'votes cast';
 
@@ -119,7 +122,7 @@ const VoteHistoryModal: React.FC<VoteHistoryModalProps> = ({ show, onClose, vote
         {/* ★ sticky header — close is always on screen */}
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Text style={styles.headerTitle}>Vote history</Text>
+            <Text style={styles.headerTitle} accessibilityLabel="Vote history">Vote <Text style={{ fontStyle: 'italic', fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif', color: t.textAccent }}>history</Text></Text>
             <View style={styles.subtitleRow}>
               <Text style={styles.subtitleCount}>{count}</Text>
               <Text style={styles.subtitleLabel}>{countLabel.toUpperCase()}</Text>

@@ -26,6 +26,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Crown, Heart, MessageCircle, Megaphone, Send, X, TrendingUp } from 'lucide-react-native';
 import axiosInstance from '../services/axiosInstance';
+import { useFeedback, errorMessage } from '../context/FeedbackContext';
 import buildUrl from '../utils/buildUrl';
 
 const formatNumber = (n: any) => Number(n || 0).toLocaleString();
@@ -54,10 +55,11 @@ interface SupportersData {
 }
 
 // ── Broadcast composer ───────────────────────────────────────
-const BroadcastComposer: React.FC<{
+export const BroadcastComposer: React.FC<{
   supporterCount: number;
   onClose: () => void;
 }> = ({ supporterCount, onClose }) => {
+  const feedback = useFeedback();
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ sent: number; skipped: number } | null>(null);
@@ -71,8 +73,12 @@ const BroadcastComposer: React.FC<{
     try {
       const res = await axiosInstance.post('/v1/messages/broadcast', { body });
       setResult(res.data);
+      const sent = Number(res.data?.sent) || 0;
+      feedback.success(`Message sent to ${sent.toLocaleString()} ${sent === 1 ? 'supporter' : 'supporters'}`);
     } catch (e: any) {
-      setError(e?.response?.data?.error || 'Could not send the broadcast.');
+      const text = e?.response?.data?.error || 'Could not send the broadcast.';
+      setError(text);
+      feedback.error(errorMessage(e, text));
     } finally {
       setBusy(false);
     }
